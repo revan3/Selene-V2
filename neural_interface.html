@@ -1,0 +1,1420 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SELENE NEXUS — Neural Interface</title>
+<style>
+  /* ========== SEU CSS ORIGINAL COMPLETO AQUI ========== */
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@300;400;600&family=Share+Tech+Mono&display=swap');
+
+  :root {
+    --crimson: #8B0000;
+    --crimson-bright: #DC143C;
+    --crimson-glow: #FF2050;
+    --violet: #2D0040;
+    --violet-mid: #5B0080;
+    --violet-bright: #9B30FF;
+    --violet-glow: #BF5FFF;
+    --plasma: #FF00AA;
+    --surface: #0D0015;
+    --text: #E8D5FF;
+    --text-dim: #9E7BBE;
+    --border: rgba(155,48,255,0.3);
+  }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+
+  body {
+    background: var(--surface);
+    color: var(--text);
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(ellipse 80% 50% at 50% 0%, rgba(91,0,128,0.4) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(139,0,0,0.3) 0%, transparent 50%),
+      radial-gradient(ellipse 40% 30% at 0% 50%, rgba(155,48,255,0.15) 0%, transparent 50%);
+    pointer-events: none; z-index: 0;
+  }
+  body::after {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.05) 2px, rgba(0,0,0,0.05) 4px);
+    pointer-events: none; z-index: 999;
+  }
+
+  .app {
+    position: relative; z-index: 1;
+    display: grid;
+    grid-template-rows: 60px 1fr;
+    grid-template-columns: 310px 1fr 300px;
+    grid-template-areas: "header header header" "left center right";
+    height: 100vh;
+    gap: 1px;
+    background: var(--border);
+  }
+
+  /* HEADER */
+  header {
+    grid-area: header;
+    background: rgba(13,0,21,0.95);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 24px;
+    border-bottom: 1px solid var(--border);
+    position: relative; overflow: hidden;
+  }
+  header::after {
+    content: '';
+    position: absolute; bottom:0; left:0; right:0; height:1px;
+    background: linear-gradient(90deg, transparent, var(--crimson-glow), var(--violet-bright), transparent);
+    animation: scan-h 3s linear infinite;
+  }
+  @keyframes scan-h { 0%{transform:translateX(-100%)} 100%{transform:translateX(100%)} }
+
+  .logo {
+    font-family: 'Orbitron', monospace;
+    font-size: 22px; font-weight: 900; letter-spacing: 8px;
+    background: linear-gradient(90deg, var(--crimson-glow), var(--violet-bright), var(--plasma));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .status-bar { display:flex; gap:24px; align-items:center; }
+  .status-item {
+    display:flex; align-items:center; gap:6px;
+    font-family:'Share Tech Mono',monospace; font-size:11px; color:var(--text-dim);
+  }
+  .pulse-dot {
+    width:6px; height:6px; border-radius:50%;
+    background:var(--crimson-bright);
+    animation:pulse 1.5s ease-in-out infinite;
+    box-shadow:0 0 8px var(--crimson-bright);
+  }
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(0.7)} }
+  .sys-time { font-family:'Orbitron',monospace; font-size:13px; color:var(--violet-glow); letter-spacing:2px; }
+
+  /* PANELS */
+  .panel {
+    background: rgba(13,0,21,0.92);
+    overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--violet-mid) transparent;
+  }
+  .panel::-webkit-scrollbar { width:3px; }
+  .panel::-webkit-scrollbar-thumb { background:var(--violet-mid); }
+  .panel-left  { grid-area:left;   padding:14px; }
+  .panel-center{ grid-area:center; background:rgba(10,0,18,0.96); }
+  .panel-right { grid-area:right;  padding:14px; }
+
+  .section-title {
+    font-family:'Orbitron',monospace; font-size:9px; letter-spacing:4px;
+    color:var(--text-dim); text-transform:uppercase; margin-bottom:10px;
+    padding-bottom:6px; border-bottom:1px solid var(--border); position:relative;
+  }
+  .section-title::after {
+    content:''; position:absolute; bottom:-1px; left:0; width:40px; height:1px;
+    background:var(--crimson-glow);
+  }
+
+  /* PROCESSOR CARDS */
+  .processor-card {
+    background: rgba(45,0,64,0.4);
+    border: 1px solid rgba(155,48,255,0.2);
+    border-radius: 6px; padding:10px; margin-bottom:8px;
+    position:relative; overflow:hidden; cursor:pointer; transition:all 0.3s ease;
+  }
+  .processor-card::before {
+    content:''; position:absolute; top:0; left:0; right:0; height:1px;
+    background:linear-gradient(90deg,transparent,var(--violet-bright),transparent);
+    opacity:0; transition:opacity 0.3s;
+  }
+  .processor-card:hover { border-color:rgba(155,48,255,0.5); background:rgba(45,0,64,0.6); transform:translateX(2px); }
+  .processor-card:hover::before { opacity:1; }
+  .processor-card.active {
+    border-color:var(--crimson-bright);
+    box-shadow:0 0 15px rgba(220,20,60,0.2),inset 0 0 15px rgba(220,20,60,0.05);
+  }
+
+  .proc-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+  .proc-name { font-family:'Orbitron',monospace; font-size:9px; letter-spacing:2px; color:var(--violet-glow); font-weight:700; }
+  .proc-id { font-family:'Share Tech Mono',monospace; font-size:9px; color:var(--crimson-bright); opacity:0.8; }
+
+  .proc-top-row { display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:6px; }
+  .proc-temp {
+    font-family:'Share Tech Mono',monospace; font-size:18px; font-weight:bold;
+    color:var(--crimson-bright); text-shadow:0 0 10px rgba(220,20,60,0.5); line-height:1;
+  }
+  .spikes-box { text-align:right; }
+  .spikes-label { font-family:'Share Tech Mono',monospace; font-size:7px; color:var(--text-dim); letter-spacing:1px; display:block; }
+  .spikes-val {
+    font-family:'Share Tech Mono',monospace; font-size:14px; font-weight:bold;
+    color:#FFD700; text-shadow:0 0 8px rgba(255,215,0,0.5); letter-spacing:1px;
+  }
+  .spikes-unit { font-size:8px; color:var(--text-dim); }
+
+  .metric-row { display:flex; gap:5px; margin-bottom:5px; }
+  .metric-mini { flex:1; min-width:0; }
+  .metric-label { font-family:'Share Tech Mono',monospace; font-size:7px; color:var(--text-dim); margin-bottom:2px; letter-spacing:1px; }
+  .mini-bar { height:3px; background:rgba(255,255,255,0.05); border-radius:2px; overflow:hidden; }
+  .mini-bar-fill { height:100%; border-radius:2px; transition:width 1s ease; }
+  .bar-cpu  { background:linear-gradient(90deg,var(--crimson),var(--crimson-bright)); }
+  .bar-ram  { background:linear-gradient(90deg,var(--violet-mid),var(--violet-bright)); }
+  .bar-gpu  { background:linear-gradient(90deg,#003366,#0099FF); }
+  .bar-disk { background:linear-gradient(90deg,#004400,#00CC44); }
+  .metric-val { font-family:'Share Tech Mono',monospace; font-size:8px; color:var(--text); margin-top:1px; }
+
+  .proc-footer {
+    font-family:'Share Tech Mono',monospace; font-size:8px; color:var(--text-dim);
+    margin-top:3px; padding-top:4px; border-top:1px solid rgba(155,48,255,0.1);
+  }
+
+  /* PER-NUCLEUS CHEMISTRY */
+  .nucleus-chem {
+    margin-top:7px; padding-top:6px;
+    border-top:1px solid rgba(155,48,255,0.18);
+  }
+  .chem-title {
+    font-family:'Share Tech Mono',monospace; font-size:7px; letter-spacing:2px;
+    color:var(--text-dim); margin-bottom:5px; text-transform:uppercase;
+  }
+  .chem-bar-item { margin-bottom:4px; }
+  .chem-header { display:flex; justify-content:space-between; margin-bottom:1px; }
+  .chem-name  { font-family:'Share Tech Mono',monospace; font-size:8px; }
+  .chem-val   { font-family:'Share Tech Mono',monospace; font-size:8px; color:var(--text-dim); }
+  .chem-track { height:4px; background:rgba(255,255,255,0.05); border-radius:2px; overflow:hidden; }
+  .chem-fill  { height:100%; border-radius:2px; transition:width 1.5s cubic-bezier(0.23,1,0.32,1); position:relative; }
+  .chem-fill::after {
+    content:''; position:absolute; right:0; top:0; bottom:0; width:6px;
+    background:rgba(255,255,255,0.35); filter:blur(1px); border-radius:2px;
+  }
+
+  /* chemical colors — name color + bar fill */
+  .ch-dopa { color:#BF5FFF; }  .fill-dopa { background:linear-gradient(90deg,#4B0082,#9B30FF); }
+  .ch-nora { color:#00BFFF; }  .fill-nora { background:linear-gradient(90deg,#003D7A,#00BFFF); }
+  .ch-sero { color:#00FF88; }  .fill-sero { background:linear-gradient(90deg,#004D00,#00FF88); }
+  .ch-cort { color:#FF6347; }  .fill-cort { background:linear-gradient(90deg,#5C1800,#FF4500); }
+  .ch-gaba { color:#FFD700; }  .fill-gaba { background:linear-gradient(90deg,#5C4400,#FFD700); }
+  .ch-glut { color:#FF69B4; }  .fill-glut { background:linear-gradient(90deg,#5C0030,#FF69B4); }
+  .ch-acet { color:#7FFFD4; }  .fill-acet { background:linear-gradient(90deg,#004D3D,#7FFFD4); }
+  .ch-enke { color:#DA70D6; }  .fill-enke { background:linear-gradient(90deg,#3D0044,#DA70D6); }
+  .ch-oxyt { color:#FFB6C1; }  .fill-oxyt { background:linear-gradient(90deg,#5C0020,#FFB6C1); }
+
+  /* CENTER */
+  .center-layout { display:flex; flex-direction:column; height:100%; }
+  .brain-container {
+    flex:1; position:relative; display:flex; align-items:center; justify-content:center; overflow:hidden;
+  }
+  .brain-svg-wrap { position:relative; width:560px; height:420px; }
+  #brain-canvas { cursor:crosshair; display:block; }
+  @keyframes flow { 0%{stroke-dashoffset:0} 100%{stroke-dashoffset:-20} }
+  .brain-tooltip {
+    position:absolute; background:rgba(13,0,21,0.95); border:1px solid var(--crimson-bright);
+    border-radius:4px; padding:8px 12px; font-family:'Orbitron',monospace; font-size:9px;
+    letter-spacing:2px; color:var(--crimson-bright); pointer-events:none; opacity:0;
+    transition:opacity 0.3s; z-index:10; white-space:nowrap;
+    box-shadow:0 0 20px rgba(220,20,60,0.3); text-transform:uppercase;
+  }
+  .brain-tooltip.visible { opacity:1; }
+  .corner-deco { position:absolute; width:12px; height:12px; border-color:var(--crimson-bright); border-style:solid; opacity:0.6; }
+  .corner-deco.tl{top:4px;left:4px;border-width:1px 0 0 1px}
+  .corner-deco.tr{top:4px;right:4px;border-width:1px 1px 0 0}
+  .corner-deco.bl{bottom:4px;left:4px;border-width:0 0 1px 1px}
+  .corner-deco.br{bottom:4px;right:4px;border-width:0 1px 1px 0}
+
+  /* CHAT */
+  .chat-section {
+    border-top:1px solid var(--border); background:rgba(13,0,21,0.98);
+    display:flex; flex-direction:column; height:250px;
+  }
+  .chat-messages { flex:1; overflow-y:auto; padding:10px 14px; scrollbar-width:thin; scrollbar-color:var(--violet-mid) transparent; }
+  .chat-msg { margin-bottom:8px; display:flex; gap:8px; align-items:flex-start; animation:msg-in 0.3s ease; }
+  @keyframes msg-in { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+  .msg-avatar { width:22px; height:22px; border-radius:50%; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-family:'Orbitron',monospace; font-size:6px; font-weight:700; }
+  .msg-avatar.system { background:linear-gradient(135deg,var(--crimson),var(--violet-mid)); color:white; box-shadow:0 0 8px rgba(220,20,60,0.4); }
+  .msg-avatar.user   { background:rgba(155,48,255,0.3); border:1px solid var(--violet-bright); color:var(--violet-glow); }
+  .msg-body { flex:1; }
+  .msg-sender { font-family:'Share Tech Mono',monospace; font-size:8px; color:var(--text-dim); margin-bottom:2px; letter-spacing:1px; }
+  .msg-text { font-family:'Rajdhani',sans-serif; font-size:13px; line-height:1.4; color:var(--text); background:rgba(45,0,64,0.3); border:1px solid rgba(155,48,255,0.15); border-radius:0 6px 6px 6px; padding:5px 9px; }
+  .msg-chat.system .msg-text { border-color:rgba(220,20,60,0.2); background:rgba(139,0,0,0.1); }
+  .chat-input-bar { display:flex; gap:8px; padding:8px 14px; border-top:1px solid var(--border); background:rgba(8,0,13,0.9); align-items:center; }
+  .chat-input { flex:1; background:rgba(45,0,64,0.4); border:1px solid rgba(155,48,255,0.3); border-radius:4px; color:var(--text); font-family:'Rajdhani',sans-serif; font-size:14px; padding:7px 12px; outline:none; transition:border-color 0.3s; caret-color:var(--violet-bright); }
+  .chat-input:focus { border-color:var(--violet-bright); box-shadow:0 0 12px rgba(155,48,255,0.2); }
+  .chat-input::placeholder { color:var(--text-dim); opacity:0.5; }
+  .btn { background:none; border:1px solid; border-radius:4px; cursor:pointer; font-family:'Orbitron',monospace; font-size:8px; letter-spacing:2px; padding:7px 12px; transition:all 0.3s ease; display:flex; align-items:center; gap:5px; white-space:nowrap; }
+  .btn-send { border-color:var(--crimson-bright); color:var(--crimson-bright); }
+  .btn-send:hover { background:rgba(220,20,60,0.15); box-shadow:0 0 15px rgba(220,20,60,0.3); }
+  .btn-voice { border-color:var(--violet-bright); color:var(--violet-bright); }
+  .btn-voice:hover { background:rgba(155,48,255,0.15); box-shadow:0 0 15px rgba(155,48,255,0.3); }
+  .btn-voice.recording { border-color:var(--crimson-glow); color:var(--crimson-glow); animation:rec-pulse 0.8s ease infinite; }
+  @keyframes rec-pulse { 0%,100%{box-shadow:0 0 5px rgba(255,32,80,0.4)} 50%{box-shadow:0 0 20px rgba(255,32,80,0.7)} }
+
+  /* RIGHT PANEL */
+  .big-metric { margin-bottom:13px; }
+  .big-metric-label { font-family:'Share Tech Mono',monospace; font-size:8px; color:var(--text-dim); letter-spacing:2px; margin-bottom:3px; }
+  .freq-display { font-family:'Share Tech Mono',monospace; font-size:26px; color:var(--violet-bright); text-shadow:0 0 20px rgba(155,48,255,0.6); letter-spacing:2px; }
+  .freq-unit { font-size:11px; color:var(--text-dim); letter-spacing:3px; margin-left:4px; }
+  .lat-display { font-family:'Share Tech Mono',monospace; font-size:20px; color:var(--crimson-bright); text-shadow:0 0 15px rgba(220,20,60,0.5); }
+  .synapse-display { font-family:'Share Tech Mono',monospace; font-size:20px; color:#FFD700; text-shadow:0 0 15px rgba(255,215,0,0.4); }
+
+  .waveform { display:flex; align-items:center; gap:2px; height:34px; margin:5px 0; }
+  .wave-bar { flex:1; background:linear-gradient(0deg,var(--crimson),var(--violet-bright)); border-radius:1px; animation:wave 1.2s ease-in-out infinite; min-height:3px; opacity:0.8; }
+  @keyframes wave { 0%,100%{transform:scaleY(0.2)} 50%{transform:scaleY(1)} }
+
+  .agg-bar-row { margin-bottom:7px; }
+  .agg-bar-header { display:flex; justify-content:space-between; margin-bottom:2px; }
+  .agg-bar-label { font-family:'Share Tech Mono',monospace; font-size:8px; }
+  .agg-bar-val   { font-family:'Share Tech Mono',monospace; font-size:8px; color:var(--text-dim); }
+  .agg-bar { height:5px; background:rgba(255,255,255,0.05); border-radius:3px; overflow:hidden; }
+  .agg-fill { height:100%; border-radius:3px; transition:width 1s ease; }
+
+  .log-item { display:flex; gap:6px; align-items:flex-start; padding:5px 0; border-bottom:1px solid rgba(155,48,255,0.08); font-family:'Share Tech Mono',monospace; font-size:8px; }
+  .log-time       { color:var(--text-dim); flex-shrink:0; }
+  .log-level-ok   { color:#00FF88; }
+  .log-level-warn { color:#FFB300; }
+  .log-level-err  { color:var(--crimson-glow); }
+  .log-msg { color:var(--text); line-height:1.4; }
+
+  ::-webkit-scrollbar { width:3px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:var(--violet-mid); border-radius:2px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- HEADER -->
+  <header>
+    <div class="logo">SELENE NEXUS</div>
+    <div class="status-bar">
+      <div class="status-item"><div class="pulse-dot" id="connection-led"></div> <span id="connection-status">CONECTANDO...</span></div>
+      <div class="status-item">NÚCLEOS: <span id="nucleos-count">8/8</span></div>
+      <div class="status-item">UPTIME: <span id="uptime">00:00:00</span></div>
+    </div>
+    <div class="sys-time" id="clock">--:--:--</div>
+  </header>
+
+  <!-- LEFT PANEL -->
+  <div class="panel panel-left">
+    <div class="section-title">◈ Núcleos Neurais</div>
+    <div id="proc-cards"></div>
+  </div>
+
+  <!-- CENTER -->
+  <div class="panel panel-center">
+    <div class="center-layout">
+      <div class="brain-container">
+        <div class="corner-deco tl"></div>
+        <div class="corner-deco tr"></div>
+        <div class="corner-deco bl"></div>
+        <div class="corner-deco br"></div>
+        <div class="brain-tooltip" id="brain-tooltip"></div>
+        <div class="brain-svg-wrap">
+          <canvas id="brain-canvas" width="560" height="420"></canvas>
+        </div>
+      </div>
+
+      <!-- CHAT -->
+      <div class="chat-section">
+        <div style="padding:6px 14px; border-bottom:1px solid var(--border);">
+          <div class="section-title" style="margin:0">◈ Interface Neural — Canal de Comunicação</div>
+        </div>
+        <div class="chat-messages" id="chat-messages">
+          <div class="chat-msg">
+            <div class="msg-avatar system">NX</div>
+            <div class="msg-body">
+              <div class="msg-sender">NEXUS · SISTEMA</div>
+              <div class="msg-text msg-chat system">Interface neural inicializada. Aguardando conexão com Selene...</div>
+            </div>
+          </div>
+        </div>
+        <div class="chat-input-bar">
+          <input class="chat-input" id="chat-input" type="text" placeholder="Envie um comando neural..."
+            onkeydown="if(event.key==='Enter') sendMessage()"/>
+          <button class="btn btn-send" onclick="sendMessage()">▶ ENVIAR</button>
+          <button class="btn btn-voice" id="voice-btn" onclick="toggleVoice()">
+            <svg width="10" height="12" viewBox="0 0 10 12" fill="currentColor"><rect x="3" y="0" width="4" height="7" rx="2"/><path d="M1 6 Q1 10 5 10 Q9 10 9 6" stroke="currentColor" stroke-width="1.2" fill="none"/><line x1="5" y1="10" x2="5" y2="12" stroke="currentColor" stroke-width="1.2"/></svg>
+            VOZ
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT PANEL -->
+  <div class="panel panel-right">
+    <div class="section-title">◈ Telemetria Global</div>
+
+    <div class="big-metric">
+      <div class="big-metric-label">FREQUÊNCIA MÉDIA</div>
+      <div class="freq-display" id="freq-display">--<span class="freq-unit">Hz</span></div>
+    </div>
+
+    <div class="big-metric">
+      <div class="big-metric-label">LATÊNCIA SINÁPTICA</div>
+      <div class="lat-display" id="lat-display">--<span style="font-size:12px;color:var(--text-dim)"> ms</span></div>
+    </div>
+
+    <div class="big-metric">
+      <div class="big-metric-label">TOTAL DE SINAPSES ATIVAS</div>
+      <div class="synapse-display" id="synapse-display">--<span style="font-size:11px;color:var(--text-dim)">K syn/s</span></div>
+    </div>
+
+    <div class="big-metric">
+      <div class="big-metric-label" style="margin-bottom:4px;">ATIVIDADE NEURAL GLOBAL</div>
+      <div class="waveform" id="waveform"></div>
+    </div>
+
+    <div style="margin-bottom:14px;">
+      <div class="big-metric-label" style="margin-bottom:6px;">USO AGREGADO</div>
+      <div class="agg-bar-row">
+        <div class="agg-bar-header"><span class="agg-bar-label" style="color:#FF6060">CPU</span><span class="agg-bar-val" id="g-cpu">--%</span></div>
+        <div class="agg-bar"><div class="agg-fill bar-cpu" id="gb-cpu" style="width:0%"></div></div>
+      </div>
+      <div class="agg-bar-row">
+        <div class="agg-bar-header"><span class="agg-bar-label" style="color:#BF5FFF">RAM</span><span class="agg-bar-val" id="g-ram">--%</span></div>
+        <div class="agg-bar"><div class="agg-fill bar-ram" id="gb-ram" style="width:0%"></div></div>
+      </div>
+      <div class="agg-bar-row">
+        <div class="agg-bar-header"><span class="agg-bar-label" style="color:#0099FF">GPU</span><span class="agg-bar-val" id="g-gpu">--%</span></div>
+        <div class="agg-bar"><div class="agg-fill bar-gpu" id="gb-gpu" style="width:0%"></div></div>
+      </div>
+      <div class="agg-bar-row">
+        <div class="agg-bar-header"><span class="agg-bar-label" style="color:#00CC44">DISCO</span><span class="agg-bar-val" id="g-disk">--%</span></div>
+        <div class="agg-bar"><div class="agg-fill bar-disk" id="gb-disk" style="width:0%"></div></div>
+      </div>
+    </div>
+
+    <div class="section-title">◈ Log do Sistema</div>
+    <div id="sys-log"></div>
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════════
+//  WEBSOCKET CONNECTION - DADOS REAIS DA SELENE (NOVO!)
+// ════════════════════════════════════════════════════════════════
+let socket = null;
+let useSimulatedData = false;
+let lastRealData = null;
+
+function connectWebSocket() {
+  const wsUrl = `ws://${window.location.hostname}:3030/ws`;
+  console.log('Conectando ao WebSocket:', wsUrl);
+  
+  socket = new WebSocket(wsUrl);
+  
+  socket.onopen = function() {
+    console.log('✅ Conectado à Selene!');
+    document.getElementById('connection-led').style.background = '#00FF88';
+    document.getElementById('connection-status').textContent = 'ONLINE';
+    document.getElementById('connection-led').style.boxShadow = '0 0 8px #00FF88';
+    useSimulatedData = false;
+    addChatMsg('system', 'NEXUS · SISTEMA', '✅ Conexão estabelecida com Selene. Recebendo dados neurais em tempo real.');
+  };
+  
+  socket.onmessage = function(event) {
+    try {
+      const data = JSON.parse(event.data);
+      lastRealData = data;
+      updateMetricsWithRealData(data);
+    } catch (e) {
+      console.error('Erro ao processar dados:', e);
+    }
+  };
+  
+  socket.onclose = function() {
+    console.log('❌ Desconectado da Selene');
+    document.getElementById('connection-led').style.background = 'var(--crimson-bright)';
+    document.getElementById('connection-status').textContent = 'OFFLINE (SIMULADO)';
+    document.getElementById('connection-led').style.boxShadow = '0 0 8px var(--crimson-bright)';
+    useSimulatedData = true;
+    addChatMsg('system', 'NEXUS · SISTEMA', '⚠️ Conexão perdida. Usando dados simulados para visualização.');
+    
+    // Tenta reconectar a cada 5 segundos
+    setTimeout(connectWebSocket, 5000);
+  };
+  
+  socket.onerror = function(error) {
+    console.error('Erro no WebSocket:', error);
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+//  CHEMICAL PROFILES PER NUCLEUS (IGUAL AO ORIGINAL)
+// ════════════════════════════════════════════════════════════════
+const NUCLEUS_CHEM = {
+  frontal: [
+    { key:'dopa', label:'DOPAMINA',      cls:'ch-dopa', fill:'fill-dopa', val:72 },
+    { key:'nora', label:'NORADRENALINA', cls:'ch-nora', fill:'fill-nora', val:58 },
+    { key:'sero', label:'SEROTONINA',    cls:'ch-sero', fill:'fill-sero', val:65 },
+    { key:'glut', label:'GLUTAMATO',     cls:'ch-glut', fill:'fill-glut', val:80 },
+    { key:'gaba', label:'GABA',          cls:'ch-gaba', fill:'fill-gaba', val:55 },
+  ],
+  parietal: [
+    { key:'glut', label:'GLUTAMATO',     cls:'ch-glut', fill:'fill-glut', val:74 },
+    { key:'gaba', label:'GABA',          cls:'ch-gaba', fill:'fill-gaba', val:60 },
+    { key:'acet', label:'ACETILCOLINA',  cls:'ch-acet', fill:'fill-acet', val:48 },
+    { key:'nora', label:'NORADRENALINA', cls:'ch-nora', fill:'fill-nora', val:42 },
+  ],
+  occipital: [
+    { key:'glut', label:'GLUTAMATO',     cls:'ch-glut', fill:'fill-glut', val:85 },
+    { key:'gaba', label:'GABA',          cls:'ch-gaba', fill:'fill-gaba', val:70 },
+    { key:'acet', label:'ACETILCOLINA',  cls:'ch-acet', fill:'fill-acet', val:50 },
+  ],
+  temporal: [
+    { key:'glut', label:'GLUTAMATO',     cls:'ch-glut', fill:'fill-glut', val:78 },
+    { key:'gaba', label:'GABA',          cls:'ch-gaba', fill:'fill-gaba', val:62 },
+    { key:'dopa', label:'DOPAMINA',      cls:'ch-dopa', fill:'fill-dopa', val:55 },
+    { key:'sero', label:'SEROTONINA',    cls:'ch-sero', fill:'fill-sero', val:60 },
+    { key:'acet', label:'ACETILCOLINA',  cls:'ch-acet', fill:'fill-acet', val:68 },
+  ],
+  cerebelo: [
+    { key:'gaba', label:'GABA',          cls:'ch-gaba', fill:'fill-gaba', val:88 },
+    { key:'glut', label:'GLUTAMATO',     cls:'ch-glut', fill:'fill-glut', val:76 },
+    { key:'nora', label:'NORADRENALINA', cls:'ch-nora', fill:'fill-nora', val:38 },
+    { key:'acet', label:'ACETILCOLINA',  cls:'ch-acet', fill:'fill-acet', val:42 },
+  ],
+  hipocampo: [
+    { key:'glut', label:'GLUTAMATO',     cls:'ch-glut', fill:'fill-glut', val:82 },
+    { key:'gaba', label:'GABA',          cls:'ch-gaba', fill:'fill-gaba', val:58 },
+    { key:'acet', label:'ACETILCOLINA',  cls:'ch-acet', fill:'fill-acet', val:75 },
+    { key:'sero', label:'SEROTONINA',    cls:'ch-sero', fill:'fill-sero', val:66 },
+    { key:'enke', label:'ENCEFALINA',    cls:'ch-enke', fill:'fill-enke', val:40 },
+  ],
+  limbico: [
+    { key:'dopa', label:'DOPAMINA',      cls:'ch-dopa', fill:'fill-dopa', val:68 },
+    { key:'sero', label:'SEROTONINA',    cls:'ch-sero', fill:'fill-sero', val:55 },
+    { key:'cort', label:'CORTISOL',      cls:'ch-cort', fill:'fill-cort', val:82 },
+    { key:'oxyt', label:'OCITOCINA',     cls:'ch-oxyt', fill:'fill-oxyt', val:44 },
+    { key:'nora', label:'NORADRENALINA', cls:'ch-nora', fill:'fill-nora', val:70 },
+    { key:'enke', label:'ENCEFALINA',    cls:'ch-enke', fill:'fill-enke', val:50 },
+  ],
+  caloso: [
+    { key:'glut', label:'GLUTAMATO',     cls:'ch-glut', fill:'fill-glut', val:71 },
+    { key:'gaba', label:'GABA',          cls:'ch-gaba', fill:'fill-gaba', val:65 },
+    { key:'acet', label:'ACETILCOLINA',  cls:'ch-acet', fill:'fill-acet', val:55 },
+  ],
+};
+
+// Spike ranges (spikes/s)
+const SPIKE_RANGES = {
+  frontal:   [20, 80],
+  parietal:  [15, 70],
+  occipital: [30, 120],
+  temporal:  [18, 75],
+  cerebelo:  [50, 200],
+  hipocampo: [5,  40],
+  limbico:   [10, 60],
+  caloso:    [40, 150],
+};
+
+const REGIONS = [
+  { id:'frontal',   name:'FRONTAL',      short:'FR' },
+  { id:'parietal',  name:'PARIETAL',     short:'PA' },
+  { id:'occipital', name:'OCCIPITAL',    short:'OC' },
+  { id:'temporal',  name:'TEMPORAL',     short:'TM' },
+  { id:'cerebelo',  name:'CEREBELO',     short:'CB' },
+  { id:'hipocampo', name:'HIPOCAMPO',    short:'HP' },
+  { id:'limbico',   name:'LÍMBICO',      short:'LB' },
+  { id:'caloso',    name:'CORPO CALOSO', short:'CC' },
+];
+
+const rand  = (lo, hi) => Math.floor(Math.random()*(hi-lo+1))+lo;
+const randF = (lo, hi, d=1) => +(lo+Math.random()*(hi-lo)).toFixed(d);
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+// Build initial procData
+let procData = REGIONS.map(r => ({
+  ...r,
+  temp:   rand(32, 72),
+  cpu:    rand(20, 95),
+  ram:    rand(20, 80),
+  gpu:    rand(30, 90),
+  disk:   rand(10, 60),
+  freq:   randF(2.4, 4.8),
+  lat:    rand(8, 24),
+  spikes: rand(...SPIKE_RANGES[r.id]),
+  chem:   NUCLEUS_CHEM[r.id].map(c => ({ ...c })),
+}));
+
+let totalSyn = randF(100, 200);
+
+// ════════════════════════════════════════════════════════════════
+//  FUNÇÃO PARA ATUALIZAR COM DADOS REAIS
+// ════════════════════════════════════════════════════════════════
+function updateMetricsWithRealData(data) {
+  if (!data || !data.regions) return;
+  
+  data.regions.forEach(regionData => {
+    const proc = procData.find(p => p.id === regionData.id);
+    if (proc) {
+      proc.temp = regionData.temp || proc.temp;
+      proc.cpu = regionData.cpu || proc.cpu;
+      proc.ram = regionData.ram || proc.ram;
+      proc.gpu = regionData.gpu || proc.gpu;
+      proc.disk = regionData.disk || proc.disk;
+      proc.freq = regionData.freq || proc.freq;
+      proc.lat = regionData.lat || proc.lat;
+      proc.spikes = regionData.spikes || proc.spikes;
+      
+      if (regionData.chem && regionData.chem.length > 0) {
+        regionData.chem.forEach(chemData => {
+          const chem = proc.chem.find(c => c.key === chemData.key);
+          if (chem) chem.val = chemData.val;
+        });
+      }
+    }
+  });
+  
+  if (data.global) {
+    document.getElementById('freq-display').innerHTML = 
+      (data.global.freq_avg || 100).toFixed(1) + '<span class="freq-unit">Hz</span>';
+    document.getElementById('lat-display').innerHTML = 
+      (data.global.lat_avg || 10).toFixed(1) + '<span style="font-size:12px;color:var(--text-dim)"> ms</span>';
+    
+    const syn = data.global.total_synapses || 150;
+    document.getElementById('synapse-display').innerHTML = 
+      syn.toFixed(1) + '<span style="font-size:11px;color:var(--text-dim)">K syn/s</span>';
+    
+    updateGlobalBars(
+      data.global.cpu_avg || 50,
+      data.global.ram_avg || 40,
+      data.global.gpu_avg || 30,
+      data.global.disk_avg || 20
+    );
+  }
+  
+  updateUIFromProcData();
+}
+
+function updateGlobalBars(cpu, ram, gpu, disk) {
+  document.getElementById('g-cpu').textContent = Math.round(cpu) + '%';
+  document.getElementById('gb-cpu').style.width = cpu + '%';
+  document.getElementById('g-ram').textContent = Math.round(ram) + '%';
+  document.getElementById('gb-ram').style.width = ram + '%';
+  document.getElementById('g-gpu').textContent = Math.round(gpu) + '%';
+  document.getElementById('gb-gpu').style.width = gpu + '%';
+  document.getElementById('g-disk').textContent = Math.round(disk) + '%';
+  document.getElementById('gb-disk').style.width = disk + '%';
+}
+
+function updateUIFromProcData() {
+  const $  = id => document.getElementById(id);
+  const sv = (id, v) => { const el=$(id); if(el) el.textContent=v; };
+  const sw = (id, v) => { const el=$(id); if(el) el.style.width=v+'%'; };
+
+  procData.forEach(p => {
+    sv(`temp-${p.id}`,   Math.round(p.temp)+'°C');
+    sv(`spikes-${p.id}`, Math.round(p.spikes));
+    sw(`cpu-${p.id}`,  p.cpu);  sv(`cv-cpu-${p.id}`,  Math.round(p.cpu)+'%');
+    sw(`ram-${p.id}`,  p.ram);  sv(`cv-ram-${p.id}`,  Math.round(p.ram)+'%');
+    sw(`gpu-${p.id}`,  p.gpu);  sv(`cv-gpu-${p.id}`,  Math.round(p.gpu)+'%');
+    sw(`disk-${p.id}`, p.disk); sv(`cv-disk-${p.id}`, Math.round(p.disk)+'%');
+    p.chem.forEach(c => {
+      sw(`cb-${p.id}-${c.key}`, c.val);
+      sv(`cv-${p.id}-${c.key}`, Math.round(c.val)+'%');
+    });
+  });
+}
+
+// ════════════════════════════════════════════════════════════════
+//  RENDER
+// ════════════════════════════════════════════════════════════════
+function renderProcs() {
+  document.getElementById('proc-cards').innerHTML = procData.map((p, i) => {
+    const chemHTML = p.chem.map(c => `
+      <div class="chem-bar-item">
+        <div class="chem-header">
+          <span class="chem-name ${c.cls}">${c.label}</span>
+          <span class="chem-val" id="cv-${p.id}-${c.key}">${Math.round(c.val)}%</span>
+        </div>
+        <div class="chem-track">
+          <div class="chem-fill ${c.fill}" id="cb-${p.id}-${c.key}" style="width:${c.val}%"></div>
+        </div>
+      </div>`).join('');
+
+    return `
+    <div class="processor-card ${i===0?'active':''}" id="card-${p.id}" onclick="selectProc('${p.id}')">
+      <div class="proc-header">
+        <span class="proc-name">${p.name}</span>
+        <span class="proc-id">P${String(i).padStart(2,'0')}</span>
+      </div>
+      <div class="proc-top-row">
+        <div class="proc-temp" id="temp-${p.id}">${Math.round(p.temp)}°C</div>
+        <div class="spikes-box">
+          <span class="spikes-label">SPIKES/S</span>
+          <span class="spikes-val" id="spikes-${p.id}">${Math.round(p.spikes)}</span><span class="spikes-unit"> Hz</span>
+        </div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-mini">
+          <div class="metric-label">CPU</div>
+          <div class="mini-bar"><div class="mini-bar-fill bar-cpu" id="cpu-${p.id}" style="width:${p.cpu}%"></div></div>
+          <div class="metric-val" id="cv-cpu-${p.id}">${Math.round(p.cpu)}%</div>
+        </div>
+        <div class="metric-mini">
+          <div class="metric-label">RAM</div>
+          <div class="mini-bar"><div class="mini-bar-fill bar-ram" id="ram-${p.id}" style="width:${p.ram}%"></div></div>
+          <div class="metric-val" id="cv-ram-${p.id}">${Math.round(p.ram)}%</div>
+        </div>
+        <div class="metric-mini">
+          <div class="metric-label">GPU</div>
+          <div class="mini-bar"><div class="mini-bar-fill bar-gpu" id="gpu-${p.id}" style="width:${p.gpu}%"></div></div>
+          <div class="metric-val" id="cv-gpu-${p.id}">${Math.round(p.gpu)}%</div>
+        </div>
+        <div class="metric-mini">
+          <div class="metric-label">DISK</div>
+          <div class="mini-bar"><div class="mini-bar-fill bar-disk" id="disk-${p.id}" style="width:${p.disk}%"></div></div>
+          <div class="metric-val" id="cv-disk-${p.id}">${Math.round(p.disk)}%</div>
+        </div>
+      </div>
+      <div class="proc-footer">${p.freq} GHz &nbsp;·&nbsp; ${p.lat} ms lat</div>
+      <div class="nucleus-chem">
+        <div class="chem-title">◆ Neuroquímica do Núcleo</div>
+        ${chemHTML}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function selectProc(id) {
+  document.querySelectorAll('.processor-card').forEach(c => c.classList.remove('active'));
+  document.getElementById('card-'+id)?.classList.add('active');
+}
+
+// ════════════════════════════════════════════════════════════════
+//  BRAIN TOOLTIP
+// ════════════════════════════════════════════════════════════════
+function activateRegion(id) {
+  const proc = procData.find(p => p.id === id);
+  const tip  = document.getElementById('brain-tooltip');
+  if (proc) {
+    tip.textContent = `${proc.name} · ${Math.round(proc.temp)}°C · ${Math.round(proc.spikes)} spk/s`;
+    tip.classList.add('visible');
+    setTimeout(() => tip.classList.remove('visible'), 2500);
+    selectProc(id);
+    document.getElementById('card-'+id)?.scrollIntoView({ behavior:'smooth', block:'nearest' });
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  WAVEFORM
+// ════════════════════════════════════════════════════════════════
+function renderWaveform() {
+  document.getElementById('waveform').innerHTML =
+    Array.from({length:32},(_,i)=>
+      `<div class="wave-bar" style="animation-delay:${(i*0.05).toFixed(2)}s;height:${rand(5,34)}px"></div>`
+    ).join('');
+}
+
+// ════════════════════════════════════════════════════════════════
+//  CLOCK
+// ════════════════════════════════════════════════════════════════
+const startTime = Date.now();
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent = now.toLocaleTimeString('pt-BR',{hour12:false});
+  const e = Math.floor((Date.now()-startTime)/1000);
+  document.getElementById('uptime').textContent =
+    [Math.floor(e/3600), Math.floor((e%3600)/60), e%60].map(v=>String(v).padStart(2,'0')).join(':');
+}
+
+// ════════════════════════════════════════════════════════════════
+//  LIVE UPDATE (fallback simulado)
+// ════════════════════════════════════════════════════════════════
+function updateMetricsSimulated() {
+  if (!useSimulatedData) return;
+  
+  procData = procData.map(p => {
+    const [sMin, sMax] = SPIKE_RANGES[p.id];
+    return {
+      ...p,
+      temp:   clamp(p.temp  + (Math.random()-0.5)*3,   28, 95),
+      cpu:    clamp(p.cpu   + (Math.random()-0.5)*8,    5,  99),
+      ram:    clamp(p.ram   + (Math.random()-0.5)*4,   10,  99),
+      gpu:    clamp(p.gpu   + (Math.random()-0.5)*6,   10,  99),
+      disk:   clamp(p.disk  + (Math.random()-0.5)*2,    5,  95),
+      lat:    clamp(p.lat   + (Math.random()-0.5)*3,    3,  50),
+      freq:   +clamp(p.freq + (Math.random()-0.5)*0.2, 1.8, 5.2).toFixed(1),
+      spikes: clamp(p.spikes + (Math.random()-0.5)*14, sMin, sMax),
+      chem:   p.chem.map(c => ({
+        ...c, val: clamp(c.val + (Math.random()-0.47)*4, 2, 100),
+      })),
+    };
+  });
+
+  updateUIFromProcData();
+
+  const avg = key => procData.reduce((s,p)=>s+p[key],0)/procData.length;
+  const aCpu = Math.round(avg('cpu')), aRam = Math.round(avg('ram'));
+  const aGpu = Math.round(avg('gpu')), aDisk= Math.round(avg('disk'));
+  const aFreq = avg('freq').toFixed(1), aLat = Math.round(avg('lat'));
+
+  document.getElementById('g-cpu').textContent = aCpu+'%';
+  document.getElementById('gb-cpu').style.width = aCpu+'%';
+  document.getElementById('g-ram').textContent = aRam+'%';
+  document.getElementById('gb-ram').style.width = aRam+'%';
+  document.getElementById('g-gpu').textContent = aGpu+'%';
+  document.getElementById('gb-gpu').style.width = aGpu+'%';
+  document.getElementById('g-disk').textContent = aDisk+'%';
+  document.getElementById('gb-disk').style.width = aDisk+'%';
+  
+  document.getElementById('freq-display').innerHTML = aFreq+'<span class="freq-unit">GHz</span>';
+  document.getElementById('lat-display').innerHTML = aLat+'<span style="font-size:12px;color:var(--text-dim)"> ms</span>';
+
+  totalSyn = clamp(totalSyn + (Math.random()-0.45)*9, 60, 380);
+  const synStr = totalSyn >= 1000
+    ? (totalSyn/1000).toFixed(2)+'M'
+    : totalSyn.toFixed(1)+'K';
+  document.getElementById('synapse-display').innerHTML = synStr+'<span style="font-size:11px;color:var(--text-dim)"> syn/s</span>';
+
+  if (Math.random() < 0.3) addLog();
+}
+
+// ════════════════════════════════════════════════════════════════
+//  LOG
+// ════════════════════════════════════════════════════════════════
+const LOG_MSGS = [
+  ['ok',   'Sinapse estável detectada'],
+  ['ok',   'Checksum neural OK'],
+  ['ok',   'Calibração concluída'],
+  ['ok',   'Glutamato normalizado'],
+  ['warn', 'Pico de frequência +0.3GHz'],
+  ['warn', 'RAM próxima do limite'],
+  ['warn', 'Temperatura elevada'],
+  ['warn', 'Dopamina em queda'],
+  ['warn', 'GABA abaixo do limiar'],
+  ['err',  'Timeout sináptico'],
+  ['err',  'Spike burst anormal'],
+  ['err',  'Cortisol crítico'],
+];
+const LC = { ok:'log-level-ok', warn:'log-level-warn', err:'log-level-err' };
+const LL = { ok:'OK&nbsp;', warn:'WRN', err:'ERR' };
+
+function addLog() {
+  const log = document.getElementById('sys-log');
+  const [type, msg] = LOG_MSGS[rand(0, LOG_MSGS.length-1)];
+  const t = new Date().toLocaleTimeString('pt-BR',{hour12:false}).slice(0,5);
+  const r = REGIONS[rand(0,REGIONS.length-1)].short;
+  const item = document.createElement('div');
+  item.className = 'log-item'; item.style.animation = 'msg-in 0.3s ease';
+  item.innerHTML = `<span class="log-time">${t}</span><span class="${LC[type]}">${LL[type]}</span><span class="log-msg">${r}: ${msg}</span>`;
+  log.prepend(item);
+  while (log.children.length > 8) log.removeChild(log.lastChild);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  CHAT
+// ════════════════════════════════════════════════════════════════
+const RESPONSES = [
+  'Analisando padrão neural... Resposta em processamento.',
+  'Sinal recebido. Todos os núcleos confirmam recepção.',
+  'FRONTAL em alta atividade. Dopamina acima do baseline.',
+  'HIPOCAMPO consolidando memória. Acetilcolina em 75%.',
+  'CEREBELO calibrando resposta motora. GABA em 88% — estável.',
+  'Alerta: Serotonina em declínio no núcleo LÍMBICO.',
+  'CORPO CALOSO sincronizado. Glutamato bidirecional estável.',
+  'OCCIPITAL detectou burst de 118 spk/s. Estimulação visual intensa.',
+  'Glutamato no TEMPORAL acima do limiar. Monitorando excitotoxicidade.',
+  'HIPOCAMPO: Encefalina baixa. Módulo de memória afetiva em risco.',
+  'Noradrenalina no FRONTAL elevada. Estado de alerta aumentado.',
+  `Sinapses totais: ${(142+rand(0,50)).toFixed(1)}K/s. Sistema dentro do esperado.`,
+];
+
+function sendMessage() {
+  const input = document.getElementById('chat-input');
+  const msg = input.value.trim();
+  if (!msg) return;
+  addChatMsg('user', 'OPERADOR', msg);
+  input.value = '';
+  
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: 'chat', message: msg }));
+  }
+  
+  setTimeout(() => addChatMsg('system','NEXUS · IA', RESPONSES[rand(0,RESPONSES.length-1)]),
+    700 + Math.random()*600);
+}
+
+function addChatMsg(type, sender, text) {
+  const msgs = document.getElementById('chat-messages');
+  const div = document.createElement('div');
+  div.className = 'chat-msg';
+  div.innerHTML = `
+    <div class="msg-avatar ${type}">${type==='system'?'NX':'OP'}</div>
+    <div class="msg-body">
+      <div class="msg-sender">${sender}</div>
+      <div class="msg-text msg-chat ${type}">${text}</div>
+    </div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+const MIC = `<svg width="10" height="12" viewBox="0 0 10 12" fill="currentColor"><rect x="3" y="0" width="4" height="7" rx="2"/><path d="M1 6 Q1 10 5 10 Q9 10 9 6" stroke="currentColor" stroke-width="1.2" fill="none"/><line x1="5" y1="10" x2="5" y2="12" stroke="currentColor" stroke-width="1.2"/></svg>`;
+let voiceActive = false;
+
+function toggleVoice() {
+  voiceActive = !voiceActive;
+  const btn = document.getElementById('voice-btn');
+  btn.classList.toggle('recording', voiceActive);
+  btn.innerHTML = voiceActive ? MIC+' ■ PARAR' : MIC+' VOZ';
+  if (voiceActive) {
+    setTimeout(() => {
+      if (!voiceActive) return;
+      voiceActive = false; btn.classList.remove('recording'); btn.innerHTML = MIC+' VOZ';
+      addChatMsg('user','OPERADOR [VOZ]','[Comando de voz capturado]');
+      setTimeout(()=>addChatMsg('system','NEXUS · IA',RESPONSES[rand(0,RESPONSES.length-1)]),700);
+    }, 3000);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  HOLOGRAPHIC 3D BRAIN (COMPLETO DO ORIGINAL)
+// ════════════════════════════════════════════════════════════════
+const BC = document.getElementById('brain-canvas');
+const CTX = BC.getContext('2d');
+const W = BC.width, H = BC.height;
+
+const GAP = 14;
+const HW = (W - GAP) / 2;
+const LCX = HW / 2;
+const RCX = HW + GAP + HW / 2;
+const BCY = H * 0.48;
+
+const regionGlow = {};
+['frontal','parietal','occipital','temporal','cerebelo','hipocampo','limbico','caloso'].forEach(id => {
+  regionGlow[id] = 0.25 + Math.random()*0.3;
+});
+
+function activityRGB(g) {
+  let r, gr2, b;
+  if (g < 0.5) {
+    const t = g * 2;
+    r  = Math.round(60  + 140*t);
+    gr2= 0;
+    b  = Math.round(160 + 20*t);
+  } else {
+    const t = (g-0.5)*2;
+    r  = Math.round(200 + 55*t);
+    gr2= Math.round(30*t);
+    b  = Math.round(180 - 150*t);
+  }
+  return [r, gr2, b];
+}
+
+function brainOuterPath(c, cx, cy, flip=1) {
+  const f = flip;
+  c.beginPath();
+  c.moveTo(cx + f*(-110), cy - 130);
+  c.bezierCurveTo(cx+f*(-55), cy-200, cx+f*(55), cy-200, cx+f*(110), cy-140);
+  c.bezierCurveTo(cx+f*(145), cy-80,  cx+f*(150), cy+10,  cx+f*(135), cy+70);
+  c.bezierCurveTo(cx+f*(120), cy+115, cx+f*(90),  cy+140, cx+f*(55),  cy+155);
+  c.bezierCurveTo(cx+f*(10),  cy+168, cx+f*(-30), cy+165, cx+f*(-55), cy+150);
+  c.bezierCurveTo(cx+f*(-85), cy+135, cx+f*(-105),cy+100, cx+f*(-115),cy+55);
+  c.bezierCurveTo(cx+f*(-125),cy+10,  cx+f*(-135),cy-50,  cx+f*(-125),cy-95);
+  c.bezierCurveTo(cx+f*(-120),cy-118, cx+f*(-115),cy-132, cx+f*(-110),cy-130);
+  c.closePath();
+}
+
+function cerebelPath(c, cx, cy, flip=1) {
+  const f = flip;
+  c.beginPath();
+  c.moveTo(cx+f*(40), cy+120);
+  c.bezierCurveTo(cx+f*(70), cy+105, cx+f*(115),cy+110, cx+f*(130),cy+130);
+  c.bezierCurveTo(cx+f*(140),cy+148, cx+f*(130),cy+185, cx+f*(100),cy+205);
+  c.bezierCurveTo(cx+f*(70), cy+218, cx+f*(30), cy+215, cx+f*(10), cy+200);
+  c.bezierCurveTo(cx+f*(-5), cy+188, cx+f*(5),  cy+155, cx+f*(20), cy+138);
+  c.bezierCurveTo(cx+f*(30), cy+128, cx+f*(38), cy+122, cx+f*(40), cy+120);
+  c.closePath();
+}
+
+function frontalPath(c, cx, cy, flip=1) {
+  const f = flip;
+  c.beginPath();
+  c.moveTo(cx+f*(-110), cy-128);
+  c.bezierCurveTo(cx+f*(-90), cy-185, cx+f*(-30), cy-198, cx+f*(20), cy-195);
+  c.bezierCurveTo(cx+f*(20), cy-150, cx+f*(15),  cy-100, cx+f*(5),  cy-60);
+  c.bezierCurveTo(cx+f*(-10), cy-30, cx+f*(-40), cy-10, cx+f*(-70), cy+5);
+  c.bezierCurveTo(cx+f*(-100),cy+15, cx+f*(-118),cy+0,  cx+f*(-120),cy-30);
+  c.bezierCurveTo(cx+f*(-125),cy-70, cx+f*(-120),cy-105,cx+f*(-110),cy-128);
+  c.closePath();
+}
+
+function parietalPath(c, cx, cy, flip=1) {
+  const f = flip;
+  c.beginPath();
+  c.moveTo(cx+f*(20), cy-195);
+  c.bezierCurveTo(cx+f*(70), cy-195, cx+f*(120),cy-165, cx+f*(140),cy-120);
+  c.bezierCurveTo(cx+f*(148),cy-90,  cx+f*(148),cy-50,  cx+f*(140),cy-10);
+  c.bezierCurveTo(cx+f*(100),cy-5,   cx+f*(50), cy-12,  cx+f*(10), cy-30);
+  c.bezierCurveTo(cx+f*(5),  cy-60,  cx+f*(15), cy-120, cx+f*(20), cy-195);
+  c.closePath();
+}
+
+function occipitalPath(c, cx, cy, flip=1) {
+  const f = flip;
+  c.beginPath();
+  c.moveTo(cx+f*(140), cy-12);
+  c.bezierCurveTo(cx+f*(148),cy+20,  cx+f*(148),cy+60,  cx+f*(135),cy+70);
+  c.bezierCurveTo(cx+f*(118),cy+115, cx+f*(88), cy+140, cx+f*(55), cy+155);
+  c.bezierCurveTo(cx+f*(20), cy+165, cx+f*(5),  cy+155, cx+f*(5),  cy+130);
+  c.bezierCurveTo(cx+f*(5),  cy+90,  cx+f*(30), cy+50,  cx+f*(60), cy+20);
+  c.bezierCurveTo(cx+f*(90), cy-5,   cx+f*(115),cy-10,  cx+f*(140),cy-12);
+  c.closePath();
+}
+
+function temporalPath(c, cx, cy, flip=1) {
+  const f = flip;
+  c.beginPath();
+  c.moveTo(cx+f*(-70), cy+5);
+  c.bezierCurveTo(cx+f*(-40), cy-10, cx+f*(10), cy-28, cx+f*(60), cy+20);
+  c.bezierCurveTo(cx+f*(30), cy+52,  cx+f*(5),  cy+90,  cx+f*(5),  cy+130);
+  c.bezierCurveTo(cx+f*(-30), cy+165,cx+f*(-60), cy+150,cx+f*(-58), cy+120);
+  c.bezierCurveTo(cx+f*(-56), cy+90, cx+f*(-50), cy+60, cx+f*(-65), cy+40);
+  c.bezierCurveTo(cx+f*(-78), cy+25, cx+f*(-80), cy+12, cx+f*(-70), cy+5);
+  c.closePath();
+}
+
+function hippocampusPath(c, cx, cy, flip=1) {
+  const f = flip;
+  c.beginPath();
+  c.moveTo(cx+f*(-25), cy+40);
+  c.bezierCurveTo(cx+f*(-5),  cy+30, cx+f*(20), cy+38, cx+f*(28), cy+58);
+  c.bezierCurveTo(cx+f*(32), cy+78,  cx+f*(22), cy+98, cx+f*(5),  cy+105);
+  c.bezierCurveTo(cx+f*(-15), cy+110,cx+f*(-32), cy+98, cx+f*(-35),cy+78);
+  c.bezierCurveTo(cx+f*(-38), cy+58, cx+f*(-35), cy+46, cx+f*(-25),cy+40);
+  c.closePath();
+}
+
+function limbicPath(c, cx, cy, flip=1) {
+  const f = flip;
+  c.beginPath();
+  c.moveTo(cx+f*(-55), cy-18);
+  c.bezierCurveTo(cx+f*(-30), cy-55, cx+f*(10), cy-62, cx+f*(40), cy-50);
+  c.bezierCurveTo(cx+f*(65), cy-40,  cx+f*(72), cy-15, cx+f*(65), cy+5);
+  c.bezierCurveTo(cx+f*(55), cy+22,  cx+f*(30), cy+28, cx+f*(5),  cy+22);
+  c.bezierCurveTo(cx+f*(-20), cy+16, cx+f*(-45), cy+5, cx+f*(-55),cy-18);
+  c.closePath();
+}
+
+function calosoPath(c, cx, cy, flip=1) {
+  const f = flip;
+  c.beginPath();
+  c.moveTo(cx+f*(-48), cy-30);
+  c.bezierCurveTo(cx+f*(-20), cy-52, cx+f*(25), cy-52, cx+f*(52), cy-36);
+  c.bezierCurveTo(cx+f*(55), cy-28,  cx+f*(52), cy-20, cx+f*(40), cy-16);
+  c.bezierCurveTo(cx+f*(15), cy-12,  cx+f*(-15),cy-12, cx+f*(-40),cy-18);
+  c.bezierCurveTo(cx+f*(-50), cy-22, cx+f*(-52),cy-28, cx+f*(-48),cy-30);
+  c.closePath();
+}
+
+function drawSulciLateral(c, cx, cy, flip=1, alpha=0.7) {
+  const f = flip;
+  c.save();
+  c.globalAlpha = alpha;
+  c.lineCap = 'round'; c.lineJoin = 'round';
+
+  c.strokeStyle = 'rgba(20,0,40,0.7)'; c.lineWidth = 2.2;
+  c.beginPath();
+  c.moveTo(cx+f*(22), cy-192);
+  c.bezierCurveTo(cx+f*(15), cy-160, cx+f*(8), cy-120, cx+f*(5), cy-62);
+  c.stroke();
+
+  c.lineWidth = 2.5;
+  c.beginPath();
+  c.moveTo(cx+f*(-108), cy-20);
+  c.bezierCurveTo(cx+f*(-70), cy-30, cx+f*(-30),cy-35, cx+f*(5),cy-28);
+  c.bezierCurveTo(cx+f*(40), cy-20,  cx+f*(70), cy-5,  cx+f*(65),cy+20);
+  c.stroke();
+
+  c.lineWidth = 1.5; c.globalAlpha = alpha*0.75;
+  c.beginPath();
+  c.moveTo(cx+f*(-90), cy+22);
+  c.bezierCurveTo(cx+f*(-55), cy+15, cx+f*(-20),cy+15, cx+f*(18),cy+25);
+  c.bezierCurveTo(cx+f*(45), cy+35,  cx+f*(55), cy+55, cx+f*(45),cy+75);
+  c.stroke();
+
+  c.lineWidth = 1.4; c.globalAlpha = alpha*0.6;
+  c.beginPath();
+  c.moveTo(cx+f*(-95), cy-120);
+  c.bezierCurveTo(cx+f*(-85), cy-160, cx+f*(-55),cy-180, cx+f*(-20),cy-185);
+  c.stroke();
+
+  c.beginPath();
+  c.moveTo(cx+f*(-100), cy-60);
+  c.bezierCurveTo(cx+f*(-75), cy-80,  cx+f*(-40),cy-85, cx+f*(-10),cy-80);
+  c.stroke();
+
+  c.lineWidth = 1.3; c.globalAlpha = alpha*0.55;
+  c.beginPath();
+  c.moveTo(cx+f*(42), cy-188);
+  c.bezierCurveTo(cx+f*(35), cy-150, cx+f*(30),cy-110, cx+f*(35),cy-65);
+  c.stroke();
+
+  c.beginPath();
+  c.moveTo(cx+f*(40), cy-160);
+  c.bezierCurveTo(cx+f*(75), cy-140, cx+f*(105),cy-110, cx+f*(118),cy-75);
+  c.stroke();
+
+  c.lineWidth = 1.2; c.globalAlpha = alpha*0.45;
+  c.beginPath(); c.moveTo(cx+f*(75), cy+50);  c.bezierCurveTo(cx+f*(100),cy+30, cx+f*(130),cy+25, cx+f*(142),cy+45); c.stroke();
+  c.beginPath(); c.moveTo(cx+f*(60), cy+80);  c.bezierCurveTo(cx+f*(90), cy+65, cx+f*(120),cy+65, cx+f*(132),cy+80); c.stroke();
+  c.beginPath(); c.moveTo(cx+f*(40), cy+108); c.bezierCurveTo(cx+f*(70), cy+95, cx+f*(100),cy+95, cx+f*(115),cy+108); c.stroke();
+
+  c.lineWidth = 1.1; c.globalAlpha = alpha*0.4;
+  c.beginPath(); c.moveTo(cx+f*(-80), cy+50); c.bezierCurveTo(cx+f*(-45),cy+45, cx+f*(0),cy+50, cx+f*(30),cy+65); c.stroke();
+  c.beginPath(); c.moveTo(cx+f*(-75), cy+78); c.bezierCurveTo(cx+f*(-40),cy+72, cx+f*(0),cy+78, cx+f*(25),cy+95); c.stroke();
+
+  c.lineWidth = 1.0; c.globalAlpha = alpha*0.38;
+  c.beginPath(); c.moveTo(cx+f*(-108), cy-88); c.bezierCurveTo(cx+f*(-80),cy-92, cx+f*(-50),cy-92, cx+f*(-22),cy-85); c.stroke();
+  c.beginPath(); c.moveTo(cx+f*(-110), cy-52); c.bezierCurveTo(cx+f*(-82),cy-58, cx+f*(-55),cy-58, cx+f*(-28),cy-52); c.stroke();
+  c.beginPath(); c.moveTo(cx+f*(-112), cy-18); c.bezierCurveTo(cx+f*(-85),cy-22, cx+f*(-58),cy-22, cx+f*(-35),cy-18); c.stroke();
+
+  c.lineWidth = 1.0; c.globalAlpha = alpha*0.5;
+  const cxC = cx+f*(80), cyC = cy+160;
+  for(let i=0; i<8; i++) {
+    const fy = cyC - 38 + i*11;
+    const fw = 42 - i*4;
+    c.beginPath();
+    c.moveTo(cxC - f*fw, fy);
+    c.bezierCurveTo(cxC - f*fw/2, fy-5, cxC + f*fw/2, fy-5, cxC + f*fw, fy);
+    c.stroke();
+  }
+
+  c.restore();
+}
+
+function brainstemPath(c, cx, cy, flip=1) {
+  const f = flip;
+  c.beginPath();
+  c.moveTo(cx+f*(-18), cy+148);
+  c.bezierCurveTo(cx+f*(-25), cy+168, cx+f*(-28), cy+210, cx+f*(-22), cy+240);
+  c.bezierCurveTo(cx+f*(-18), cy+250, cx+f*(-8),  cy+252, cx+f*(2),  cy+250);
+  c.bezierCurveTo(cx+f*(10),  cy+248, cx+f*(14),  cy+238, cx+f*(12), cy+220);
+  c.bezierCurveTo(cx+f*(8),   cy+200, cx+f*(5),   cy+168, cx+f*(5),  cy+148);
+  c.bezierCurveTo(cx+f*(-4),  cy+145, cx+f*(-12), cy+145, cx+f*(-18),cy+148);
+  c.closePath();
+}
+
+function drawHemisphere(c, cx, cy, flip, glowMap) {
+  const PI2 = Math.PI * 2;
+
+  const ambG = c.createRadialGradient(cx, cy, 0, cx, cy, 185);
+  ambG.addColorStop(0,   'rgba(30,0,80,0.22)');
+  ambG.addColorStop(0.5, 'rgba(15,0,50,0.12)');
+  ambG.addColorStop(1,   'rgba(0,0,0,0)');
+  c.fillStyle = ambG;
+  c.beginPath(); c.ellipse(cx, cy, 190, 220, 0, 0, PI2); c.fill();
+
+  const regions = [
+    { id:'frontal',   pathFn: frontalPath,      label:'FRONTAL',      lx: flip*(-68), ly:-118 },
+    { id:'parietal',  pathFn: parietalPath,     label:'PARIETAL',     lx: flip*(82),  ly:-110 },
+    { id:'occipital', pathFn: occipitalPath,    label:'OCCIPITAL',    lx: flip*(95),  ly: 80  },
+    { id:'temporal',  pathFn: temporalPath,     label:'TEMPORAL',     lx: flip*(-22), ly: 60  },
+    { id:'hipocampo', pathFn: hippocampusPath,  label:'HIPOCAMPO',    lx: flip*(-2),  ly: 72  },
+    { id:'limbico',   pathFn: limbicPath,       label:'LÍMBICO',      lx: flip*(10),  ly:-28  },
+    { id:'caloso',    pathFn: calosoPath,       label:'CORPO CALOSO', lx: flip*(2),   ly:-34  },
+  ];
+
+  regions.forEach(reg => {
+    const g = glowMap[reg.id] || 0.2;
+    const [r, gr2, b] = activityRGB(g);
+    const bx = cx + reg.lx, by = cy + reg.ly;
+    const bloom = c.createRadialGradient(bx, by, 0, bx, by, 90 + g*70);
+    bloom.addColorStop(0,   `rgba(${r},${gr2},${b},${0.18*g})`);
+    bloom.addColorStop(0.4, `rgba(${r},${gr2},${b},${0.08*g})`);
+    bloom.addColorStop(1,   'rgba(0,0,0,0)');
+    c.fillStyle = bloom;
+    c.beginPath(); c.ellipse(bx, by, 120+g*50, 100+g*40, 0, 0, PI2); c.fill();
+  });
+
+  {
+    const g = glowMap['cerebelo'] || 0.2;
+    const [r, gr2, b] = activityRGB(g);
+    cerebelPath(c, cx, cy, flip);
+    const cg = c.createRadialGradient(cx+flip*80, cy+160, 10, cx+flip*80, cy+160, 75);
+    cg.addColorStop(0, `rgba(${Math.min(255,r+40)},${gr2},${Math.min(255,b+20)},0.30)`);
+    cg.addColorStop(0.6,`rgba(${r},${gr2},${b},0.18)`);
+    cg.addColorStop(1, `rgba(${Math.max(0,r-40)},0,${Math.max(0,b-40)},0.08)`);
+    c.fillStyle = cg; c.fill();
+    c.strokeStyle = `rgba(${r},${gr2},${b},${0.45+g*0.45})`;
+    c.lineWidth = 1.5 + g*1.5;
+    c.shadowColor = `rgba(${r},${gr2},${b},${0.5*g})`;
+    c.shadowBlur = 8 + g*18;
+    c.stroke();
+    c.shadowBlur = 0;
+    c.save(); c.globalAlpha = 0.35+g*0.2;
+    const cxC = cx+flip*80, cyC = cy+158;
+    c.strokeStyle = `rgba(${r},${gr2},${b},0.5)`;
+    c.lineWidth = 0.8;
+    for(let i=0;i<9;i++){
+      const fy = cyC-35+i*10; const fw = 38-i*3;
+      c.beginPath(); c.moveTo(cxC-flip*fw, fy);
+      c.bezierCurveTo(cxC-flip*fw/2,fy-4,cxC+flip*fw/2,fy-4,cxC+flip*fw,fy);
+      c.stroke();
+    }
+    c.restore();
+  }
+
+  brainOuterPath(c, cx, cy, flip);
+  const baseG = c.createRadialGradient(cx+flip*(-20), cy-60, 20, cx, cy, 175);
+  baseG.addColorStop(0,   'rgba(40,10,80,0.38)');
+  baseG.addColorStop(0.5, 'rgba(20,5,55,0.25)');
+  baseG.addColorStop(1,   'rgba(5,0,20,0.12)');
+  c.fillStyle = baseG; c.fill();
+
+  c.strokeStyle = 'rgba(140,60,255,0.75)';
+  c.lineWidth = 2.2;
+  c.shadowColor = 'rgba(120,40,255,0.8)';
+  c.shadowBlur = 14;
+  c.stroke();
+  c.shadowBlur = 0;
+
+  brainstemPath(c, cx, cy, flip);
+  const bsg = c.createLinearGradient(cx+flip*(-20), cy+148, cx+flip*5, cy+252);
+  bsg.addColorStop(0, 'rgba(80,20,140,0.55)');
+  bsg.addColorStop(1, 'rgba(40,5,80,0.30)');
+  c.fillStyle = bsg; c.fill();
+  c.strokeStyle = 'rgba(140,60,255,0.6)'; c.lineWidth = 1.8;
+  c.shadowColor = 'rgba(120,40,255,0.5)'; c.shadowBlur = 8;
+  c.stroke(); c.shadowBlur = 0;
+
+  regions.forEach(reg => {
+    const g = glowMap[reg.id] || 0.2;
+    const [r, gr2, b] = activityRGB(g);
+    const bx = cx + reg.lx, by = cy + reg.ly;
+
+    reg.pathFn(c, cx, cy, flip);
+
+    const rg = c.createRadialGradient(bx-flip*12, by-15, 5, bx, by, 95);
+    const baseAlpha = 0.12 + g * 0.30;
+    rg.addColorStop(0,   `rgba(${Math.min(255,r+60)},${Math.min(255,gr2+20)},${Math.min(255,b+30)},${baseAlpha+0.12})`);
+    rg.addColorStop(0.5, `rgba(${r},${gr2},${b},${baseAlpha})`);
+    rg.addColorStop(1,   `rgba(${Math.max(0,r-40)},0,${Math.max(0,b-40)},0)`);
+    c.fillStyle = rg; c.fill();
+
+    c.strokeStyle = `rgba(${r},${gr2},${b},${0.25 + g*0.55})`;
+    c.lineWidth = 0.8 + g * 1.4;
+    c.shadowColor = `rgba(${r},${gr2},${b},${g*0.7})`;
+    c.shadowBlur = 3 + g * 14;
+    c.stroke();
+    c.shadowBlur = 0;
+  });
+
+  drawSulciLateral(c, cx, cy, flip, 0.85);
+
+  brainOuterPath(c, cx, cy, flip);
+  c.save(); c.clip();
+  const spec = c.createRadialGradient(cx+flip*(-55), cy-110, 10, cx+flip*(-20), cy-60, 130);
+  spec.addColorStop(0, 'rgba(200,160,255,0.22)');
+  spec.addColorStop(0.3,'rgba(160,100,255,0.10)');
+  spec.addColorStop(1,  'rgba(100,50,200,0)');
+  c.fillStyle = spec; c.fillRect(0, 0, W, H);
+  const rim = c.createRadialGradient(cx+flip*(132), cy+10, 0, cx+flip*(135), cy+10, 55);
+  rim.addColorStop(0, 'rgba(180,80,255,0.18)');
+  rim.addColorStop(1, 'rgba(180,80,255,0)');
+  c.fillStyle = rim; c.fillRect(0,0,W,H);
+  c.restore();
+
+  brainOuterPath(c, cx, cy, flip);
+  c.strokeStyle = 'rgba(160,80,255,0.65)';
+  c.lineWidth = 1.5;
+  c.shadowColor = 'rgba(180,80,255,0.9)';
+  c.shadowBlur = 16;
+  c.stroke(); c.shadowBlur = 0;
+
+  regions.forEach(reg => {
+    const g = glowMap[reg.id] || 0;
+    if (g < 0.35) return;
+    const [r, gr2, b] = activityRGB(g);
+    const bx = cx + reg.lx, by = cy + reg.ly;
+    const hot = c.createRadialGradient(bx, by, 0, bx, by, 40+g*30);
+    hot.addColorStop(0, `rgba(${r},${gr2},${b},${(g-0.35)*0.55})`);
+    hot.addColorStop(1, `rgba(${r},${gr2},${b},0)`);
+    reg.pathFn(c, cx, cy, flip);
+    c.fillStyle = hot; c.fill();
+    if (g > 0.55 && Math.random() < g*0.5) {
+      const sx = bx + (Math.random()-0.5)*55;
+      const sy = by + (Math.random()-0.5)*40;
+      c.save();
+      c.globalAlpha = Math.random()*g*0.9;
+      c.shadowColor = `rgb(${r},${gr2},${b})`;
+      c.shadowBlur = 10;
+      c.fillStyle = `rgb(${r},${gr2},${b})`;
+      c.beginPath(); c.arc(sx,sy, 1.2+Math.random()*2.2, 0, Math.PI*2); c.fill();
+      c.restore();
+    }
+  });
+
+  {
+    const g = glowMap['cerebelo'] || 0;
+    if (g > 0.55 && Math.random() < g*0.4) {
+      const [r, gr2, b] = activityRGB(g);
+      const sx = cx+flip*80 + (Math.random()-0.5)*50;
+      const sy = cy+160 + (Math.random()-0.5)*35;
+      c.save(); c.globalAlpha = Math.random()*g*0.8;
+      c.shadowColor=`rgb(${r},${gr2},${b})`; c.shadowBlur=8;
+      c.fillStyle=`rgb(${r},${gr2},${b})`;
+      c.beginPath(); c.arc(sx,sy,1.5+Math.random()*2,0,Math.PI*2); c.fill();
+      c.restore();
+    }
+  }
+
+  const allRegions = [...regions, {id:'cerebelo', label:'CEREBELO', lx: flip*(80), ly:160}];
+  allRegions.forEach(reg => {
+    const g = glowMap[reg.id] || 0.2;
+    const [r, gr2, b] = activityRGB(g);
+    const lx = cx + reg.lx, ly = cy + reg.ly;
+    c.save();
+    c.font = `600 7px 'Orbitron', monospace`;
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.shadowColor = `rgba(${r},${gr2},${b},${0.8*g+0.3})`;
+    c.shadowBlur = 6 + g * 16;
+    c.fillStyle = `rgba(255,220,255,${0.45+g*0.55})`;
+    c.fillText(reg.label, lx, ly);
+    c.shadowBlur = 0;
+    c.fillStyle = `rgba(255,240,255,${0.3+g*0.4})`;
+    c.fillText(reg.label, lx, ly);
+    c.restore();
+  });
+}
+
+function drawDivider(c) {
+  const dx = HW + GAP/2;
+  c.save();
+  c.globalAlpha = 0.25;
+  const dg = c.createLinearGradient(dx, 20, dx, H-20);
+  dg.addColorStop(0,   'rgba(155,48,255,0)');
+  dg.addColorStop(0.3, 'rgba(155,48,255,0.8)');
+  dg.addColorStop(0.7, 'rgba(155,48,255,0.8)');
+  dg.addColorStop(1,   'rgba(155,48,255,0)');
+  c.strokeStyle = dg; c.lineWidth = 1;
+  c.setLineDash([4,6]);
+  c.beginPath(); c.moveTo(dx,20); c.lineTo(dx,H-20); c.stroke();
+  c.setLineDash([]);
+
+  c.globalAlpha = 0.4;
+  c.font = "700 8px 'Orbitron', monospace";
+  c.textAlign = 'center'; c.fillStyle = 'rgba(200,150,255,0.8)';
+  c.fillText('HEMISFÉRIO E', LCX, 16);
+  c.fillText('HEMISFÉRIO D', RCX, 16);
+  c.restore();
+}
+
+function drawActivityBar(c) {
+  const barH = 6, barY = H - 18, barX = 20, barW = W - 40;
+  c.save();
+  const bg = c.createLinearGradient(barX, barY, barX+barW, barY);
+  bg.addColorStop(0,   'rgba(60,0,160,0.8)');
+  bg.addColorStop(0.5, 'rgba(200,0,180,0.8)');
+  bg.addColorStop(1,   'rgba(255,30,30,0.8)');
+  c.fillStyle = 'rgba(255,255,255,0.05)';
+  c.beginPath(); c.roundRect(barX, barY, barW, barH, 3); c.fill();
+  c.fillStyle = bg;
+  c.shadowColor = 'rgba(180,0,255,0.5)'; c.shadowBlur = 8;
+  c.beginPath(); c.roundRect(barX, barY, barW, barH, 3); c.fill();
+  c.shadowBlur = 0;
+  c.font = "7px 'Share Tech Mono', monospace";
+  c.textAlign = 'left';  c.fillStyle = 'rgba(160,100,255,0.7)'; c.fillText('INATIVO', barX, barY-4);
+  c.textAlign = 'right'; c.fillStyle = 'rgba(255,80,80,0.7)';   c.fillText('MÁXIMO',  barX+barW, barY-4);
+  c.restore();
+}
+
+let connParticles = Array.from({length:12}, () => ({
+  t: Math.random(), speed: 0.003 + Math.random()*0.004, y: 0.3+Math.random()*0.4
+}));
+
+function drawConnections(c, t) {
+  const dx = HW + GAP/2;
+  connParticles.forEach(p => {
+    p.t = (p.t + p.speed) % 1;
+    const px = LCX + (dx - LCX) * p.t * 2 < dx
+      ? LCX + (dx - LCX) * p.t * 2
+      : dx + (RCX - dx) * (p.t * 2 - 1);
+    const py = BCY - 20 + p.y * 80 + Math.sin(t*2 + p.y*10)*4;
+    const g = 0.4 + Math.sin(t+p.y*5)*0.3;
+    const [r, gr2, b] = activityRGB(Math.max(0,Math.min(1, g)));
+    c.save();
+    c.globalAlpha = 0.35 + g*0.25;
+    c.shadowColor = `rgb(${r},${gr2},${b})`; c.shadowBlur = 5;
+    c.fillStyle = `rgb(${r},${gr2},${b})`;
+    c.beginPath(); c.arc(px, py, 1.8, 0, Math.PI*2); c.fill();
+    c.restore();
+  });
+}
+
+let brainT = 0;
+
+function drawBrain() {
+  brainT += 0.018;
+  CTX.clearRect(0, 0, W, H);
+
+  procData.forEach(p => {
+    const [lo, hi] = SPIKE_RANGES[p.id];
+    const norm = Math.max(0, Math.min(1, (p.spikes - lo) / (hi - lo)));
+    regionGlow[p.id] = regionGlow[p.id] + (norm - regionGlow[p.id]) * 0.05;
+  });
+
+  const breathe = 1 + Math.sin(brainT * 0.45) * 0.004;
+  CTX.save();
+  CTX.translate(W/2, H/2); CTX.scale(breathe, breathe); CTX.translate(-W/2, -H/2);
+
+  drawHemisphere(CTX, LCX, BCY, 1, regionGlow);
+  drawHemisphere(CTX, RCX, BCY, -1, regionGlow);
+
+  drawDivider(CTX);
+  drawConnections(CTX, brainT);
+  drawActivityBar(CTX);
+
+  CTX.restore();
+
+  requestAnimationFrame(drawBrain);
+}
+
+const REGION_HIT_ORDER = ['hipocampo','limbico','caloso','frontal','parietal','occipital','temporal','cerebelo'];
+const REGION_PATH_MAP = {
+  frontal:   (c,cx,cy,f) => frontalPath(c,cx,cy,f),
+  parietal:  (c,cx,cy,f) => parietalPath(c,cx,cy,f),
+  occipital: (c,cx,cy,f) => occipitalPath(c,cx,cy,f),
+  temporal:  (c,cx,cy,f) => temporalPath(c,cx,cy,f),
+  hipocampo: (c,cx,cy,f) => hippocampusPath(c,cx,cy,f),
+  limbico:   (c,cx,cy,f) => limbicPath(c,cx,cy,f),
+  caloso:    (c,cx,cy,f) => calosoPath(c,cx,cy,f),
+  cerebelo:  (c,cx,cy,f) => cerebelPath(c,cx,cy,f),
+};
+
+BC.addEventListener('click', function(e) {
+  const rect = BC.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top)  * (H / rect.height);
+  const onLeft = mx < HW + GAP/2;
+  const hcx = onLeft ? LCX : RCX;
+  const flip = onLeft ? 1 : -1;
+
+  for (const id of REGION_HIT_ORDER) {
+    const tc = document.createElement('canvas').getContext('2d');
+    tc.canvas.width = W; tc.canvas.height = H;
+    REGION_PATH_MAP[id](tc, hcx, BCY, flip);
+    if (tc.isPointInPath(mx, my)) { activateRegion(id); return; }
+  }
+});
+BC.style.cursor = 'crosshair';
+
+// ════════════════════════════════════════════════════════════════
+//  INIT
+// ════════════════════════════════════════════════════════════════
+renderProcs();
+renderWaveform();
+updateClock();
+drawBrain();
+connectWebSocket();
+
+setInterval(updateClock,    1000);
+setInterval(updateMetricsSimulated,  2000);
+setInterval(renderWaveform, 3500);
+</script>
+</body>
+</html>
