@@ -1,16 +1,25 @@
 // src/brain_zones/hippocampus.rs
-// No topo de cada arquivo, adicione:
+// Hipocampo — Memória episódica, consolidação, navegação espacial
+//
+// Composição neuronal:
+//   ca1_encoding: 80% RS + 20% LT — encoding com neurônios de baixo limiar
+//   ca3_recurrent: 70% RS + 30% RZ — recorrência com detecção de padrões rítmicos (ondas theta)
+//
+// MUDANÇA: removido HashMap<(usize, String), Uuid> por neurônio.
+// IDs agora são u32 simples gerados pela CamadaHibrida. Economia: ~40KB para 512 neurônios.
+// ConexaoSinaptica usa ID composto (camada + índice) em vez de UUID por instância.
+
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 #![allow(dead_code)]
-use crate::synaptic_core::{CamadaHibrida, PrecisionType};
+
+use crate::synaptic_core::{CamadaHibrida, PrecisionType, TipoNeuronal};
 use rand::{Rng, thread_rng};
 use crate::storage::ConexaoSinaptica;
 use uuid::Uuid;
 use crate::brain_zones::RegionType;
 use crate::config::{Config, ModoOperacao};
 use chrono;
-use std::collections::HashMap;
 
 #[derive(Debug)]
 pub struct HippocampusV2 {
@@ -19,32 +28,44 @@ pub struct HippocampusV2 {
     pub ltp_matrix: Vec<f32>,
     pub consolidation_rate: f32,
     pub prev_ca3_spikes: Vec<bool>,
-    pub theta_phase: f32,
+    pub theta_phase: f32,          // fase da onda theta (~8Hz)
     conexoes_recentes: Vec<ConexaoSinaptica>,
-    // Mapa para manter IDs consistentes dos neurônios
-    neuron_ids: HashMap<(usize, String), Uuid>, // (índice, "CA1" ou "CA3") -> UUID
 }
 
 impl HippocampusV2 {
     pub fn new(n_neurons: usize, config: &Config) -> Self {
-        let n_sub = n_neurons / 2;
-        
-        // Distribuição específica para hipocampo (mais FP16 para plasticidade)
-        let mut ca1_dist = config.precision_distribution.clone();
-        ca1_dist.push((PrecisionType::FP16, 0.60)); // 60% FP16 para CA1 (encoding)
-        
-        let mut ca3_dist = config.precision_distribution.clone();
-        ca3_dist.push((PrecisionType::INT8, 0.70)); // 70% INT8 para CA3 (recorrência)
-        
-        let ca1 = CamadaHibrida::new(n_sub, "hipocampo_ca1", Some(ca1_dist));
-        let ca3 = CamadaHibrida::new(n_sub, "hipocampo_ca3", Some(ca3_dist));
+        let n_sub = (n_neurons / 2).max(1);
 
-        // Gerar IDs consistentes para todos os neurônios
-        let mut neuron_ids = HashMap::new();
-        for i in 0..n_sub {
-            neuron_ids.insert((i, "CA1".to_string()), Uuid::new_v4());
-            neuron_ids.insert((i, "CA3".to_string()), Uuid::new_v4());
-        }
+        // CA1: FP16 dominante para encoding preciso, LT para baixo limiar
+        let ca1_dist = vec![
+            (PrecisionType::FP32, 0.05),
+            (PrecisionType::FP16, 0.60),
+            (PrecisionType::INT8, 0.35),
+        ];
+
+        // CA3: INT8 para recorrência em massa, RZ para ondas theta
+        let ca3_dist = vec![
+            (PrecisionType::FP16, 0.20),
+            (PrecisionType::INT8, 0.70),
+            (PrecisionType::INT4, 0.10),
+        ];
+
+        let escala = 40.0 / 127.0;
+
+        let ca1 = CamadaHibrida::new(
+            n_sub, "hipocampo_ca1",
+            TipoNeuronal::RS,
+            Some((TipoNeuronal::LT, 0.20)),
+            Some(ca1_dist),
+            escala,
+        );
+        let ca3 = CamadaHibrida::new(
+            n_sub, "hipocampo_ca3",
+            TipoNeuronal::RS,
+            Some((TipoNeuronal::RZ, 0.30)), // RZ para ondas theta
+            Some(ca3_dist),
+            escala,
+        );
 
         Self {
             ca1_encoding: ca1,
@@ -54,39 +75,37 @@ impl HippocampusV2 {
             prev_ca3_spikes: vec![false; n_sub],
             theta_phase: 0.0,
             conexoes_recentes: Vec::with_capacity(1000),
-            neuron_ids,
         }
     }
 
-    // Método para obter ID consistente de um neurônio
-    fn get_neuron_id(&self, indice: usize, regiao: &str) -> Uuid {
-        *self.neuron_ids.get(&(indice, regiao.to_string())).unwrap_or(&Uuid::nil())
-    }
-
-    pub fn memorize_with_connections(&mut self, pattern_in: &[f32], emotional_weight: f32, dt: f32, current_time: f32, config: &Config) 
-        -> (Vec<f32>, Vec<ConexaoSinaptica>) {
-        
+    pub fn memorize_with_connections(
+        &mut self,
+        pattern_in: &[f32],
+        emotional_weight: f32,
+        dt: f32,
+        current_time: f32,
+        config: &Config,
+    ) -> (Vec<f32>, Vec<ConexaoSinaptica>) {
         let n = self.ca1_encoding.neuronios.len();
+        let t_ms = current_time * 1000.0;
         let mut conexoes = Vec::new();
-        
-        let mut ca1_in = vec![0.0; n];
-        for i in 0..n {
-            ca1_in[i] = pattern_in.get(i).cloned().unwrap_or(0.0) * self.ltp_matrix[i];
-        }
-        
-        let ca1_spikes = self.ca1_encoding.update(&ca1_in, dt, current_time);
-        
+
+        let ca1_in: Vec<f32> = (0..n)
+            .map(|i| pattern_in.get(i).copied().unwrap_or(0.0) * self.ltp_matrix[i])
+            .collect();
+
+        let ca1_spikes = self.ca1_encoding.update(&ca1_in, dt, t_ms);
+
+        // Cria conexões CA1→CA3 (índices compactos, sem UUID por neurônio)
         for i in 0..n {
             if ca1_spikes[i] {
-                for j in 0..n/10 {
+                for j in 0..(n / 10) {
                     if rand::random::<f32>() > 0.7 {
-                        let de_id = self.get_neuron_id(i, "CA1");
-                        let para_id = self.get_neuron_id(j, "CA3");
-                        
+                        // UUID gerado apenas para a *conexão*, não para o neurônio
                         let conexao = ConexaoSinaptica {
                             id: Uuid::new_v4(),
-                            de_neuronio: de_id,
-                            para_neuronio: para_id,
+                            de_neuronio: Uuid::from_u128(i as u128),   // índice como UUID
+                            para_neuronio: Uuid::from_u128(j as u128),
                             peso: emotional_weight * rand::random::<f32>(),
                             criada_em: current_time as f64,
                             ultimo_uso: Some(chrono::Utc::now().timestamp() as f64),
@@ -99,41 +118,42 @@ impl HippocampusV2 {
                 }
             }
         }
-        
-        let mut ca3_in = vec![0.0; n];
-        for i in 0..n {
-            if self.prev_ca3_spikes[i] {
-                ca3_in[i] += 6.0;
-            }
-            if ca1_spikes[i] {
-                ca3_in[i] += 20.0;
-            }
-        }
-        
-        let ca3_spikes = self.ca3_recurrent.update(&ca3_in, dt, current_time);
-        
-        let mut output = vec![0.0; n];
-        for i in 0..n {
-            output[i] = if ca3_spikes[i] { 1.0 } else { 0.0 };
+
+        // Atualiza onda theta e entrada recorrente de CA3
+        self.theta_phase = (self.theta_phase + dt * 8.0 * 2.0 * std::f32::consts::PI) % (2.0 * std::f32::consts::PI);
+        let theta_mod = (self.theta_phase.sin() * 0.5 + 0.5).max(0.0);
+
+        let ca3_in: Vec<f32> = (0..n)
+            .map(|i| {
+                let recurrent = if self.prev_ca3_spikes[i] { 6.0 } else { 0.0 };
+                let from_ca1 = if ca1_spikes[i] { 20.0 } else { 0.0 };
+                (recurrent + from_ca1) * theta_mod
+            })
+            .collect();
+
+        let ca3_spikes = self.ca3_recurrent.update(&ca3_in, dt, t_ms);
+
+        let output: Vec<f32> = (0..n).map(|i| {
             self.prev_ca3_spikes[i] = ca3_spikes[i];
-        }
-        
+            if ca3_spikes[i] { 1.0 } else { 0.0 }
+        }).collect();
+
         self.conexoes_recentes.extend(conexoes.clone());
-        
         (output, conexoes)
     }
-    
+
     pub fn memorize(&mut self, pattern_in: &[f32], emotional_weight: f32, dt: f32) -> Vec<f32> {
-        let (output, _) = self.memorize_with_connections(pattern_in, emotional_weight, dt, 0.0, &Config::new(ModoOperacao::Humano));
-        output
+        let (out, _) = self.memorize_with_connections(
+            pattern_in, emotional_weight, dt, 0.0,
+            &Config::new(ModoOperacao::Humano),
+        );
+        out
     }
-    
+
     pub fn consolidate_recent(&mut self) -> Vec<ConexaoSinaptica> {
-        let conexoes = self.conexoes_recentes.clone();
-        self.conexoes_recentes.clear();
-        conexoes
+        std::mem::take(&mut self.conexoes_recentes)
     }
-    
+
     pub fn estatisticas(&self) -> HipocampoStats {
         HipocampoStats {
             ca1: self.ca1_encoding.estatisticas(),
