@@ -34,15 +34,11 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
-use nokhwa::{
-    Camera,
-    CameraIndex,
-    pixel_format::RgbFormat,
-    utils::{RequestedFormat, RequestedFormatType},
-};
+use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType}; // ajuste imports
 use std::sync::mpsc::Sender;
 use std::time::Duration;
-
+use nokhwa::pixel_format::RgbFormat;
+use nokhwa::Buffer;
 // -----------------------------------------------------------------------------
 // Estrutura principal
 // -----------------------------------------------------------------------------
@@ -98,16 +94,17 @@ impl VisualTransducer {
             RequestedFormatType::AbsoluteHighestFrameRate
         );
 
-        let mut cam = match Camera::new(CameraIndex::Index(0), format) {
-            Ok(c)  => c,
-            Err(e) => {
-                // Câmera não encontrada — pode ser laptop sem webcam, VM, etc.
-                // Em vez de panicar, usamos placeholder para que o resto do cérebro
-                // continue funcionando normalmente (Selene "de olhos fechados").
-                println!("[CAMERA] Câmera não encontrada: {e}");
-                println!("[CAMERA] Usando modo placeholder (ruído baixo).");
-                return self.run_placeholder(tx);
-            }
+        let mut cam: nokhwa::Camera = match nokhwa::Camera::new(
+            CameraIndex::Index(0),
+            RequestedFormat::new(RequestedFormatType::AbsoluteHighestFrameRate),
+        ) {
+            Ok(c) => c,
+            Err(e) => { eprintln!("Camera error: {}", e); continue; } // ou panic!()
+        };
+
+        let frame: nokhwa::Buffer = match cam.frame() {  // use Buffer em vez de Frame
+            Ok(f) => f,
+            Err(e) => { eprintln!("Frame error: {}", e); continue; }  // ajuste o continue abaixo
         };
 
         // Abre o stream de captura (começa a receber frames da câmera).

@@ -315,7 +315,7 @@ fn processar_frame_fft(
     let freq_data = spectrum.data();
     let band_size = (freq_data.len() / N_BANDS).max(1);
 
-    let mut bandas: Vec<f32> = (0..N_BANDS)
+    let bandas: Vec<f32> = (0..N_BANDS)
         .map(|b| {
             let start = b * band_size;
             let end = (start + band_size).min(freq_data.len());

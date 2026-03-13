@@ -4,7 +4,7 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 use crate::config::Config;
-
+use crate::sensors::audio::AudioSignal;
 /// Tronco Cerebral (Formação Reticular): regulação de alerta e sono/vigília
 pub struct Brainstem {
     pub noradrenaline: f32,      // 0.3 a 1.2
@@ -44,8 +44,8 @@ impl Brainstem {
     }
     
     /// Modula qualquer input baseado no alerta atual
-    pub fn modulate(&self, input: &[f32]) -> Vec<f32> {
-        input.iter().map(|&v| v * self.alertness).collect()
+    pub fn modulate(&self, input: &AudioSignal) -> Vec<f32> {
+        self.modulate(&input.data)  // delega para &[f32]
     }
     
     pub fn stats(&self) -> BrainstemStats {

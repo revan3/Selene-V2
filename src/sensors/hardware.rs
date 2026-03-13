@@ -176,8 +176,8 @@ impl HardwareSensor {
         let system = self.system.lock().unwrap();
 
         // Usa a média global de uso de CPU de todos os cores
-        let cpu_usage = system.global_cpu_usage();
-
+        let cpu_usage = system.global_cpu_info().cpu_usage();
+        
         // Fórmula de estimativa: temperatura base 35°C + fator de carga
         // 35°C = temperatura típica de CPU em idle com boa ventilação
         // 85°C = temperatura de throttling típica (CPU reduz frequência)

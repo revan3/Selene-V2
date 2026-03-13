@@ -5,11 +5,11 @@
 #![allow(dead_code)]
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::u32;
 use tokio::sync::Mutex;
-use uuid::Uuid;
 use crate::synaptic_core::{NeuronioHibrido, PrecisionType};
 use crate::brain_zones::RegionType;
-
+use crate::synaptic_core::TipoNeuronal;
 // Limites
 const RAM_PERCENT_FOR_NEURONS: f32 = 0.8;      // 80% da RAM para neurônios ativos
 const LIMITE_BIOLOGICO: usize = 946_000_000;   // 1,1% de 86B neurônios humanos
@@ -17,17 +17,17 @@ const SYNAPSES_PER_NEURON: usize = 8500;       // Média biológica
 
 pub struct SwapManager {
     // RAM: neurônios ativos
-    pub ram: HashMap<Uuid, NeuronioHibrido>,
+    pub ram: HashMap<u32, NeuronioHibrido>,
     
     // SSD/HDD: neurônios dormentes (mapeados por ID)
-    pub ssd: HashMap<Uuid, NeuronioHibrido>,
+    pub ssd: HashMap<u32, NeuronioHibrido>,
     
     // Índices para busca rápida
-    pub indices: HashMap<String, Vec<Uuid>>,  // contexto -> neurônios
+    pub indices: HashMap<String, Vec<u32>>,  // contexto -> neurônios
     
     // Estatísticas de acesso
-    pub ultimo_acesso: HashMap<Uuid, f64>,
-    pub frequencia_acesso: HashMap<Uuid, u32>,
+    pub ultimo_acesso: HashMap<u32, f64>,
+    pub frequencia_acesso: HashMap<u32, u32>,
     
     // Limites
     pub max_ram_neurons: usize,
@@ -36,6 +36,8 @@ pub struct SwapManager {
     // Contadores (para interface)
     pub total_neurons_criados: usize,
     pub total_neurogenese_eventos: usize,
+    
+    next_id: u32,
 }
 
 impl SwapManager {
@@ -85,7 +87,7 @@ impl SwapManager {
         regiao: RegionType,
         precisao: PrecisionType,
         contexto: &str,
-    ) -> Option<Uuid> {
+    ) -> Option<u32> {
         // Verifica limite físico: 80% da RAM disponível para neurônios ativos
         let max_ativos = (self.max_ram_neurons as f32 * RAM_PERCENT_FOR_NEURONS) as usize;
         if self.ram.len() >= max_ativos {
@@ -99,12 +101,14 @@ impl SwapManager {
             println!("⚠️ Limite biológico de neurônios atingido ({}).", LIMITE_BIOLOGICO);
             return None;
         }
-
+        
+        let tipo = TipoNeuronal::RS;
         // Cria o neurônio
-        let neuronio = NeuronioHibrido::new(precisao);
+        let neuronio = NeuronioHibrido::new(id, tipo, precisao);
         // Nota: se quiser adicionar campo regiao em NeuronioHibrido, descomente:
         // neuronio.regiao = regiao;
-        let id = neuronio.id;
+        let id: u32 = self.next_id;  // assumindo field u32 next_id
+        self.next_id += 1;
 
         // Adiciona aos índices
         self.indices.entry(contexto.to_string())
@@ -127,7 +131,7 @@ impl SwapManager {
     }
     
     /// Ativa neurônios por contexto (busca na RAM ou faz swap do SSD)
-    pub async fn ativar_por_contexto(&mut self, contexto: &str) -> Vec<Uuid> {
+    pub async fn ativar_por_contexto(&mut self, contexto: &str) -> Vec<u32> {
         let mut ativados = Vec::new();
     
         if let Some(ids) = self.indices.get(contexto).cloned() {
@@ -156,7 +160,7 @@ impl SwapManager {
         ativados
     }
     
-    pub fn get_neuronio(&self, id: Uuid) -> Option<&NeuronioHibrido> {
+    pub fn get_neuronio(&self, id: u32) -> Option<&NeuronioHibrido> {
         self.ram.get(&id).or_else(|| self.ssd.get(&id))
     }
     
@@ -181,7 +185,7 @@ impl SwapManager {
         let agora = current_time();
         let limite = agora - self.swap_threshold_seconds as f64;
         
-        let inativos: Vec<Uuid> = self.ultimo_acesso
+        let inativos: Vec<u32> = self.ultimo_acesso
             .iter()
             .filter(|(_, &tempo)| tempo < limite)
             .map(|(&id, _)| id)
