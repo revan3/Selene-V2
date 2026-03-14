@@ -31,6 +31,7 @@ use std::path::Path;
 use std::fs::File;
 use std::io::Write;
 use tokio::sync::Mutex as TokioMutex;
+use warp::Filter; // Adicionado para as rotas
 
 // Imports para Log e Debug
 use simplelog::*;
@@ -39,7 +40,7 @@ use simplelog::*;
 use crate::brain_zones::RegionType;
 use crate::config::{Config, ModoOperacao};
 use crate::sleep_cycle::CicloSono;
-use crate::websocket::{BrainState, start_websocket_server};
+use crate::websocket::{BrainState, start_websocket_server, handle_connection};
 
 // Imports dos lobos
 use brain_zones::{
@@ -210,7 +211,6 @@ async fn async_main() {
                 }
                 if let Ok(memory_guard) = memory_for_sleep.try_lock() {
                 }
-                // Log silencioso para não poluir o console principal
                 log::debug!("Sleep manager heart-beat");
             }
         });
@@ -242,11 +242,33 @@ async fn async_main() {
     let tx_audio_clone = tx_audio.clone();
     thread::spawn(move || audio::start_listening(n_neurons, tx_audio_clone));
 
-    // --- 11. INICIAR SERVIDOR WEB ---
-    println!("🌐 Iniciando interface neural...");
+    // --- 11. INICIAR SERVIDOR WEB INTEGRADO ---
+    println!("🌐 Iniciando interface neural integrada...");
     let brain_state = Arc::new(BrainState::new());
+    let state_for_server = Arc::clone(&brain_state);
+
     let server_handle = tokio::spawn(async move {
-        start_websocket_server(brain_state).await;
+        // Rota do WebSocket em /selene
+        let ws_route = warp::path("selene")
+            .and(warp::ws())
+            .and(warp::any().map(move || Arc::clone(&state_for_server)))
+            .map(|ws: warp::ws::Ws, state| {
+                ws.on_upgrade(move |socket| handle_connection(socket, state))
+            });
+
+        // Servir arquivos estáticos da pasta "interface"
+        let static_files = warp::fs::dir("interface");
+
+        // Habilitar CORS para evitar bloqueios do navegador
+        let cors = warp::cors()
+            .allow_any_origin()
+            .allow_methods(vec!["GET", "POST", "OPTIONS"])
+            .allow_headers(vec!["Content-Type"]);
+
+        let routes = ws_route.or(static_files).with(cors);
+
+        println!("✨ Interface Online em: http://127.0.0.1:3030");
+        warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;
     });
 
     println!("\n✨ --- SELENE BRAIN 2.0: BIO-HARDWARE SYSTEM ONLINE --- ✨\n");
@@ -272,7 +294,7 @@ async fn async_main() {
             println!("\n🌙 Hora de dormir! Iniciando ciclo de sono...");
             let body_feeling = interoception.sentir();
             if let Some(pensamento) = ego.update(body_feeling, current_time).await {
-                println!("   💭 Pensamento antes de dormir: {}", pensamento);
+                println!("    💭 Pensamento antes de dormir: {}", pensamento);
             }
             ciclo_sono.dormir(&mut *memory_tier.lock().await, &config).await;
             tempo_acordado = Duration::from_secs(0);
@@ -390,7 +412,7 @@ async fn async_main() {
         // J. Atualização do ego
         let body_feeling = interoception.sentir();
         if let Some(pensamento) = ego.update(body_feeling, current_time).await {
-            if step % 100 == 0 { println!("   💭 Pensamento: {}", pensamento); }
+            if step % 100 == 0 { println!("    💭 Pensamento: {}", pensamento); }
         }
 
         // K. Telemetria
