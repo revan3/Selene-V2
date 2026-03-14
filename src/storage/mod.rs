@@ -5,10 +5,11 @@
 
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 use uuid::Uuid;
 use crate::brain_zones::RegionType;
 use surrealdb::Surreal;
-use surrealdb::engine::local::{Db, RocksDb};
+use surrealdb::engine::local::{Db, RocksDb, Mem}; // Importação direta corrigida
 use std::time::Duration;
 
 pub mod memory_tier;
@@ -83,15 +84,24 @@ pub struct BrainStorage {
 }
 
 impl BrainStorage {
+    /// CORREÇÃO FINAL: Removido block_on e corrigido motor de fallback
     pub fn dummy() -> Self {
-        unimplemented!("dummy não deve ser usado em produção");
+        // Inicializa o driver síncronamente. 
+        // Como é para um estado de 'dummy' (erro), não tentamos conectar a nada.
+        let db = Surreal::init(); 
+        
+        Self {
+            db,
+            conexoes_ativas: HashMap::new(),
+        }
     }
     
     pub async fn new() -> surrealdb::Result<Self> {
+        // Tenta abrir o RocksDB no seu NVMe
         let db = Surreal::new::<RocksDb>("selene_memories.db").await?;
         db.use_ns("selene_project").use_db("brain_v1").await?;
         
-        // Criar índices
+        // Criar índices de busca vetorial para os padrões visuais e auditivos
         let _ = db.query("DEFINE INDEX vis_idx ON TABLE memories FIELDS visual_pattern MTREE(1024);").await;
         let _ = db.query("DEFINE INDEX aud_idx ON TABLE memories FIELDS auditory_pattern MTREE(1024);").await;
         let _ = db.query("DEFINE INDEX conexoes_destino ON TABLE conexoes FIELDS para_regiao, para_indice;").await;
@@ -102,7 +112,7 @@ impl BrainStorage {
         })
     }
     
-    // ========== MÉTODOS PRINCIPAIS ==========
+    // ========== MÉTODOS DE PERSISTÊNCIA ==========
     
     pub async fn save_snapshot(&self, memory: NeuralEnactiveMemory) -> surrealdb::Result<()> {
         let _: Vec<NeuralEnactiveMemory> = self.db
@@ -128,7 +138,6 @@ impl BrainStorage {
         Ok(())
     }
     
-    /// Busca memórias por limiar emocional
     pub async fn find_memories_by_emotion(&self, emotion_threshold: f32) -> Vec<NeuralEnactiveMemoryV2> {
         let response = self.db
             .query("SELECT * FROM memories WHERE emotion_state > $th ORDER BY timestamp DESC LIMIT 5")
@@ -141,7 +150,6 @@ impl BrainStorage {
         }
     }
     
-    /// Busca memória por similaridade auditiva
     pub async fn find_similar_memory(&self, current_audio: Vec<f32>) -> Option<NeuralEnactiveMemory> {
         let response = self.db
             .query("SELECT * FROM memories ORDER BY vector::distance::cosine(auditory_pattern, $audio) ASC LIMIT 1")
@@ -157,7 +165,6 @@ impl BrainStorage {
         }
     }
     
-    /// Busca memória por contexto visual
     pub async fn recall_full_context(&self, current_visual: Vec<f32>) -> Option<NeuralEnactiveMemory> {
         let response = self.db
             .query("SELECT * FROM memories ORDER BY vector::distance::cosine(visual_pattern, $val) ASC LIMIT 1")
@@ -173,7 +180,6 @@ impl BrainStorage {
         }
     }
     
-    /// Busca multimodal (visão + áudio)
     pub async fn recall_multimodal(&self, vision: Vec<f32>, audio: Vec<f32>) -> Option<NeuralEnactiveMemory> {
         let response = self.db
             .query("SELECT *, (vector::distance::cosine(visual_pattern, $vis) + vector::distance::cosine(auditory_pattern, $aud)) as total_dist 

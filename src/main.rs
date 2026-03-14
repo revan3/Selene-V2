@@ -24,11 +24,16 @@ mod brainstem;
 
 // Imports necessários
 use std::sync::mpsc::{channel, Sender, Receiver};
-use std::thread;
+use std::{thread, panic};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::path::Path;
+use std::fs::File;
+use std::io::Write;
 use tokio::sync::Mutex as TokioMutex;
+
+// Imports para Log e Debug
+use simplelog::*;
 
 // Imports dos módulos da Selene
 use crate::brain_zones::RegionType;
@@ -75,12 +80,49 @@ const MAX_RAM_NEURONS: usize = 1_000_000;
 const SWAP_THRESHOLD_SECONDS: u64 = 3600;
 const COMPRESSOR_MAX_POINTS: usize = 16;
 
-// ================== HOOK DE CLEANUP ==================
+// ================== FUNÇÃO PRINCIPAL ==================
 fn main() {
-    std::panic::set_hook(Box::new(|_| {
+    // 1. Inicializa o Sistema de Logs (Gera selene_debug.log)
+    let _ = CombinedLogger::init(
+        vec![
+            TermLogger::new(LevelFilter::Info, ConfigBuilder::new().build(), TerminalMode::Mixed, ColorChoice::Auto),
+            WriteLogger::new(LevelFilter::Debug, ConfigBuilder::new().build(), File::create("selene_debug.log").unwrap()),
+        ]
+    );
+
+    // 2. Hook de Pânico (Gera selene_crash_report.txt em caso de erro 101)
+    panic::set_hook(Box::new(|panic_info| {
+        // Tenta fechar o período de tempo do Windows se necessário
         unsafe { timeEndPeriod(1) };
+        
+        let mut file = File::create("selene_crash_report.txt").unwrap();
+        let message = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            s
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.as_str()
+        } else {
+            "Causa do pânico desconhecida"
+        };
+        
+        let location = panic_info.location().unwrap_or_else(|| panic::Location::caller());
+        
+        let report = format!(
+            "========================================\n\
+             🧠 SELENE BRAIN CRASH REPORT\n\
+             ========================================\n\
+             Data/Hora: {:?}\n\
+             Erro: {}\n\
+             Local: {}:{}\n\n\
+             Possível causa: Verifique se o arquivo NVME ou o Banco de Dados está acessível.\n\
+             ========================================",
+            Instant::now(), message, location.file(), location.line()
+        );
+        
+        let _ = file.write_all(report.as_bytes());
+        eprintln!("\n❌ CRASH DETECTADO: Relatório salvo em 'selene_crash_report.txt'");
     }));
 
+    // 3. Inicia o Runtime Tokio
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async_main());
 }
@@ -152,31 +194,24 @@ async fn async_main() {
     // --- 6. SETUP DO COMPRESSOR (PONTOS SALIENTES) ---
     let compressor = Arc::new(SalientCompressor::new(0.1, COMPRESSOR_MAX_POINTS));
 
-    // --- 7. GESTÃO DE HOMEOSTASE (Sleep Manager) - CORRIGIDO ---
+    // --- 7. GESTÃO DE HOMEOSTASE (Sleep Manager) ---
     let sleep_manager = SleepManager::new();
     let sensor_for_sleep = Arc::clone(&sensor);
     let memory_for_sleep = Arc::clone(&memory_tier);
 
-    // Usando spawn_blocking para código bloqueante
     tokio::task::spawn_blocking(move || {
-        // Criar runtime tokio dentro da thread bloqueante
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             loop {
                 interval.tick().await;
-                
-                // Tentar acessar o sensor - se falhar, apenas continua
                 if let Ok(sensor_guard) = sensor_for_sleep.try_lock() {
                     let _cpu_temp = sensor_guard.get_cpu_temp();
-                    // ... usar o sensor se necessário
                 }
-                
                 if let Ok(memory_guard) = memory_for_sleep.try_lock() {
-                    // ... usar a memória se necessário
                 }
-                
-                println!("😴 Sleep manager ativo (simulação)");
+                // Log silencioso para não poluir o console principal
+                log::debug!("Sleep manager heart-beat");
             }
         });
     });
@@ -187,7 +222,7 @@ async fn async_main() {
     let mut parietal = ParietalLobe::new(n_neurons, 0.2, &config);
     let mut temporal = TemporalLobe::new(n_neurons, 0.005, 0.2, &config);
     let mut limbic = LimbicSystem::new(n_neurons / 2, &config);
-    let hippocampus = Hippocampus::new(n_neurons / 2, &config);  // ← SEM mut
+    let hippocampus = Hippocampus::new(n_neurons / 2, &config);
     let mut frontal = FrontalLobe::new(n_neurons, 0.2, 0.1, &config);
     let mut corpus_callosum = CorpusCallosum::new(10.0, 8);
 
@@ -231,26 +266,20 @@ async fn async_main() {
 
     // --- 14. LOOP NEURAL PRINCIPAL ---
     loop {
-        // Atualiza tempo atual
         current_time += dt;
 
-        // ===== VERIFICA SE ESTÁ NA HORA DE DORMIR =====
         if tempo_acordado >= dia_duracao {
             println!("\n🌙 Hora de dormir! Iniciando ciclo de sono...");
-            
             let body_feeling = interoception.sentir();
             if let Some(pensamento) = ego.update(body_feeling, current_time).await {
                 println!("   💭 Pensamento antes de dormir: {}", pensamento);
             }
-            
             ciclo_sono.dormir(&mut *memory_tier.lock().await, &config).await;
-            
             tempo_acordado = Duration::from_secs(0);
             println!("☀️ Novo dia começou!\n");
             continue;
         }
 
-        // ===== PROCESSAMENTO NORMAL =====
         step += 1;
         let loop_start = Instant::now();
         let elapsed = start_time.elapsed().as_secs_f32();
@@ -269,38 +298,25 @@ async fn async_main() {
 
         // C. Filtragem sensorial
         let raw_retina = rx_vision.try_recv().unwrap_or_else(|_| vec![0.0f32; n_neurons]);
-
-        // CORREÇÃO E0308 (linhas 272 + 275):
-        // rx_audio recebe AudioSignal (enviado pelo audio.rs), não Vec<f32>.
-        // brainstem.modulate() espera &[f32].
-        // Solução: receber AudioSignal e converter os campos para Vec<f32>.
-        // AudioSignal.bandas contém o espectro FFT (Vec<f32>).
-        // Adicionamos energia e pitch_dominante ao final para enriquecer o sinal neural.
         let audio_signal = rx_audio.try_recv().ok();
         let raw_cochlea: Vec<f32> = match audio_signal {
             Some(sig) => {
-                // Combina bandas espectrais + energia + pitch em um único vetor neural
                 let mut v = sig.bandas.clone();
                 v.push(sig.energia);
                 v.push(sig.pitch_dominante);
-                // Garante tamanho n_neurons por reamostragem simples
                 if v.len() != n_neurons {
                     let ratio = v.len() as f32 / n_neurons as f32;
-                    (0..n_neurons)
-                        .map(|i| {
-                            let idx = (i as f32 * ratio) as usize;
-                            v.get(idx).copied().unwrap_or(0.0)
-                        })
-                        .collect()
-                } else {
-                    v
-                }
+                    (0..n_neurons).map(|i| {
+                        let idx = (i as f32 * ratio) as usize;
+                        v.get(idx).copied().unwrap_or(0.0)
+                    }).collect()
+                } else { v }
             }
             None => vec![0.0f32; n_neurons],
         };
 
         let retina_input = thalamus.relay(&raw_retina, neuro.noradrenaline, &config);
-        let cochlea_input = brainstem.modulate(&raw_cochlea);  // &[f32] ✓
+        let cochlea_input = brainstem.modulate(&raw_cochlea);
 
         // D. Feedback
         if let Ok(memory) = rx_feedback.try_recv() {
@@ -318,43 +334,28 @@ async fn async_main() {
             .collect();
 
         // F. Processamento neural
-        let vision_features = occipital.visual_sweep(
-            &hybrid_visual, dt, Some(&parietal.spatial_map), current_time, &config
-        );
-
+        let vision_features = occipital.visual_sweep(&hybrid_visual, dt, Some(&parietal.spatial_map), current_time, &config);
+        
         let chunk_size = n_neurons / vision_features.len().max(1);
         let mut vision_full = vec![0.0f32; n_neurons];
         for (i, &feature) in vision_features.iter().enumerate() {
             let start = i * chunk_size;
             let end = (start + chunk_size).min(n_neurons);
-            for j in start..end {
-                vision_full[j] = feature / 100.0;
-            }
+            for j in start..end { vision_full[j] = feature / 100.0; }
         }
 
-        let spatial_focus = parietal.integrate(
-            &vision_full, &vec![0.0f32; n_neurons], dt, current_time, &config
-        );
-        
-        let recognized = temporal.process(
-            &vision_full, &spatial_focus, dt, current_time, &config
-        );
-        
+        let spatial_focus = parietal.integrate(&vision_full, &vec![0.0f32; n_neurons], dt, current_time, &config);
+        let recognized = temporal.process(&vision_full, &spatial_focus, dt, current_time, &config);
         let safe_len = 10.min(cochlea_input.len());
-        let (emotion, arousal) = limbic.evaluate(
-            &cochlea_input[0..safe_len], 0.0, dt, current_time, &config
-        );
+        let (emotion, arousal) = limbic.evaluate(&cochlea_input[0..safe_len], 0.0, dt, current_time, &config);
 
         frontal.set_dopamine(neuro.dopamine + emotion);
-        let action = frontal.decide(
-            &recognized, &internal_goal, dt, current_time, &config
-        );
+        let action = frontal.decide(&recognized, &internal_goal, dt, current_time, &config);
 
         // G. Núcleos da Base
         basal_ganglia.update_habits(&vision_full, &action, emotion);
-
         if let Some(_habit_action) = basal_ganglia.suggest_action(&vision_full) {
-            println!("🔄 Hábito detectado, reforçando decisão");
+            log::info!("🔄 Hábito detectado");
         }
 
         // H. Comunicação entre hemisférios
@@ -362,9 +363,8 @@ async fn async_main() {
             let spikes_esquerdo = vec![true; n_neurons / 10];
             corpus_callosum.send_to_right(0, spikes_esquerdo, current_time);
         }
-        
         if let Some(spikes) = corpus_callosum.receive_at_right(0, current_time) {
-            println!("🔗 Caloso: {} spikes recebidos", spikes.len());
+            log::debug!("🔗 Caloso sync: {} spikes", spikes.len());
         }
 
         // I. Memória
@@ -378,16 +378,9 @@ async fn async_main() {
                 frontal_intent: action.clone(),
                 label: format!("exp_{:.2}_{}", emotion, step),
             };
-            
             if emotion.abs() > 0.8 {
-                ego.registrar_experiencia(
-                    format!("Experiência emocional {:.2}", emotion),
-                    emotion,
-                    arousal,
-                    ego::TipoMemoria::Autobiografica,
-                );
+                ego.registrar_experiencia(format!("Emoção Forte {:.2}", emotion), emotion, arousal, ego::TipoMemoria::Autobiografica);
             }
-            
             let mem_clone = Arc::clone(&memory_tier);
             tokio::spawn(async move {
                 let _ = mem_clone.lock().await.prioritize_and_save(snapshot).await;
@@ -397,52 +390,34 @@ async fn async_main() {
         // J. Atualização do ego
         let body_feeling = interoception.sentir();
         if let Some(pensamento) = ego.update(body_feeling, current_time).await {
-            if step % 100 == 0 {
-                println!("   💭 Pensamento: {}", pensamento);
-            }
+            if step % 100 == 0 { println!("   💭 Pensamento: {}", pensamento); }
         }
 
         // K. Telemetria
         if step % 500 == 0 {
             let swap_guard = swap_manager.lock().await;
-            println!(
-                "🧪 [BIO] Sero: {:.2} | Dop: {:.2} | Cort: {:.2} | RAM: {:.1}GB | Tempo: {:?}",
-                neuro.serotonin, neuro.dopamine, neuro.cortisol, 
-                sensor.lock().await.get_ram_usage_gb(),
-                tempo_acordado
+            println!("🧪 [BIO] Sero: {:.2} | Dop: {:.2} | RAM: {:.1}GB | Tempo: {:?}",
+                neuro.serotonin, neuro.dopamine, sensor.lock().await.get_ram_usage_gb(), tempo_acordado
             );
-            println!(
-                "   🧬 Neurônios: {} ativos, {} totais | Sinapses: {}M ativas | Hábitos: {}",
-                swap_guard.ram_count(),
-                swap_guard.total_count(),
-                swap_guard.synapses_ativas() / 1_000_000,
-                basal_ganglia.stats().num_habitos
-            );
-            println!(
-                "   💭 Humor: {:.1} | Energia: {:.1}% | Alerta: {:.2}",
-                ego.current_state.humor * 100.0,
-                ego.current_state.energia * 100.0,
-                brainstem.stats().alertness
+            println!("   🧬 Neurônios: {} ativos | Hábitos: {} | Alerta: {:.2}",
+                swap_guard.ram_count(), basal_ganglia.stats().num_habitos, brainstem.stats().alertness
             );
         }
 
-        // L. Decaimento
+        // L. Decaimento e Framerate
         for v in mental_imagery_visual.iter_mut() { *v *= 0.95; }
         for a in mental_imagery_auditory.iter_mut() { *a *= 0.95; }
 
-        // M. Framerate
         let frame_duration = loop_start.elapsed();
         if frame_duration < Duration::from_millis(5) {
             thread::sleep(Duration::from_millis(5) - frame_duration);
         }
-
-        // N. Atualiza tempo acordado
         tempo_acordado += Duration::from_millis(5);
-        
+
         // O. Limpeza periódica
         if step % 10000 == 0 {
             let mut swap = swap_manager.lock().await;
-            swap.limpar_neurônios_inativos().await;
+            let _ = swap.limpar_neurônios_inativos(); 
         }
     }
 }

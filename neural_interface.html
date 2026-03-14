@@ -401,47 +401,62 @@ let useSimulatedData = false;
 let lastRealData = null;
 
 function connectWebSocket() {
-  const wsUrl = `ws://${window.location.hostname}:3030/ws`;
-  console.log('Conectando ao WebSocket:', wsUrl);
-  
-  socket = new WebSocket(wsUrl);
-  
-  socket.onopen = function() {
-    console.log('✅ Conectado à Selene!');
-    document.getElementById('connection-led').style.background = '#00FF88';
-    document.getElementById('connection-status').textContent = 'ONLINE';
-    document.getElementById('connection-led').style.boxShadow = '0 0 8px #00FF88';
-    useSimulatedData = false;
-    addChatMsg('system', 'NEXUS · SISTEMA', '✅ Conexão estabelecida com Selene. Recebendo dados neurais em tempo real.');
-  };
-  
-  socket.onmessage = function(event) {
-    try {
-      const data = JSON.parse(event.data);
-      lastRealData = data;
-      updateMetricsWithRealData(data);
-    } catch (e) {
-      console.error('Erro ao processar dados:', e);
-    }
-  };
-  
-  socket.onclose = function() {
-    console.log('❌ Desconectado da Selene');
-    document.getElementById('connection-led').style.background = 'var(--crimson-bright)';
-    document.getElementById('connection-status').textContent = 'OFFLINE (SIMULADO)';
-    document.getElementById('connection-led').style.boxShadow = '0 0 8px var(--crimson-bright)';
-    useSimulatedData = true;
-    addChatMsg('system', 'NEXUS · SISTEMA', '⚠️ Conexão perdida. Usando dados simulados para visualização.');
+    // TENTATIVA 1: Baseada no comportamento do seu main.rs
+    // Se o seu servidor no Rust não define um .path("selene"), 
+    // a conexão deve ser feita na raiz "/"
+    const wsUrl = "ws://localhost:3030"; 
     
-    // Tenta reconectar a cada 5 segundos
-    setTimeout(connectWebSocket, 5000);
+    console.log('🔗 Tentando sincronia neural na raiz:', wsUrl);
+    
+    socket = new WebSocket(wsUrl);
+    
+    socket.onopen = function() {
+        console.log('✅ SELENE CONECTADA COM SUCESSO');
+        document.getElementById('connection-led').style.background = '#00FF88';
+        document.getElementById('connection-status').textContent = 'ONLINE';
+        addChatMsg('system', 'NEXUS', 'Interface vinculada ao Kernel 2.0.');
+    };
+
+    socket.onmessage = function(event) {
+        // O seu main.rs envia o BrainState (Telemetria)
+        try {
+            const data = JSON.parse(event.data);
+            updateMetricsWithRealData(data);
+        } catch(e) {
+            // Se o Rust mandar texto puro (Pensamentos)
+            addChatMsg('system', 'SELENE', event.data);
+        }
+    };
+
+    socket.onclose = function() {
+        document.getElementById('connection-led').style.background = 'var(--crimson-bright)';
+        document.getElementById('connection-status').textContent = 'CONEXÃO PERDIDA';
+        // Tenta reconectar a cada 5 segundos para poupar o seu R5 3500U
+        setTimeout(connectWebSocket, 5000); 
+    };
+
+    socket.onerror = function(err) {
+        console.error('❌ Falha crítica no túnel WS. Verifique se o Cargo Run está ativo.');
+    };
+
+  socket.onclose = function(e) {
+    console.log('❌ Conexão encerrada:', e.reason);
+    document.getElementById('connection-led').style.background = 'var(--crimson-bright)';
+    document.getElementById('connection-status').textContent = 'CONEXÃO PERDIDA';
+    document.getElementById('connection-led').style.boxShadow = '0 0 12px var(--crimson-bright)';
+    
+    // Tentativa de reconexão inteligente
+    setTimeout(() => {
+      console.log('🔄 Tentando reconectar aos núcleos...');
+      connectWebSocket();
+    }, 5000);
   };
-  
-  socket.onerror = function(error) {
-    console.error('Erro no WebSocket:', error);
+
+  socket.onerror = function(err) {
+    console.error('⚠️ Erro na interface neural:', err);
+    // Não precisamos de alerta aqui pois o onclose já trata a reconexão
   };
 }
-
 // ════════════════════════════════════════════════════════════════
 //  CHEMICAL PROFILES PER NUCLEUS (IGUAL AO ORIGINAL)
 // ════════════════════════════════════════════════════════════════
