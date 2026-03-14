@@ -40,7 +40,7 @@ use simplelog::*;
 use crate::brain_zones::RegionType;
 use crate::config::{Config, ModoOperacao};
 use crate::sleep_cycle::CicloSono;
-use crate::websocket::{BrainState, start_websocket_server, handle_connection};
+use crate::websocket::bridge::{BrainState, NeuralStatus}; // Ajustado para refletir o bridge.rs
 
 // Imports dos lobos
 use brain_zones::{
@@ -244,16 +244,22 @@ async fn async_main() {
 
     // --- 11. INICIAR SERVIDOR WEB INTEGRADO ---
     println!("🌐 Iniciando interface neural integrada...");
-    let brain_state = Arc::new(BrainState::new());
+    
+    // CORREÇÃO: Usando a config e swap_manager que já foram criados no início (itens 1 e 4)
+    let brain_state = Arc::new(TokioMutex::new(BrainState::new(Arc::clone(&swap_manager), &config)));
     let state_for_server = Arc::clone(&brain_state);
 
     let server_handle = tokio::spawn(async move {
+        // Criar o canal de broadcast para transmitir o NeuralStatus
+        let (tx, _) = tokio::sync::broadcast::channel::<NeuralStatus>(100);
+        let tx_broadcast = tx.clone();
+
         // Rota do WebSocket em /selene
         let ws_route = warp::path("selene")
             .and(warp::ws())
-            .and(warp::any().map(move || Arc::clone(&state_for_server)))
-            .map(|ws: warp::ws::Ws, state| {
-                ws.on_upgrade(move |socket| handle_connection(socket, state))
+            .map(move |ws: warp::ws::Ws| {
+                let rx_sub = tx_broadcast.subscribe();
+                ws.on_upgrade(move |socket| crate::websocket::server::handle_connection(socket, rx_sub))
             });
 
         // Servir arquivos estáticos da pasta "interface"
@@ -266,6 +272,19 @@ async fn async_main() {
             .allow_headers(vec!["Content-Type"]);
 
         let routes = ws_route.or(static_files).with(cors);
+
+        // Worker para coletar o estado e enviar para o broadcast
+        let s_loop = Arc::clone(&state_for_server);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(500));
+            loop {
+                interval.tick().await;
+                if let Ok(brain) = s_loop.try_lock() {
+                    let status = crate::websocket::bridge::collect_neural_status(&brain).await;
+                    let _ = tx.send(status);
+                }
+            }
+        });
 
         println!("✨ Interface Online em: http://127.0.0.1:3030");
         warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;
@@ -413,6 +432,14 @@ async fn async_main() {
         let body_feeling = interoception.sentir();
         if let Some(pensamento) = ego.update(body_feeling, current_time).await {
             if step % 100 == 0 { println!("    💭 Pensamento: {}", pensamento); }
+            
+            // Sincronizando o pensamento com o BrainState para o WebSocket
+            if let Ok(mut state) = brain_state.try_lock() {
+                state.ego.narrative_voice.pensamentos_recentes.push_back(pensamento);
+                if state.ego.narrative_voice.pensamentos_recentes.len() > 10 {
+                    state.ego.narrative_voice.pensamentos_recentes.pop_front();
+                }
+            }
         }
 
         // K. Telemetria
