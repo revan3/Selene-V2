@@ -269,10 +269,38 @@ async fn async_main() {
 
         // C. Filtragem sensorial
         let raw_retina = rx_vision.try_recv().unwrap_or_else(|_| vec![0.0f32; n_neurons]);
-        let raw_cochlea = rx_audio.try_recv().unwrap_or_else(|_| vec![0.0f32; n_neurons]);
-        
+
+        // CORREÇÃO E0308 (linhas 272 + 275):
+        // rx_audio recebe AudioSignal (enviado pelo audio.rs), não Vec<f32>.
+        // brainstem.modulate() espera &[f32].
+        // Solução: receber AudioSignal e converter os campos para Vec<f32>.
+        // AudioSignal.bandas contém o espectro FFT (Vec<f32>).
+        // Adicionamos energia e pitch_dominante ao final para enriquecer o sinal neural.
+        let audio_signal = rx_audio.try_recv().ok();
+        let raw_cochlea: Vec<f32> = match audio_signal {
+            Some(sig) => {
+                // Combina bandas espectrais + energia + pitch em um único vetor neural
+                let mut v = sig.bandas.clone();
+                v.push(sig.energia);
+                v.push(sig.pitch_dominante);
+                // Garante tamanho n_neurons por reamostragem simples
+                if v.len() != n_neurons {
+                    let ratio = v.len() as f32 / n_neurons as f32;
+                    (0..n_neurons)
+                        .map(|i| {
+                            let idx = (i as f32 * ratio) as usize;
+                            v.get(idx).copied().unwrap_or(0.0)
+                        })
+                        .collect()
+                } else {
+                    v
+                }
+            }
+            None => vec![0.0f32; n_neurons],
+        };
+
         let retina_input = thalamus.relay(&raw_retina, neuro.noradrenaline, &config);
-        let cochlea_input = brainstem.modulate(&raw_cochlea);
+        let cochlea_input = brainstem.modulate(&raw_cochlea);  // &[f32] ✓
 
         // D. Feedback
         if let Ok(memory) = rx_feedback.try_recv() {

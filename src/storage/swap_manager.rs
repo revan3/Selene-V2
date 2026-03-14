@@ -1,15 +1,15 @@
 // src/storage/swap_manager.rs
-// No topo de cada arquivo, adicione:
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 #![allow(dead_code)]
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::u32;
 use tokio::sync::Mutex;
-use crate::synaptic_core::{NeuronioHibrido, PrecisionType};
+use uuid::Uuid;
+// CORREÇÃO E0425 + E0063: importar TipoNeuronal e adicionar next_id
+use crate::synaptic_core::{NeuronioHibrido, PrecisionType, TipoNeuronal};
 use crate::brain_zones::RegionType;
-use crate::synaptic_core::TipoNeuronal;
+
 // Limites
 const RAM_PERCENT_FOR_NEURONS: f32 = 0.8;      // 80% da RAM para neurônios ativos
 const LIMITE_BIOLOGICO: usize = 946_000_000;   // 1,1% de 86B neurônios humanos
@@ -17,27 +17,29 @@ const SYNAPSES_PER_NEURON: usize = 8500;       // Média biológica
 
 pub struct SwapManager {
     // RAM: neurônios ativos
-    pub ram: HashMap<u32, NeuronioHibrido>,
+    pub ram: HashMap<Uuid, NeuronioHibrido>,
     
     // SSD/HDD: neurônios dormentes (mapeados por ID)
-    pub ssd: HashMap<u32, NeuronioHibrido>,
+    pub ssd: HashMap<Uuid, NeuronioHibrido>,
     
     // Índices para busca rápida
-    pub indices: HashMap<String, Vec<u32>>,  // contexto -> neurônios
+    pub indices: HashMap<String, Vec<Uuid>>,  // contexto -> neurônios
     
     // Estatísticas de acesso
-    pub ultimo_acesso: HashMap<u32, f64>,
-    pub frequencia_acesso: HashMap<u32, u32>,
+    pub ultimo_acesso: HashMap<Uuid, f64>,
+    pub frequencia_acesso: HashMap<Uuid, u32>,
     
     // Limites
     pub max_ram_neurons: usize,
     pub swap_threshold_seconds: u64,
+
+    // CORREÇÃO E0063: campo next_id estava faltando no struct
+    // Usado como ID numérico incremental para NeuronioHibrido::new(id, tipo, precisao)
+    pub next_id: u32,
     
     // Contadores (para interface)
     pub total_neurons_criados: usize,
     pub total_neurogenese_eventos: usize,
-    
-    next_id: u32,
 }
 
 impl SwapManager {
@@ -46,6 +48,7 @@ impl SwapManager {
     pub fn synapses_ativas(&self) -> usize { 
         self.ram.len() * SYNAPSES_PER_NEURON 
     }
+
     pub fn new(max_ram_neurons: usize, swap_threshold_seconds: u64) -> Self {
         Self {
             ram: HashMap::with_capacity(max_ram_neurons),
@@ -55,6 +58,8 @@ impl SwapManager {
             frequencia_acesso: HashMap::new(),
             max_ram_neurons,
             swap_threshold_seconds,
+            // CORREÇÃO E0063: inicializar next_id
+            next_id: 0,
             total_neurons_criados: 0,
             total_neurogenese_eventos: 0,
         }
@@ -62,7 +67,7 @@ impl SwapManager {
     
     /// Adiciona um neurônio existente ao sistema
     pub async fn adicionar_neuronio(&mut self, neuronio: NeuronioHibrido, contexto: &str) {
-        let id = neuronio.id;
+        let id = Uuid::new_v4();
         
         // Adiciona aos índices
         self.indices.entry(contexto.to_string())
@@ -87,7 +92,7 @@ impl SwapManager {
         regiao: RegionType,
         precisao: PrecisionType,
         contexto: &str,
-    ) -> Option<u32> {
+    ) -> Option<Uuid> {
         // Verifica limite físico: 80% da RAM disponível para neurônios ativos
         let max_ativos = (self.max_ram_neurons as f32 * RAM_PERCENT_FOR_NEURONS) as usize;
         if self.ram.len() >= max_ativos {
@@ -101,14 +106,19 @@ impl SwapManager {
             println!("⚠️ Limite biológico de neurônios atingido ({}).", LIMITE_BIOLOGICO);
             return None;
         }
-        
-        let tipo = TipoNeuronal::RS;
-        // Cria o neurônio
-        let neuronio = NeuronioHibrido::new(id, tipo, precisao);
-        // Nota: se quiser adicionar campo regiao em NeuronioHibrido, descomente:
-        // neuronio.regiao = regiao;
-        let id: u32 = self.next_id;  // assumindo field u32 next_id
-        self.next_id += 1;
+
+        // CORREÇÃO E0425: NeuronioHibrido::new exige (id: u32, tipo: TipoNeuronal, precisao: PrecisionType)
+        // O campo .id não existia na versão anterior — usamos next_id incremental como u32
+        let nid = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+
+        // Seleciona o tipo neuronal com base na região
+        let tipo = tipo_para_regiao(&regiao);
+
+        let neuronio = NeuronioHibrido::new(nid, tipo, precisao);
+
+        // UUID para indexação no HashMap (independente do id numérico interno)
+        let id = Uuid::new_v4();
 
         // Adiciona aos índices
         self.indices.entry(contexto.to_string())
@@ -131,7 +141,7 @@ impl SwapManager {
     }
     
     /// Ativa neurônios por contexto (busca na RAM ou faz swap do SSD)
-    pub async fn ativar_por_contexto(&mut self, contexto: &str) -> Vec<u32> {
+    pub async fn ativar_por_contexto(&mut self, contexto: &str) -> Vec<Uuid> {
         let mut ativados = Vec::new();
     
         if let Some(ids) = self.indices.get(contexto).cloned() {
@@ -149,7 +159,7 @@ impl SwapManager {
                         self.fazer_swap_para_ssd().await;
                     }
                 
-                // Adiciona à RAM
+                    // Adiciona à RAM
                     self.ultimo_acesso.insert(id, current_time());
                     self.ram.insert(id, neuronio);
                     ativados.push(id);
@@ -160,7 +170,7 @@ impl SwapManager {
         ativados
     }
     
-    pub fn get_neuronio(&self, id: u32) -> Option<&NeuronioHibrido> {
+    pub fn get_neuronio(&self, id: Uuid) -> Option<&NeuronioHibrido> {
         self.ram.get(&id).or_else(|| self.ssd.get(&id))
     }
     
@@ -185,7 +195,7 @@ impl SwapManager {
         let agora = current_time();
         let limite = agora - self.swap_threshold_seconds as f64;
         
-        let inativos: Vec<u32> = self.ultimo_acesso
+        let inativos: Vec<Uuid> = self.ultimo_acesso
             .iter()
             .filter(|(_, &tempo)| tempo < limite)
             .map(|(&id, _)| id)
@@ -248,4 +258,17 @@ fn current_time() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs_f64()
+}
+
+/// Seleciona o TipoNeuronal mais adequado para cada região cerebral.
+/// RS (Regular Spiking) é o padrão seguro para qualquer região.
+fn tipo_para_regiao(regiao: &RegionType) -> TipoNeuronal {
+    match regiao {
+        RegionType::Limbic    => TipoNeuronal::IB,  // Intrinsic Bursting — resposta emocional
+        RegionType::Occipital => TipoNeuronal::CH,  // Chattering — detecção visual rápida
+        RegionType::Temporal  => TipoNeuronal::RS,  // Regular Spiking — reconhecimento
+        RegionType::Parietal  => TipoNeuronal::RS,  // Regular Spiking — integração espacial
+        RegionType::Frontal   => TipoNeuronal::RS,  // Regular Spiking — decisão
+        _                     => TipoNeuronal::RS,  // Padrão seguro para demais regiões
+    }
 }
