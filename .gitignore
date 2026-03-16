@@ -1,0 +1,43 @@
+# ── Build artifacts ──────────────────────────────────────
+target/
+*.pdb
+*.exe
+*.dll
+*.so
+*.dylib
+
+# ── VSCode Local History (arquivos de histórico do editor) ──
+.history-files/
+.history/
+
+# ── SurrealDB / RocksDB ──────────────────────────────────
+selene_memories.db/
+*.db/
+*.db
+
+# ── Logs e crash reports ─────────────────────────────────
+selene_debug.log
+selene_crash_report.txt
+dashboard_log.txt
+
+# ── Arquivos temporários ─────────────────────────────────
+nvme_buffer.bin
+*.tmp
+*.bak
+
+# ── Ambientes virtuais Python ────────────────────────────
+Scripts/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# ── IDE / OS ─────────────────────────────────────────────
+.vscode/settings.json
+.idea/
+Thumbs.db
+.DS_Store
+
+# ── Cargo lock (opcional manter, mas não é crítico para lib) ──
+# Cargo.lock   ← mantemos para binários

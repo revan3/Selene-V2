@@ -1,0 +1,3 @@
+[submodule "Selene_Brain_2.0/selene_kernel"]
+	path = Selene_Brain_2.0/selene_kernel
+	url = https://github.com/revan3/Selene-V2
