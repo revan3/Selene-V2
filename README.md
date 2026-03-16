@@ -307,18 +307,35 @@ cargo run --release
 
 ### Interface WebSocket
 
-Com o sistema rodando, acesse `ws://localhost:3030` para monitoramento em tempo real.
+Com o sistema rodando, acesse `http://localhost:3030` no navegador para abrir a interface neural.
 
-Formato da mensagem:
+O WebSocket é exposto em `ws://localhost:3030/selene`.
+
+Formato da mensagem enviada pelo Rust (`NeuralStatus`):
 ```json
 {
-  "timestamp": 1234.5,
-  "serotonin": 0.85,
-  "dopamine": 0.72,
-  "cortisol": 0.12,
-  "emotion": -0.03,
-  "arousal": 1.2,
-  "alertness": 0.95
+  "neurotransmissores": {
+    "dopamina": 0.72,
+    "serotonina": 0.85,
+    "noradrenalina": 0.60
+  },
+  "hardware": {
+    "cpu_temp": 62.5,
+    "ram_usage_gb": 8.3
+  },
+  "ego": {
+    "pensamentos": ["Processando estímulo visual..."],
+    "sentimento_atual": 0.15
+  },
+  "atividade": {
+    "step": 12450,
+    "alerta": 0.95,
+    "emocao": -0.03
+  },
+  "swap": {
+    "neuronios_ativos": 5000,
+    "capacidade_max": 1000000
+  }
 }
 ```
 
@@ -400,6 +417,30 @@ src/
 
 ---
 
+## Bugs Corrigidos na V2.2
+
+### 🔴 Erros de compilação (impediam `cargo build`)
+
+**1. `tipo_para_regiao` sem chave de fechamento**
+- `arquivar_para_hdd` acidentalmente colocado dentro da função livre — movido para `impl SwapManager`
+
+**2. Import `surrealdb::engine::local::Mem` inválido**
+- Feature `kv-mem` não habilitada no Cargo.toml — import removido
+
+**3. `tx` e `brain_state` movidos para closure antes do `tokio::spawn`**
+- Clones antecipados antes do closure `ws_route` resolvem o `E0382`
+
+**4. `limbic` sem `mut`**
+- `let limbic` → `let mut limbic` em main.rs
+
+**5. `panic_info.location()` com lifetime inválido (`E0521`)**
+- Substituído por `.map(|l| (l.file().to_string(), l.line()))` para converter antes de escapar o closure
+
+**6. `ModeloDinamico` e `NeuronioHibrido` sem `Serialize/Deserialize`**
+- Necessário para `arquivar_para_hdd` serializar neurônios com `serde_json`
+
+---
+
 ## Bugs Corrigidos na V2.1
 
 ### 🔴 Críticos (impediam qualquer disparo)
@@ -450,7 +491,7 @@ src/
 
 ## Roadmap
 
-### Sprint atual (v2.1) ✅
+### Sprint atual (v2.2) ✅
 - [x] Correção do dt (substeps de 1ms)
 - [x] Período refratário correto
 - [x] STDP com tau=20ms
@@ -459,14 +500,18 @@ src/
 - [x] ID compacto u32 em vez de UUID
 - [x] LTD anti-Hebbiana no STDP
 - [x] Threshold adaptivo
+- [x] 6 erros de compilação corrigidos (E0308, E0382, E0432, E0521, E0596, E0277)
+- [x] `NeuronioHibrido` + `ModeloDinamico` com Serialize/Deserialize
+- [x] Interface WebSocket corrigida (URL, parsing NeuralStatus, handlers deduplicados)
+- [x] `crate-type = ["cdylib", "rlib"]` e `nokhwa` com features corretas
 
-### Sprint 2 (v2.2)
+### Sprint 2 (v2.3)
 - [ ] `src/gpu/wgpu.rs` — aceleração GPU para camadas densas
 - [ ] `src/meta/consciousness.rs` — metacognição e auto-monitoramento
 - [ ] `src/pid_controller.rs` — homeostase de temperatura neural
 - [ ] Temperatura real de CPU (WMI Windows / sysfs Linux)
 
-### Sprint 3 (v2.3)
+### Sprint 2 (v2.3)
 - [ ] Onset detection no `audio.rs` para Temporal
 - [ ] Dashboard WebSocket com gráficos de spike em tempo real
 - [ ] Vocabulário com reforço via `learning/rl.rs`

@@ -2,3 +2,9 @@
 /data
 /venv
 /selene_memories.db
+/selene_bootstrap.surql
+/selene_implementation_brief.docx
+/selene_debug.log
+/cargo.lock
+/.gitignore
+/Scripts

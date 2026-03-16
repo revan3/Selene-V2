@@ -300,7 +300,14 @@
   <div class="panel panel-left">
     <div class="section-title">◈ Núcleos Neurais</div>
     <div id="proc-cards"></div>
-  </div>
+
+    <div class="section-title" style="margin-top:20px">◈ Comandos de Scripts</div>
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <button class="btn btn-voice" onclick="executarScript('generate_lexicon.py')" style="width:100%; justify-content:center; border-color: #00FF88; color: #00FF88;">1. GERAR LÉXICO</button>
+      <button class="btn btn-voice" onclick="executarScript('selene_tutor.py')" style="width:100%; justify-content:center; border-color: #FFD700; color: #FFD700;">2. INICIAR TUTOR</button>
+      <button class="btn btn-voice" onclick="executarScript('selene_exam.py')" style="width:100%; justify-content:center; border-color: var(--crimson-glow); color: var(--crimson-glow);">3. REALIZAR EXAME</button>
+    </div>
+    </div>
 
   <!-- CENTER -->
   <div class="panel panel-center">
@@ -401,61 +408,48 @@ let useSimulatedData = false;
 let lastRealData = null;
 
 function connectWebSocket() {
-    // TENTATIVA 1: Baseada no comportamento do seu main.rs
-    // Se o seu servidor no Rust não define um .path("selene"), 
-    // a conexão deve ser feita na raiz "/"
-    const wsUrl = "ws://localhost:3030"; 
-    
-    console.log('🔗 Tentando sincronia neural na raiz:', wsUrl);
-    
+    // O servidor Rust expõe o WebSocket em ws://localhost:3030/selene
+    // (definido em websocket/mod.rs: warp::path("selene").and(warp::ws()))
+    const wsUrl = "ws://localhost:3030/selene";
+
+    console.log('🔗 Conectando ao kernel neural:', wsUrl);
+
     socket = new WebSocket(wsUrl);
-    
+
     socket.onopen = function() {
         console.log('✅ SELENE CONECTADA COM SUCESSO');
         document.getElementById('connection-led').style.background = '#00FF88';
+        document.getElementById('connection-led').style.boxShadow = '0 0 12px #00FF88';
         document.getElementById('connection-status').textContent = 'ONLINE';
         addChatMsg('system', 'NEXUS', 'Interface vinculada ao Kernel 2.0.');
+        useSimulatedData = false;
     };
 
     socket.onmessage = function(event) {
-        // O seu main.rs envia o BrainState (Telemetria)
         try {
             const data = JSON.parse(event.data);
             updateMetricsWithRealData(data);
         } catch(e) {
-            // Se o Rust mandar texto puro (Pensamentos)
+            // Rust mandou texto puro (pensamento, log)
             addChatMsg('system', 'SELENE', event.data);
         }
     };
 
-    socket.onclose = function() {
+    socket.onclose = function(e) {
+        console.log('❌ Conexão encerrada:', e.reason);
         document.getElementById('connection-led').style.background = 'var(--crimson-bright)';
+        document.getElementById('connection-led').style.boxShadow = '0 0 12px var(--crimson-bright)';
         document.getElementById('connection-status').textContent = 'CONEXÃO PERDIDA';
-        // Tenta reconectar a cada 5 segundos para poupar o seu R5 3500U
-        setTimeout(connectWebSocket, 5000); 
+        useSimulatedData = true;
+        setTimeout(() => {
+            console.log('🔄 Tentando reconectar aos núcleos...');
+            connectWebSocket();
+        }, 5000);
     };
 
     socket.onerror = function(err) {
-        console.error('❌ Falha crítica no túnel WS. Verifique se o Cargo Run está ativo.');
+        console.error('⚠️ Erro na interface neural — verifique se o cargo run está ativo:', err);
     };
-
-  socket.onclose = function(e) {
-    console.log('❌ Conexão encerrada:', e.reason);
-    document.getElementById('connection-led').style.background = 'var(--crimson-bright)';
-    document.getElementById('connection-status').textContent = 'CONEXÃO PERDIDA';
-    document.getElementById('connection-led').style.boxShadow = '0 0 12px var(--crimson-bright)';
-    
-    // Tentativa de reconexão inteligente
-    setTimeout(() => {
-      console.log('🔄 Tentando reconectar aos núcleos...');
-      connectWebSocket();
-    }, 5000);
-  };
-
-  socket.onerror = function(err) {
-    console.error('⚠️ Erro na interface neural:', err);
-    // Não precisamos de alerta aqui pois o onclose já trata a reconexão
-  };
 }
 // ════════════════════════════════════════════════════════════════
 //  CHEMICAL PROFILES PER NUCLEUS (IGUAL AO ORIGINAL)
@@ -560,48 +554,64 @@ let totalSyn = randF(100, 200);
 // ════════════════════════════════════════════════════════════════
 //  FUNÇÃO PARA ATUALIZAR COM DADOS REAIS
 // ════════════════════════════════════════════════════════════════
+// Interpreta o NeuralStatus enviado pelo Rust via WebSocket.
+// Formato real (bridge.rs):
+// { neurotransmissores: {dopamina, serotonina, noradrenalina},
+//   hardware: {cpu_temp, ram_usage_gb},
+//   ego: {pensamentos, sentimento_atual},
+//   atividade: {step, alerta, emocao},
+//   swap: {neuronios_ativos, capacidade_max} }
 function updateMetricsWithRealData(data) {
-  if (!data || !data.regions) return;
-  
-  data.regions.forEach(regionData => {
-    const proc = procData.find(p => p.id === regionData.id);
-    if (proc) {
-      proc.temp = regionData.temp || proc.temp;
-      proc.cpu = regionData.cpu || proc.cpu;
-      proc.ram = regionData.ram || proc.ram;
-      proc.gpu = regionData.gpu || proc.gpu;
-      proc.disk = regionData.disk || proc.disk;
-      proc.freq = regionData.freq || proc.freq;
-      proc.lat = regionData.lat || proc.lat;
-      proc.spikes = regionData.spikes || proc.spikes;
-      
-      if (regionData.chem && regionData.chem.length > 0) {
-        regionData.chem.forEach(chemData => {
-          const chem = proc.chem.find(c => c.key === chemData.key);
-          if (chem) chem.val = chemData.val;
-        });
-      }
-    }
-  });
-  
-  if (data.global) {
-    document.getElementById('freq-display').innerHTML = 
-      (data.global.freq_avg || 100).toFixed(1) + '<span class="freq-unit">Hz</span>';
-    document.getElementById('lat-display').innerHTML = 
-      (data.global.lat_avg || 10).toFixed(1) + '<span style="font-size:12px;color:var(--text-dim)"> ms</span>';
-    
-    const syn = data.global.total_synapses || 150;
-    document.getElementById('synapse-display').innerHTML = 
-      syn.toFixed(1) + '<span style="font-size:11px;color:var(--text-dim)">K syn/s</span>';
-    
-    updateGlobalBars(
-      data.global.cpu_avg || 50,
-      data.global.ram_avg || 40,
-      data.global.gpu_avg || 30,
-      data.global.disk_avg || 20
-    );
+  if (!data) return;
+
+  // Neurotransmissores → atualiza quimicos dos núcleos
+  if (data.neurotransmissores) {
+    const dopa = Math.round((data.neurotransmissores.dopamina     || 0) * 100);
+    const sero = Math.round((data.neurotransmissores.serotonina   || 0) * 100);
+    const nora = Math.round((data.neurotransmissores.noradrenalina|| 0) * 100);
+    procData.forEach(p => {
+      p.chem.forEach(c => {
+        if (c.key === 'dopa') c.val = dopa;
+        if (c.key === 'sero') c.val = sero;
+        if (c.key === 'nora') c.val = nora;
+      });
+    });
   }
-  
+
+  // Hardware → barras globais e temperatura
+  if (data.hardware) {
+    const cpuTemp  = data.hardware.cpu_temp    || 0;
+    const ramGb    = data.hardware.ram_usage_gb || 0;
+    const ramPct   = Math.min(100, ramGb * 6.25); // assume 16 GB max
+    updateGlobalBars(ramPct, ramPct, 0, 0);
+    // Propaga temperatura para todos os núcleos
+    procData.forEach(p => { p.temp = cpuTemp; });
+  }
+
+  // Atividade → displays de frequência e latência
+  if (data.atividade) {
+    document.getElementById('freq-display').innerHTML =
+      (data.atividade.alerta || 0).toFixed(2) +
+      '<span class="freq-unit"> alerta</span>';
+    document.getElementById('lat-display').innerHTML =
+      (data.atividade.emocao || 0).toFixed(2) +
+      '<span style="font-size:12px;color:var(--text-dim)"> emo</span>';
+  }
+
+  // Swap → display de sinapses ativas
+  if (data.swap) {
+    const synK = ((data.swap.neuronios_ativos || 0) * 8500 / 1000).toFixed(1);
+    document.getElementById('synapse-display').innerHTML =
+      synK + '<span style="font-size:11px;color:var(--text-dim)">K syn/s</span>';
+  }
+
+  // Ego → pensamentos no chat (apenas se houver novos)
+  if (data.ego && Array.isArray(data.ego.pensamentos)) {
+    data.ego.pensamentos.forEach(t => {
+      if (t && t.trim()) addChatMsg('system', 'SELENE', t);
+    });
+  }
+
   updateUIFromProcData();
 }
 
@@ -841,17 +851,22 @@ const RESPONSES = [
 
 function sendMessage() {
   const input = document.getElementById('chat-input');
-  const msg = input.value.trim();
-  if (!msg) return;
-  addChatMsg('user', 'OPERADOR', msg);
+  const text = input.value.trim();
+  if (!text) return;
+
+  // Mostra a mensagem do usuário no chat independente do estado da conexão
+  addChatMsg('user', 'OPERADOR', text);
   input.value = '';
-  
+
   if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: 'chat', message: msg }));
+    // Envia para o kernel Rust
+    socket.send(text);
+  } else {
+    // Sem conexão: resposta simulada
+    setTimeout(() => {
+      addChatMsg('system', 'NEXUS', RESPONSES[rand(0, RESPONSES.length - 1)]);
+    }, 600);
   }
-  
-  setTimeout(() => addChatMsg('system','NEXUS · IA', RESPONSES[rand(0,RESPONSES.length-1)]),
-    700 + Math.random()*600);
 }
 
 function addChatMsg(type, sender, text) {
@@ -1430,6 +1445,20 @@ connectWebSocket();
 setInterval(updateClock,    1000);
 setInterval(updateMetricsSimulated,  2000);
 setInterval(renderWaveform, 3500);
+// Função para chamar os scripts da pasta scripts/
+function executarScript(nomeArquivo) {
+  console.log("Solicitando execução de: " + nomeArquivo);
+  // Envia o comando via WebSocket para o backend Rust
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({
+      action: "run_script",
+      script: nomeArquivo
+    }));
+    alert("Comando enviado: " + nomeArquivo);
+  } else {
+    alert("Erro: Selene não está conectada.");
+  }
+}
 </script>
 </body>
 </html>

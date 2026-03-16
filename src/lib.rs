@@ -12,12 +12,15 @@ pub mod storage;
 pub mod neurochem;
 pub mod sleep_manager;
 pub mod config;
+pub mod sleep_cycle;
+pub mod websocket;
 pub mod compressor;
 pub mod ego;
 pub mod thalamus;
 pub mod interoception;
 pub mod basal_ganglia;
 pub mod brainstem;
+pub mod learning;
 
 // Re-exportações
 pub use sleep_manager::SleepManagerV2 as SleepManager;

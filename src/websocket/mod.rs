@@ -1,47 +1,68 @@
 // src/websocket/mod.rs
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 use warp::Filter;
 
-// Re-exportar para o main.rs conseguir ver
+// Re-exportar para o main.rs conseguir acessar
 pub mod bridge;
 pub mod server;
 
 pub use bridge::{BrainState, NeuralStatus};
 
 pub async fn start_websocket_server(brain_state: Arc<Mutex<BrainState>>) {
-    let (tx, _) = tokio::sync::broadcast::channel::<NeuralStatus>(100);
-    let tx_for_ws = tx.clone();
-    let brain_for_ws = Arc::clone(&brain_state);
+    // Canal de broadcast para enviar status neural para todos os clientes conectados
+    let (tx, _) = broadcast::channel::<NeuralStatus>(100);
+
+    // Clona antes dos closures que consomem por move
+    let tx_telemetry = tx.clone();
+    let brain_state_telemetry = brain_state.clone();
 
     // Rota WebSocket
     let ws_route = warp::path("selene")
         .and(warp::ws())
         .map(move |ws: warp::ws::Ws| {
-            let tx = tx_for_ws.clone();
-            let brain = Arc::clone(&brain_for_ws);
-            ws.on_upgrade(move |socket| server::handle_connection(socket, tx, brain))
+            // Clona o sender para esta conexão
+            let tx = tx.clone();
+            // Clona o Arc<Mutex<BrainState>> para esta conexão
+            let brain = Arc::clone(&brain_state);
+
+            ws.on_upgrade(move |socket| {
+                // Cria um Receiver específico para esta conexão WebSocket
+                let rx = tx.subscribe();
+                server::handle_connection(socket, rx, brain)
+            })
         });
 
-    // Rota Estática (Interface)
-    let static_files = warp::fs::dir("interface");
-    let index = warp::path::end().and(warp::fs::file("interface/index.html"));
+    // Serve neural_interface.html na raiz (/)
+    // O arquivo deve estar em: selene_kernel/neural_interface.html
+    let index = warp::path::end().and(warp::fs::file("neural_interface.html"));
 
-    let routes = index.or(ws_route).or(static_files);
+    // Combina as rotas
+    let routes = index.or(ws_route);
 
-    println!("✨ Servidor Neural em http://127.0.0.1:3030");
-    
-    // Loop de Telemetria (Envia dados para o HTML a cada 500ms)
+    println!("✨ Servidor Neural rodando em http://127.0.0.1:3030");
+    println!("   → WebSocket em ws://127.0.0.1:3030/selene");
+    println!("   → Interface em http://127.0.0.1:3030/");
+
+    // Task de telemetria: envia status do cérebro a cada ~500ms para todos os clientes
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
         loop {
             interval.tick().await;
-            if let Ok(brain) = brain_state.try_lock() {
-                let status = bridge::collect_neural_status(&brain).await;
-                let _ = tx.send(status);
+
+            // Tenta adquirir o lock sem bloquear forever (try_lock)
+            if let Ok(brain_guard) = brain_state_telemetry.try_lock() {
+                let status = bridge::collect_neural_status(&brain_guard).await;
+                let _ = tx_telemetry.send(status);  // envia para todos os subscribers
+            } else {
+                // Opcional: log se estiver muito contended
+                // eprintln!("Não consegui lock do brain state (contention)");
             }
         }
     });
 
-    warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;
+    // Inicia o servidor Warp
+    warp::serve(routes)
+        .run(([127, 0, 0, 1], 3030))
+        .await;
 }

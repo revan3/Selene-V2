@@ -9,7 +9,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 use crate::brain_zones::RegionType;
 use surrealdb::Surreal;
-use surrealdb::engine::local::{Db, RocksDb, Mem}; // Importação direta corrigida
+use surrealdb::engine::local::{Db, RocksDb};
 use std::time::Duration;
 
 pub mod memory_tier;

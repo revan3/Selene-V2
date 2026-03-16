@@ -336,7 +336,7 @@ impl HH {
 /// Para 90–95% dos neurônios (RS/IB/CH/FS/LT): overhead de 8 bytes por neurônio.
 /// Para neurônios TC/RZ: 24 bytes adicionais no heap.
 /// Impacto no BPN_8K total: < 0.1% — desprezível.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModeloDinamico {
     /// Izhikevich puro — RS, IB, CH, FS, LT.
     Izhikevich,
@@ -451,7 +451,7 @@ const THRESHOLD_DECAY: f32 = 0.995; // threshold retorna ao padrão por step
 ///   2c. Calcula I_hh = I_Na + I_K + I_L
 ///   2d. I_eff = I_externo − I_hh × HH_SCALE
 ///   3. Substeps Izhikevich com I_eff (em vez de I_externo direto)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NeuronioHibrido {
     pub id:            u32,
     pub tipo:          TipoNeuronal,

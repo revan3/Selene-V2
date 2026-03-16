@@ -272,3 +272,18 @@ fn tipo_para_regiao(regiao: &RegionType) -> TipoNeuronal {
         _                     => TipoNeuronal::RS,  // Padrão seguro para demais regiões
     }
 }
+
+impl SwapManager {
+    // --- NOVA FUNÇÃO PARA MEMÓRIA INFINITA ---
+    pub fn arquivar_para_hdd(&mut self, id: &Uuid) -> std::io::Result<()> {
+        if let Some(neuronio) = self.ssd.remove(id) {
+            let path_hdd = format!("D:/Selene_Archive/{}.json", id);
+            let dados = serde_json::to_string(&neuronio).unwrap();
+
+            // Grava o neurônio no HDD (D:) e libera espaço no NVMe/RAM
+            std::fs::write(path_hdd, dados)?;
+            println!("📦 [Cold Storage] Neurônio {} movido para o HDD (D:)", id);
+        }
+        Ok(())
+    }
+}
