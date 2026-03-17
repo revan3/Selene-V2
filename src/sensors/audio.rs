@@ -44,6 +44,7 @@ use spectrum_analyzer::{
 };
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -129,7 +130,22 @@ pub struct AudioSignal {
 /// # Parâmetros
 /// - `n_neurons`: tamanho do vetor de saída (= neurônios do TemporalLobe)
 /// - `tx`: canal de saída para o pipeline neural
-pub fn start_listening(n_neurons: usize, tx: Sender<AudioSignal>) {
+/// - `ativo`: flag compartilhado — false = envia silêncio, true = captura real
+pub fn start_listening(n_neurons: usize, tx: Sender<AudioSignal>, ativo: Arc<AtomicBool>) {
+    // Aguarda ativação antes de tentar abrir o microfone
+    loop {
+        if ativo.load(Ordering::Relaxed) { break; }
+        let silencio = AudioSignal {
+            bandas: vec![0.0; n_neurons],
+            onset: false,
+            energia: 0.0,
+            pitch_dominante: 0.0,
+        };
+        if tx.send(silencio).is_err() { return; }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    println!("[AUDIO] Sensor de áudio ativado — iniciando captura...");
+
     let host = cpal::default_host();
 
     // Tenta encontrar microfone padrão do sistema.
@@ -137,7 +153,7 @@ pub fn start_listening(n_neurons: usize, tx: Sender<AudioSignal>) {
         Some(d) => d,
         None => {
             println!("[AUDIO] Nenhum microfone encontrado. Enviando silêncio.");
-            return run_silencio(n_neurons, tx);
+            return run_silencio_com_flag(n_neurons, tx, ativo);
         }
     };
 
@@ -147,7 +163,7 @@ pub fn start_listening(n_neurons: usize, tx: Sender<AudioSignal>) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("[AUDIO] Erro ao obter configuração do microfone: {e}");
-            return run_silencio(n_neurons, tx);
+            return run_silencio_com_flag(n_neurons, tx, ativo);
         }
     };
 
@@ -235,7 +251,7 @@ pub fn start_listening(n_neurons: usize, tx: Sender<AudioSignal>) {
         }
         Err(e) => {
             eprintln!("[AUDIO] Não foi possível criar stream: {e}");
-            run_silencio(n_neurons, tx);
+            run_silencio_com_flag(n_neurons, tx, ativo);
         }
     }
 }
@@ -404,7 +420,6 @@ fn reamostrar(src: &[f32], target: usize) -> Vec<f32> {
 /// para manter seus neurônios em estado de repouso (e não congelados).
 fn run_silencio(n_neurons: usize, tx: Sender<AudioSignal>) {
     println!("[AUDIO] Modo silêncio ativo (sem microfone).");
-
     loop {
         let sinal_nulo = AudioSignal {
             bandas: vec![0.0; n_neurons],
@@ -412,13 +427,28 @@ fn run_silencio(n_neurons: usize, tx: Sender<AudioSignal>) {
             energia: 0.0,
             pitch_dominante: 0.0,
         };
-
-        if tx.send(sinal_nulo).is_err() {
-            break; // Pipeline fechado
-        }
-
-        // 50 Hz de "tick" silencioso
+        if tx.send(sinal_nulo).is_err() { break; }
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Versão flag-aware: envia silêncio quando desativado, sinal nulo quando sem microfone.
+fn run_silencio_com_flag(n_neurons: usize, tx: Sender<AudioSignal>, ativo: Arc<AtomicBool>) {
+    println!("[AUDIO] Modo silêncio com controle de flag ativo.");
+    loop {
+        let intervalo = if ativo.load(Ordering::Relaxed) {
+            Duration::from_millis(20) // 50 Hz quando ativo mas sem mic
+        } else {
+            Duration::from_millis(100) // 10 Hz quando desativado
+        };
+        let sinal_nulo = AudioSignal {
+            bandas: vec![0.0; n_neurons],
+            onset: false,
+            energia: 0.0,
+            pitch_dominante: 0.0,
+        };
+        if tx.send(sinal_nulo).is_err() { break; }
+        std::thread::sleep(intervalo);
     }
 }
 

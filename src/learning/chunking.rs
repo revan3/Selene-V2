@@ -129,8 +129,6 @@ impl Chunk {
 
         ConexaoSinaptica {
             id: self.id,
-            // UUID derivado do índice — substituir por UUID real do NeuronioDigital
-            // quando o mapa neurônio→UUID estiver disponível no storage.
             de_neuronio: Uuid::from_u128(
                 self.indices.first().copied().unwrap_or(0) as u128
             ),
@@ -141,9 +139,10 @@ impl Chunk {
             criada_em: agora,
             ultimo_uso: Some(agora),
             total_usos: self.frequencia,
-            // emocao_media decide camada de armazenamento no MemoryTierV2::criar_conexao()
             emocao_media: self.valence.clamp(0.0, 1.0),
             contexto_criacao: None,
+            contexto_semantico: crate::storage::memory_graph::ContextoSemantico::Hipotese,
+            marcador_poda: 1.0,
         }
     }
 

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 use crate::config::Config;
 use crate::storage::swap_manager::SwapManager;
+use crate::sensors::SensorFlags;
 
 // Estrutura principal que representa o "Estado Mental" para a Web
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -57,6 +58,10 @@ pub struct BrainState {
     pub hardware: (f32, f32),               // Temp, RAM
     pub atividade: (u64, f32, f32),         // Step, Alerta, Emoção
     pub ego: EgoVoiceState,
+    /// Sinaliza shutdown gracioso — setado pela interface via WebSocket
+    pub shutdown_requested: bool,
+    /// Flags de controle de sensores (AtomicBool compartilhados com threads dos sensores)
+    pub sensor_flags: SensorFlags,
 }
 
 pub struct EgoVoiceState {
@@ -65,7 +70,7 @@ pub struct EgoVoiceState {
 }
 
 impl BrainState {
-    pub fn new(swap: Arc<TokioMutex<SwapManager>>, cfg: &Config) -> Self {
+    pub fn new(swap: Arc<TokioMutex<SwapManager>>, cfg: &Config, sensor_flags: SensorFlags) -> Self {
         Self {
             swap_manager: swap,
             config: cfg.clone(),
@@ -76,6 +81,8 @@ impl BrainState {
                 pensamentos_recentes: VecDeque::with_capacity(10),
                 sentimento: 0.0,
             },
+            shutdown_requested: false,
+            sensor_flags,
         }
     }
 }

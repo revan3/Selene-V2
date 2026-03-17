@@ -104,7 +104,7 @@ impl HippocampusV2 {
                         // UUID gerado apenas para a *conexão*, não para o neurônio
                         let conexao = ConexaoSinaptica {
                             id: Uuid::new_v4(),
-                            de_neuronio: Uuid::from_u128(i as u128),   // índice como UUID
+                            de_neuronio: Uuid::from_u128(i as u128),
                             para_neuronio: Uuid::from_u128(j as u128),
                             peso: emotional_weight * rand::random::<f32>(),
                             criada_em: current_time as f64,
@@ -112,6 +112,8 @@ impl HippocampusV2 {
                             total_usos: 1,
                             emocao_media: emotional_weight,
                             contexto_criacao: None,
+                            contexto_semantico: crate::storage::memory_graph::ContextoSemantico::Hipotese,
+                            marcador_poda: 1.0,
                         };
                         conexoes.push(conexao);
                     }

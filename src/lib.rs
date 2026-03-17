@@ -24,7 +24,11 @@ pub mod learning;
 
 // Re-exportações
 pub use sleep_manager::SleepManagerV2 as SleepManager;
-pub use storage::NeuralEnactiveMemoryV2 as NeuralEnactiveMemory;
+pub use storage::NeuralEnactiveMemory;
+pub use storage::NeuralEnactiveMemoryV2;
+pub use storage::firing_rates_to_spike_bits;
+pub use storage::spike_bits_to_firing_rates;
+pub use storage::backup_to_hdd;
 
 // Brain zones
 pub use brain_zones::frontal::FrontalLobe;

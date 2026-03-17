@@ -75,7 +75,29 @@ impl AtivacaoHistorica {
     }
 }
 
+/// Contexto semântico de uma conexão — determina regras de poda
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum ContextoSemantico {
+    Realidade,   // conexão validada com o mundo real
+    Fantasia,    // conexão válida apenas em contexto imaginativo
+    Sonho,       // gerada pelo ciclo REM — hipótese criativa
+    Hipotese,    // aguardando validação contextual
+    Habito,      // padrão repetido consolidado
+}
+
+impl Default for ContextoSemantico {
+    fn default() -> Self { ContextoSemantico::Hipotese }
+}
+
 /// Uma CONEXÃO entre neurônios - a memória em si
+///
+/// REGRA DE PODA:
+///   peso >= 0.0  → conexão permanece no mapa sináptico
+///   peso <  0.0  → SINAPSE apagada (neurônios permanecem intactos)
+///
+/// O contexto determina se a poda é aplicada:
+///   - Realidade: poda agressiva (conexões absurdas são removidas)
+///   - Fantasia/Sonho: poda suave (conexões "impossíveis" são permitidas)
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ConexaoSinaptica {
     pub id: Uuid,
@@ -87,6 +109,43 @@ pub struct ConexaoSinaptica {
     pub total_usos: u32,
     pub emocao_media: f32,
     pub contexto_criacao: Option<Uuid>,
+    /// Contexto semântico — define regras de poda e validade
+    pub contexto_semantico: ContextoSemantico,
+    /// Acumulador de invalidações contextuais (decrementado quando a conexão
+    /// é contestada; quando atinge < 0.0 a sinapse é podada no N2)
+    pub marcador_poda: f32,
+}
+
+impl ConexaoSinaptica {
+    /// Retorna true se esta sinapse deve ser podada
+    pub fn deve_podar(&self) -> bool {
+        self.peso < 0.0 || self.marcador_poda < 0.0
+    }
+
+    /// Penaliza a conexão em contexto de realidade.
+    /// Se `contexto_semantico` for Fantasia ou Sonho, a penalidade é amortecida.
+    pub fn penalizar_contexto_real(&mut self, magnitude: f32) {
+        match self.contexto_semantico {
+            ContextoSemantico::Realidade | ContextoSemantico::Hipotese => {
+                self.marcador_poda -= magnitude;
+                self.peso = (self.peso - magnitude * 0.1).max(-1.0);
+            }
+            ContextoSemantico::Fantasia | ContextoSemantico::Sonho => {
+                // Conexões de fantasia/sonho recebem apenas 10% da penalidade
+                self.marcador_poda -= magnitude * 0.1;
+            }
+            ContextoSemantico::Habito => {
+                // Hábitos são resistentes à poda
+                self.marcador_poda -= magnitude * 0.05;
+            }
+        }
+    }
+
+    /// Reforça a conexão (usado no REM e na consolidação N1)
+    pub fn reforcar(&mut self, magnitude: f32) {
+        self.peso = (self.peso + magnitude).min(2.5);
+        self.marcador_poda = (self.marcador_poda + magnitude * 0.5).min(1.0);
+    }
 }
 
 /// O GRAFO COMPLETO - todas as conexões que já existiram
@@ -151,10 +210,12 @@ impl MemoryTierV2 {
         None
     }
     
-    pub async fn ciclo_rem(&mut self) {
+    /// Ciclo REM: recombina conexões esquecidas e retorna as novas conexões
+    /// criadas para que o sleep cycle as persista no DB.
+    pub async fn ciclo_rem(&mut self) -> Vec<ConexaoSinaptica> {
         println!("💤 Iniciando ciclo REM...");
-        
-        // 1. PEGA conexões "esquecidas" (não usadas há muito tempo)
+
+        // 1. Pega conexões "esquecidas" (não usadas há mais de 24h)
         let grafo = self.grafo_completo.clone();
         let esquecidas: Vec<_> = grafo.conexoes
             .values()
@@ -163,8 +224,9 @@ impl MemoryTierV2 {
             })
             .cloned()
             .collect();
-        
-        // 2. RECOMBINAÇÃO: Cria NOVAS conexões a partir de antigas
+
+        // 2. Recombinação: cria novas conexões a partir de pares de esquecidas
+        let mut novas: Vec<ConexaoSinaptica> = Vec::new();
         for par in esquecidas.chunks(2) {
             if par.len() == 2 {
                 let nova_conexao = ConexaoSinaptica {
@@ -177,23 +239,69 @@ impl MemoryTierV2 {
                     total_usos: 0,
                     emocao_media: (par[0].emocao_media + par[1].emocao_media) / 2.0,
                     contexto_criacao: None,
+                    contexto_semantico: ContextoSemantico::Sonho,
+                    marcador_poda: 0.5,
                 };
-                
-                Arc::get_mut(&mut self.grafo_completo).unwrap().conexoes.insert(nova_conexao.id, nova_conexao);
-                println!("   ✨ Nova conexão criada no REM!");
+                Arc::get_mut(&mut self.grafo_completo).unwrap()
+                    .conexoes.insert(nova_conexao.id, nova_conexao.clone());
+                novas.push(nova_conexao);
             }
         }
-        
-        // 3. REFORÇO: Fortalece conexões relacionadas a emoções fortes
+
+        // 3. Reforço: fortalece conexões emocionalmente salientes
         for conexao in Arc::get_mut(&mut self.grafo_completo).unwrap().conexoes.values_mut() {
             if conexao.emocao_media > 0.8 {
                 conexao.peso = (conexao.peso + 0.01).min(1.0);
             }
         }
-        
-        println!("💤 Ciclo REM concluído!");
+
+        println!("💤 Ciclo REM concluído! {} nova(s) conexão(ões) criada(s)", novas.len());
+        novas
     }
-    
+
+    /// FASE N2 — Poda sináptica contextual
+    ///
+    /// Remove SINAPSES (não neurônios) cujo marcador_poda < 0 ou peso < 0.
+    /// Conexões de Fantasia/Sonho têm limiar mais alto para sobreviver.
+    /// Retorna os IDs das sinapses podadas (para o sleep cycle deletar no DB).
+    pub fn podar_sinapses(&mut self) -> Vec<Uuid> {
+        let grafo = Arc::get_mut(&mut self.grafo_completo).expect("grafo em uso");
+
+        // Coleta IDs a podar (sem modificar o HashMap durante iteração)
+        let a_podar: Vec<Uuid> = grafo.conexoes
+            .values()
+            .filter(|c| {
+                if c.deve_podar() { return true; }
+                // Hipóteses nunca usadas e antigas (>7 dias) são removidas
+                if c.contexto_semantico == ContextoSemantico::Hipotese
+                    && c.total_usos == 0
+                    && c.ultimo_uso.map(|u| current_time() - u > 604_800.0).unwrap_or(true)
+                {
+                    return true;
+                }
+                false
+            })
+            .map(|c| c.id)
+            .collect();
+
+        for id in &a_podar {
+            grafo.conexoes.remove(id);
+            for idx in grafo.conexoes_por_origem.values_mut() {
+                idx.retain(|x| x != id);
+            }
+            for idx in grafo.conexoes_por_destino.values_mut() {
+                idx.retain(|x| x != id);
+            }
+            self.conexoes_ativas.remove(id);
+            self.conexoes_dormentes.remove(id);
+        }
+
+        if !a_podar.is_empty() {
+            println!("✂️  [N2] {} sinapses podadas (neurônios intactos)", a_podar.len());
+        }
+        a_podar
+    }
+
     pub async fn buscar_por_contexto(&self, contexto: &[f32], regiao: RegionType) -> Vec<Uuid> {
         self.grafo_completo.neuronios
             .values()

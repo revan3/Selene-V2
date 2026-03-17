@@ -307,6 +307,29 @@
       <button class="btn btn-voice" onclick="executarScript('selene_tutor.py')" style="width:100%; justify-content:center; border-color: #FFD700; color: #FFD700;">2. INICIAR TUTOR</button>
       <button class="btn btn-voice" onclick="executarScript('selene_exam.py')" style="width:100%; justify-content:center; border-color: var(--crimson-glow); color: var(--crimson-glow);">3. REALIZAR EXAME</button>
     </div>
+
+    <div class="section-title" style="margin-top:20px">◈ Sensores</div>
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <button class="btn" id="btn-audio"
+        onclick="toggleSensor('audio')"
+        style="width:100%; justify-content:center; border-color:#888; color:#888;">
+        🎙 ÁUDIO: INATIVO
+      </button>
+      <button class="btn" id="btn-video"
+        onclick="toggleSensor('video')"
+        style="width:100%; justify-content:center; border-color:#888; color:#888;">
+        📷 VÍDEO: INATIVO
+      </button>
+    </div>
+
+    <div class="section-title" style="margin-top:20px">◈ Sistema</div>
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <button class="btn" id="btn-shutdown"
+        onclick="solicitarDesligamento()"
+        style="width:100%; justify-content:center; border-color:#FF4444; color:#FF4444; font-weight:bold;">
+        ⏻ DESLIGAR SELENE
+      </button>
+    </div>
     </div>
 
   <!-- CENTER -->
@@ -428,6 +451,15 @@ function connectWebSocket() {
     socket.onmessage = function(event) {
         try {
             const data = JSON.parse(event.data);
+            // Eventos especiais do sistema
+            if (data.event === 'shutdown_ack') {
+                handleShutdownAck(data.msg);
+                return;
+            }
+            if (data.event === 'sensor_ack') {
+                console.log('[Selene] Sensor ACK:', data);
+                return;
+            }
             updateMetricsWithRealData(data);
         } catch(e) {
             // Rust mandou texto puro (pensamento, log)
@@ -1448,7 +1480,6 @@ setInterval(renderWaveform, 3500);
 // Função para chamar os scripts da pasta scripts/
 function executarScript(nomeArquivo) {
   console.log("Solicitando execução de: " + nomeArquivo);
-  // Envia o comando via WebSocket para o backend Rust
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({
       action: "run_script",
@@ -1458,6 +1489,62 @@ function executarScript(nomeArquivo) {
   } else {
     alert("Erro: Selene não está conectada.");
   }
+}
+
+// Estado local dos sensores
+const sensorState = { audio: false, video: false };
+
+function toggleSensor(sensor) {
+  const novoEstado = !sensorState[sensor];
+  sensorState[sensor] = novoEstado;
+
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ action: 'toggle_sensor', sensor, active: novoEstado }));
+  }
+
+  const btn = document.getElementById('btn-' + sensor);
+  const emoji = sensor === 'audio' ? '🎙' : '📷';
+  const nome  = sensor === 'audio' ? 'ÁUDIO' : 'VÍDEO';
+  if (novoEstado) {
+    btn.textContent = emoji + ' ' + nome + ': ATIVO';
+    btn.style.borderColor = '#00FF88';
+    btn.style.color = '#00FF88';
+  } else {
+    btn.textContent = emoji + ' ' + nome + ': INATIVO';
+    btn.style.borderColor = '#888';
+    btn.style.color = '#888';
+  }
+}
+
+function solicitarDesligamento() {
+  if (!confirm("Desligar Selene?\n\nO sistema irá fazer backup e encerrar com segurança.")) return;
+
+  const btn = document.getElementById('btn-shutdown');
+  btn.disabled = true;
+  btn.textContent = '⏳ DESLIGANDO...';
+  btn.style.borderColor = '#888';
+  btn.style.color = '#888';
+
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ action: "shutdown" }));
+  } else {
+    alert("Selene não está conectada via WebSocket.");
+    btn.disabled = false;
+    btn.textContent = '⏻ DESLIGAR SELENE';
+    btn.style.borderColor = '#FF4444';
+    btn.style.color = '#FF4444';
+  }
+}
+
+// Handler de evento de shutdown recebido do backend
+function handleShutdownAck(msg) {
+  const btn = document.getElementById('btn-shutdown');
+  if (btn) {
+    btn.textContent = '✅ DESLIGAMENTO INICIADO';
+    btn.style.borderColor = '#00FF88';
+    btn.style.color = '#00FF88';
+  }
+  console.log('[Selene] Shutdown ACK:', msg);
 }
 </script>
 </body>

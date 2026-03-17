@@ -55,6 +55,10 @@ required-features = ["test-bin"]
 name = "benchmark"
 path = "src/bin/benchmark.rs"
 
+[[bin]]
+name = "learning_test"
+path = "src/bin/learning_test.rs"
+
 [profile.release]
 opt-level = 2
 lto = "thin"

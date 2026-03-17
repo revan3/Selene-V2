@@ -67,10 +67,12 @@ use storage::swap_manager::SwapManager;
 use sensors::camera::VisualTransducer;
 use sensors::audio;
 use sensors::hardware::HardwareSensor;
+use sensors::SensorFlags;
 
 // Imports de storage
 use storage::{BrainStorage, NeuralEnactiveMemory};
 use storage::memory_tier::MemoryTier;
+use storage::memory_graph::MemoryTierV2;
 
 // Chunking engine
 use learning::chunking::ChunkingEngine;
@@ -276,18 +278,22 @@ async fn async_main() {
     let mut basal_ganglia = BasalGanglia::new(&config);
     let mut brainstem = Brainstem::new();
 
-    // --- 10. DISPARO DOS SENTIDOS ---
-    println!("📷 Iniciando sensores...");
-    let mut camera = VisualTransducer::new(n_neurons);
+    // --- 10. DISPARO DOS SENTIDOS (desativados por padrão) ---
+    println!("📷 Inicializando sensores (DESATIVADOS — ative via interface)...");
+    let sensor_flags = SensorFlags::new_desativados();
+
+    let video_flag = sensor_flags.video_ativo.clone();
+    let mut camera = VisualTransducer::new(n_neurons, video_flag);
     thread::spawn(move || camera.run(tx_vision));
 
+    let audio_flag = sensor_flags.audio_ativo.clone();
     let tx_audio_clone = tx_audio.clone();
-    thread::spawn(move || audio::start_listening(n_neurons, tx_audio_clone));
+    thread::spawn(move || audio::start_listening(n_neurons, tx_audio_clone, audio_flag));
 
     // --- 11. INICIAR SERVIDOR WEB INTEGRADO ---
     println!("🌐 Iniciando interface neural integrada...");
     
-    let brain_state = Arc::new(TokioMutex::new(BrainState::new(Arc::clone(&swap_manager), &config)));
+    let brain_state = Arc::new(TokioMutex::new(BrainState::new(Arc::clone(&swap_manager), &config, sensor_flags)));
     let state_for_server = Arc::clone(&brain_state);
 
     let _server_handle = tokio::spawn(async move {
@@ -316,13 +322,29 @@ async fn async_main() {
     let mut freq_hz: u64 = FREQ_ATIVA_HZ;
 
     // --- 13. CICLO DIA/NOITE ---
-    let mut ciclo_sono = CicloSono::new();
+    let grafo_sinaptico = Arc::new(TokioMutex::new(MemoryTierV2::new()));
+    let mut ciclo_sono = CicloSono::new()
+        .with_grafo(Arc::clone(&grafo_sinaptico))
+        .with_db(Arc::clone(&storage_db));
     let mut tempo_acordado = Duration::from_secs(0);
     let dia_duracao = Duration::from_secs(16 * 60 * 60);
 
     // --- 14. LOOP NEURAL PRINCIPAL ---
     loop {
         current_time += dt;
+
+        // VERIFICAÇÃO DE SHUTDOWN — checar antes de qualquer processamento
+        {
+            if let Ok(state) = brain_state.try_lock() {
+                if state.shutdown_requested {
+                    println!("\n🛑 [MAIN] Shutdown solicitado. Encerrando loop neural...");
+                    drop(state);
+                    sleep_cycle::CicloSono::shutdown_gracioso(&mut *memory_tier.lock().await).await;
+                    println!("✅ Selene encerrada com segurança.");
+                    std::process::exit(0);
+                }
+            }
+        }
 
         if tempo_acordado >= dia_duracao {
             println!("\n🌙 Hora de dormir! Iniciando ciclo de sono...");
@@ -374,10 +396,10 @@ async fn async_main() {
         let retina_input = thalamus.relay(&raw_retina, neuro.noradrenaline, &config);
         let cochlea_input = brainstem.modulate(&raw_cochlea);
 
-        // D. Feedback
+        // D. Feedback (recall de memória → imaginação mental)
         if let Ok(memory) = rx_feedback.try_recv() {
-            mental_imagery_visual = memory.visual_pattern;
-            mental_imagery_auditory = memory.auditory_pattern;
+            mental_imagery_visual = memory.visual_rates();
+            mental_imagery_auditory = memory.auditory_rates();
         }
 
         // E. Modulação por serotonina
@@ -451,15 +473,15 @@ async fn async_main() {
 
         // I. Memória
         if emotion.abs() > 0.6 {
-            let snapshot = NeuralEnactiveMemory {
-                timestamp: elapsed as f64,
-                emotion_state: emotion,
-                arousal_state: arousal,
-                visual_pattern: vision_full.clone(),
-                auditory_pattern: cochlea_input.clone(),
-                frontal_intent: action.clone(),
-                label: format!("exp_{:.2}_{}", emotion, step),
-            };
+            let snapshot = NeuralEnactiveMemory::from_firing_rates(
+                elapsed as f64,
+                emotion,
+                arousal,
+                &vision_full,
+                &cochlea_input,
+                action.clone(),
+                format!("exp_{:.2}_{}", emotion, step),
+            );
             if emotion.abs() > 0.8 {
                 ego.registrar_experiencia(format!("Emoção Forte {:.2}", emotion), emotion, arousal, ego::TipoMemoria::Autobiografica);
             }

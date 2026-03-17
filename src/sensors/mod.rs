@@ -6,4 +6,6 @@
 pub mod hardware;
 pub mod camera;
 pub mod audio;
+pub mod sensor_control;
+pub use sensor_control::SensorFlags;
 use crate::brain_zones::RegionType;

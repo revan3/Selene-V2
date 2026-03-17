@@ -11,6 +11,8 @@ use crate::brain_zones::RegionType;
 use surrealdb::Surreal;
 use surrealdb::engine::local::{Db, RocksDb};
 use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::io;
 
 pub mod memory_tier;
 pub mod memory_graph;
@@ -53,8 +55,79 @@ pub struct BackupSistema {
     pub metricas: HashMap<String, f32>,
 }
 
+/// Converte um vetor de taxas de disparo (0..1) em spike train binário compacto (1 bit/neurônio).
+/// Threshold padrão: 0.5 (neurônio disparou se taxa > 0.5)
+pub fn firing_rates_to_spike_bits(rates: &[f32], threshold: f32) -> Vec<u8> {
+    let n_bytes = (rates.len() + 7) / 8;
+    let mut bits = vec![0u8; n_bytes];
+    for (i, &r) in rates.iter().enumerate() {
+        if r > threshold {
+            bits[i / 8] |= 1 << (i % 8);
+        }
+    }
+    bits
+}
+
+/// Reconstrói taxas de disparo aproximadas a partir de spike bits (0.0 ou 1.0)
+pub fn spike_bits_to_firing_rates(bits: &[u8], n_neurons: usize) -> Vec<f32> {
+    (0..n_neurons)
+        .map(|i| if bits.get(i / 8).map(|b| b & (1 << (i % 8)) != 0).unwrap_or(false) { 1.0 } else { 0.0 })
+        .collect()
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NeuralEnactiveMemory {
+    pub timestamp: f64,
+    pub emotion_state: f32,
+    pub arousal_state: f32,
+    /// Spike pattern visual compacto (1 bit/neurônio = 8x mais compacto que f32)
+    pub visual_spikes: Vec<u8>,
+    /// Spike pattern auditivo compacto
+    pub auditory_spikes: Vec<u8>,
+    /// Número original de neurônios (necessário para decodificação)
+    pub n_neurons: usize,
+    /// Intenção frontal — mantida em f32 (pequena, precisa de gradiente)
+    pub frontal_intent: Vec<f32>,
+    pub label: String,
+}
+
+impl NeuralEnactiveMemory {
+    /// Cria a memória a partir de vetores de taxas de disparo (interface com o main loop)
+    pub fn from_firing_rates(
+        timestamp: f64,
+        emotion_state: f32,
+        arousal_state: f32,
+        visual_rates: &[f32],
+        auditory_rates: &[f32],
+        frontal_intent: Vec<f32>,
+        label: String,
+    ) -> Self {
+        let n_neurons = visual_rates.len().max(auditory_rates.len());
+        Self {
+            timestamp,
+            emotion_state,
+            arousal_state,
+            visual_spikes: firing_rates_to_spike_bits(visual_rates, 0.5),
+            auditory_spikes: firing_rates_to_spike_bits(auditory_rates, 0.5),
+            n_neurons,
+            frontal_intent,
+            label,
+        }
+    }
+
+    pub fn visual_rates(&self) -> Vec<f32> {
+        spike_bits_to_firing_rates(&self.visual_spikes, self.n_neurons)
+    }
+
+    pub fn auditory_rates(&self) -> Vec<f32> {
+        spike_bits_to_firing_rates(&self.auditory_spikes, self.n_neurons)
+    }
+}
+
+/// Tipo legado mantido para compatibilidade com código existente que usa Vec<f32> diretamente.
+/// Use NeuralEnactiveMemory::from_firing_rates() para novas memórias.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct NeuralEnactiveMemoryRaw {
     pub timestamp: f64,
     pub emotion_state: f32,
     pub arousal_state: f32,
@@ -64,13 +137,28 @@ pub struct NeuralEnactiveMemory {
     pub label: String,
 }
 
+impl From<NeuralEnactiveMemoryRaw> for NeuralEnactiveMemory {
+    fn from(r: NeuralEnactiveMemoryRaw) -> Self {
+        Self::from_firing_rates(
+            r.timestamp,
+            r.emotion_state,
+            r.arousal_state,
+            &r.visual_pattern,
+            &r.auditory_pattern,
+            r.frontal_intent,
+            r.label,
+        )
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NeuralEnactiveMemoryV2 {
     pub timestamp: f64,
     pub emotion_state: f32,
     pub arousal_state: f32,
-    pub visual_pattern: Vec<f32>,
-    pub auditory_pattern: Vec<f32>,
+    pub visual_spikes: Vec<u8>,
+    pub auditory_spikes: Vec<u8>,
+    pub n_neurons: usize,
     pub frontal_intent: Vec<f32>,
     pub label: String,
     pub conexoes: Vec<ConexaoSinaptica>,
@@ -101,10 +189,15 @@ impl BrainStorage {
         let db = Surreal::new::<RocksDb>("selene_memories.db").await?;
         db.use_ns("selene_project").use_db("brain_v1").await?;
         
-        // Criar índices de busca vetorial para os padrões visuais e auditivos
-        let _ = db.query("DEFINE INDEX vis_idx ON TABLE memories FIELDS visual_pattern MTREE(1024);").await;
-        let _ = db.query("DEFINE INDEX aud_idx ON TABLE memories FIELDS auditory_pattern MTREE(1024);").await;
-        let _ = db.query("DEFINE INDEX conexoes_destino ON TABLE conexoes FIELDS para_regiao, para_indice;").await;
+        // Índices vetoriais MTREE para recall por similaridade (spike bits)
+        let _ = db.query("DEFINE INDEX vis_idx ON TABLE memories FIELDS visual_spikes MTREE DIST COSINE;").await;
+        let _ = db.query("DEFINE INDEX aud_idx ON TABLE memories FIELDS auditory_spikes MTREE DIST COSINE;").await;
+        // Índice para busca por emoção e timestamp (evita full table scan)
+        let _ = db.query("DEFINE INDEX emo_idx ON TABLE memories FIELDS emotion_state;").await;
+        let _ = db.query("DEFINE INDEX ts_idx  ON TABLE memories FIELDS timestamp;").await;
+        // Índices de navegação sináptica
+        let _ = db.query("DEFINE INDEX conexoes_origem  ON TABLE conexoes FIELDS de_neuronio;").await;
+        let _ = db.query("DEFINE INDEX conexoes_destino ON TABLE conexoes FIELDS para_neuronio;").await;
         
         Ok(Self {
             db,
@@ -138,24 +231,25 @@ impl BrainStorage {
         Ok(())
     }
     
-    pub async fn find_memories_by_emotion(&self, emotion_threshold: f32) -> Vec<NeuralEnactiveMemoryV2> {
+    pub async fn find_memories_by_emotion(&self, emotion_threshold: f32) -> Vec<NeuralEnactiveMemory> {
         let response = self.db
             .query("SELECT * FROM memories WHERE emotion_state > $th ORDER BY timestamp DESC LIMIT 5")
             .bind(("th", emotion_threshold))
             .await;
-    
+
         match response {
             Ok(mut resp) => resp.take(0).unwrap_or_default(),
             Err(_) => Vec::new(),
         }
     }
     
-    pub async fn find_similar_memory(&self, current_audio: Vec<f32>) -> Option<NeuralEnactiveMemory> {
+    /// Busca memória com padrão auditivo similar usando distância cosine nos spike bits
+    pub async fn find_similar_memory(&self, current_audio_spikes: Vec<u8>) -> Option<NeuralEnactiveMemory> {
         let response = self.db
-            .query("SELECT * FROM memories ORDER BY vector::distance::cosine(auditory_pattern, $audio) ASC LIMIT 1")
-            .bind(("audio", current_audio))
+            .query("SELECT * FROM memories ORDER BY vector::distance::cosine(auditory_spikes, $audio) ASC LIMIT 1")
+            .bind(("audio", current_audio_spikes))
             .await;
-        
+
         match response {
             Ok(mut resp) => {
                 let memories: Vec<NeuralEnactiveMemory> = resp.take(0).unwrap_or_default();
@@ -164,13 +258,14 @@ impl BrainStorage {
             Err(_) => None,
         }
     }
-    
-    pub async fn recall_full_context(&self, current_visual: Vec<f32>) -> Option<NeuralEnactiveMemory> {
+
+    /// Busca memória com padrão visual similar usando distância cosine nos spike bits
+    pub async fn recall_full_context(&self, current_visual_spikes: Vec<u8>) -> Option<NeuralEnactiveMemory> {
         let response = self.db
-            .query("SELECT * FROM memories ORDER BY vector::distance::cosine(visual_pattern, $val) ASC LIMIT 1")
-            .bind(("val", current_visual))
+            .query("SELECT * FROM memories ORDER BY vector::distance::cosine(visual_spikes, $val) ASC LIMIT 1")
+            .bind(("val", current_visual_spikes))
             .await;
-        
+
         match response {
             Ok(mut resp) => {
                 let memories: Vec<NeuralEnactiveMemory> = resp.take(0).unwrap_or_default();
@@ -179,26 +274,150 @@ impl BrainStorage {
             Err(_) => None,
         }
     }
-    
-    pub async fn recall_multimodal(&self, vision: Vec<f32>, audio: Vec<f32>) -> Option<NeuralEnactiveMemory> {
+
+    /// Recall multimodal: combina distância visual + auditiva nos spike bits
+    pub async fn recall_multimodal(&self, vision_spikes: Vec<u8>, audio_spikes: Vec<u8>) -> Option<NeuralEnactiveMemory> {
         let response = self.db
-            .query("SELECT *, (vector::distance::cosine(visual_pattern, $vis) + vector::distance::cosine(auditory_pattern, $aud)) as total_dist 
+            .query("SELECT *, (vector::distance::cosine(visual_spikes, $vis) + vector::distance::cosine(auditory_spikes, $aud)) as total_dist
                     FROM memories ORDER BY total_dist ASC LIMIT 1")
-            .bind(("vis", vision))
-            .bind(("aud", audio))
+            .bind(("vis", vision_spikes))
+            .bind(("aud", audio_spikes))
             .await;
-        
+
         match response {
             Ok(mut resp) => {
                 let memories: Vec<NeuralEnactiveMemory> = resp.take(0).unwrap_or_default();
                 memories.into_iter().next()
             },
             Err(_) => None,
+        }
+    }
+
+    // ========== PERSISTÊNCIA SINÁPTICA ==========
+
+    /// Persiste uma nova conexão sináptica no DB (usada pelo REM e pelo loop neural).
+    pub async fn save_conexao(&self, conexao: &ConexaoSinaptica) -> surrealdb::Result<()> {
+        let _: Vec<ConexaoSinaptica> = self.db
+            .create("conexoes")
+            .content(conexao)
+            .await?;
+        Ok(())
+    }
+
+    /// Atualiza peso e marcador_poda de uma sinapse existente no DB.
+    pub async fn update_conexao_peso(
+        &self,
+        id: uuid::Uuid,
+        peso: f32,
+        marcador_poda: f32,
+        ultimo_uso: f64,
+        total_usos: u32,
+    ) -> surrealdb::Result<()> {
+        self.db
+            .query("UPDATE conexoes SET peso = $peso, marcador_poda = $mp, ultimo_uso = $uso, total_usos = $n WHERE id = $id")
+            .bind(("id",  id.to_string()))
+            .bind(("peso", peso))
+            .bind(("mp",   marcador_poda))
+            .bind(("uso",  ultimo_uso))
+            .bind(("n",    total_usos))
+            .await?;
+        Ok(())
+    }
+
+    /// Remove uma sinapse do DB (chamada durante a poda).
+    pub async fn delete_conexao(&self, id: uuid::Uuid) -> surrealdb::Result<()> {
+        self.db
+            .query("DELETE conexoes WHERE id = $id")
+            .bind(("id", id.to_string()))
+            .await?;
+        Ok(())
+    }
+
+    /// Remove um lote de sinapses do DB em uma única query (mais eficiente que N deletes).
+    pub async fn delete_conexoes_batch(&self, ids: &[uuid::Uuid]) -> surrealdb::Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let lista: Vec<String> = ids.iter().map(|u| format!("'{}'", u)).collect();
+        let query = format!("DELETE conexoes WHERE id IN [{}]", lista.join(", "));
+        self.db.query(query).await?;
+        Ok(())
+    }
+}
+
+// ========== BACKUP ==========
+
+/// Copia o diretório do RocksDB para o HDD frio (D:) com timestamp.
+/// Retorna o caminho do backup criado.
+///
+/// Layout no HDD:
+///   D:/Selene_Backup_RAM/backup_YYYYMMDD_HHMMSS/  ← snapshot do RocksDB
+///   D:/Selene_Archive/                            ← neurônios individuais JSON
+pub async fn backup_to_hdd(
+    db_path: &str,
+    backup_root: &str,
+) -> io::Result<PathBuf> {
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
+    let dest = PathBuf::from(backup_root).join(format!("backup_{}", timestamp));
+
+    std::fs::create_dir_all(&dest)?;
+
+    // Copia todos os arquivos do diretório RocksDB para o destino
+    for entry in std::fs::read_dir(db_path)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_file() {
+            let dest_file = dest.join(entry.file_name());
+            std::fs::copy(entry.path(), &dest_file)?;
+        }
+    }
+
+    // Grava manifesto do backup
+    let manifest = format!(
+        "Selene Brain 2.0 — Backup\nTimestamp: {}\nFonte: {}\nDestino: {}\n",
+        timestamp,
+        db_path,
+        dest.display()
+    );
+    std::fs::write(dest.join("BACKUP_MANIFEST.txt"), manifest)?;
+
+    log::info!("💾 [Backup] Snapshot salvo em: {}", dest.display());
+    Ok(dest)
+}
+
+/// Versão síncrona do backup (para uso no handler de shutdown)
+pub fn backup_to_hdd_sync(db_path: &str, backup_root: &str) -> io::Result<PathBuf> {
+    let rt = tokio::runtime::Handle::try_current();
+    match rt {
+        Ok(handle) => {
+            let db = db_path.to_string();
+            let br = backup_root.to_string();
+            // bloqueia na handle tokio existente de forma síncrona
+            std::thread::spawn(move || {
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(backup_to_hdd(&db, &br))
+            }).join().unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::Other, "thread panic")))
+        }
+        Err(_) => {
+            // fora de contexto async — bloqueia diretamente
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(backup_to_hdd(db_path, backup_root))
         }
     }
 }
 
 // ========== CONVERSÕES ==========
+
+impl NeuralEnactiveMemoryV2 {
+    pub fn visual_rates(&self) -> Vec<f32> {
+        spike_bits_to_firing_rates(&self.visual_spikes, self.n_neurons)
+    }
+    pub fn auditory_rates(&self) -> Vec<f32> {
+        spike_bits_to_firing_rates(&self.auditory_spikes, self.n_neurons)
+    }
+}
 
 impl From<NeuralEnactiveMemory> for NeuralEnactiveMemoryV2 {
     fn from(original: NeuralEnactiveMemory) -> Self {
@@ -206,8 +425,9 @@ impl From<NeuralEnactiveMemory> for NeuralEnactiveMemoryV2 {
             timestamp: original.timestamp,
             emotion_state: original.emotion_state,
             arousal_state: original.arousal_state,
-            visual_pattern: original.visual_pattern,
-            auditory_pattern: original.auditory_pattern,
+            visual_spikes: original.visual_spikes,
+            auditory_spikes: original.auditory_spikes,
+            n_neurons: original.n_neurons,
             frontal_intent: original.frontal_intent,
             label: original.label,
             conexoes: Vec::new(),

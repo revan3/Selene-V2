@@ -61,7 +61,33 @@ pub async fn handle_connection(
                         if let Ok(text) = msg.to_str() {
                             // Tenta parsear como JSON (para comandos estruturados)
                             if let Ok(json) = serde_json::from_str::<Value>(text) {
-                                if json["action"].as_str() == Some("run_script") {
+                                match json["action"].as_str() {
+                                Some("shutdown") => {
+                                    println!("🛑 [SISTEMA] Shutdown solicitado pela interface neural.");
+                                    brain.lock().await.shutdown_requested = true;
+                                    let ack = r#"{"event":"shutdown_ack","msg":"Iniciando desligamento gracioso..."}"#;
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                }
+
+                                Some("toggle_sensor") => {
+                                    let sensor  = json["sensor"].as_str().unwrap_or("");
+                                    let active  = json["active"].as_bool().unwrap_or(false);
+                                    let state   = brain.lock().await;
+                                    match sensor {
+                                        "audio" => state.sensor_flags.set_audio(active),
+                                        "video" => state.sensor_flags.set_video(active),
+                                        _ => log::warn!("[WS] Sensor desconhecido: {}", sensor),
+                                    }
+                                    let ack = serde_json::json!({
+                                        "event": "sensor_ack",
+                                        "sensor": sensor,
+                                        "active": active
+                                    }).to_string();
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                    println!("[SENSOR] {} → {}", sensor, if active { "ATIVO" } else { "INATIVO" });
+                                }
+
+                                Some("run_script") => {
                                     if let Some(script_name) = json["script"].as_str() {
                                         // Lista branca: APENAS esses 3 scripts são permitidos
                                         const ALLOWED_SCRIPTS: [&str; 3] = [
@@ -74,7 +100,6 @@ pub async fn handle_connection(
                                             let full_path = format!("scripts/{}", script_name);
                                             println!("🚀 [SISTEMA] Executando script permitido: {}", full_path);
 
-                                            // Executa de forma assíncrona (não bloqueia o ws)
                                             let _ = tokio::process::Command::new("python")
                                                 .arg(&full_path)
                                                 .spawn()
@@ -82,12 +107,7 @@ pub async fn handle_connection(
                                                     log::error!("Falha ao executar {}: {}", full_path, e);
                                                 });
                                         } else {
-                                            log::warn!(
-                                                "Tentativa de executar script NÃO permitido: {}",
-                                                script_name
-                                            );
-
-                                            // Opcional: avisa o cliente
+                                            log::warn!("Tentativa de executar script NÃO permitido: {}", script_name);
                                             let error_msg = format!(
                                                 r#"{{"error": "Script não permitido. Use apenas: {}, {} ou {}"}}"#,
                                                 ALLOWED_SCRIPTS[0], ALLOWED_SCRIPTS[1], ALLOWED_SCRIPTS[2]
@@ -96,6 +116,11 @@ pub async fn handle_connection(
                                         }
                                     }
                                 }
+
+                                _ => {
+                                    log::debug!("[WS] Ação desconhecida: {:?}", json["action"]);
+                                }
+                            } // fim match json["action"]
                             } else {
                                 // Mensagem simples de chat (não é JSON)
                                 println!("💬 [CHAT] Selene recebeu: {}", text);

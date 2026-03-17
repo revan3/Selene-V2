@@ -36,10 +36,12 @@ impl MemoryTier {
         let weight = memory.emotion_state.abs();
     
         if weight > 0.8 {
-            self.write_l1(&memory.visual_pattern);
+            let rates = memory.visual_rates();
+            self.write_l1(&rates);
             println!("🧠 Memória importante mantida em RAM");
         } else if weight > 0.4 {
-            self.write_l1(&memory.visual_pattern);
+            let rates = memory.visual_rates();
+            self.write_l1(&rates);
             self.flush_to_l3();
             println!("💾 Memória de média importância salva no NVMe");
         } else {

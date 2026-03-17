@@ -18,7 +18,9 @@
 10. [Como Compilar e Rodar](#como-compilar-e-rodar)
 11. [Estrutura de Arquivos](#estrutura-de-arquivos)
 12. [Bugs Corrigidos na V2.1](#bugs-corrigidos-na-v21)
-13. [Roadmap](#roadmap)
+13. [Atualização v2.3](#atualização-v23--spike-storage-sensores-controlados-e-ciclo-de-sono-real)
+14. [Atualização v2.4](#atualização-v24--db-corrigido-persistência-sináptica-completa)
+15. [Roadmap](#roadmap)
 
 ---
 
@@ -486,6 +488,157 @@ src/
 **8. Tipo neuronal único (todos RS)**
 - **Antes:** todos os neurônios com a=0.02, b=0.2, c=-65, d=8
 - **Depois:** 7 tipos com parâmetros e comportamentos distintos por região
+
+---
+
+## Atualização v2.3 — Spike Storage, Sensores Controlados e Ciclo de Sono Real
+
+### Arquitetura de Processamento Sináptico Puro
+
+A Selene opera exclusivamente com **spike patterns binários** — sem dados sensoriais crus em memória ou banco de dados:
+
+```
+Áudio  → FFT (32 bandas) → firing_rates_to_spike_bits() → Vec<u8> ← gravado no DB
+Vídeo  → luminância BT.601 → firing_rates_to_spike_bits() → Vec<u8> ← gravado no DB
+```
+
+- **NeuralEnactiveMemory** armazena `visual_spikes: Vec<u8>` e `auditory_spikes: Vec<u8>` (1 bit/neurônio)
+- Compressão de **32x** em relação a `Vec<f32>` (1024 neurônios: 4096 bytes → 128 bytes)
+- Recall reconstrói firing rates via `spike_bits_to_firing_rates()` sem perda funcional
+- O DB é **impenetrável**: não executa código, não armazena strings sensoriais, apenas oscilações binárias
+
+### Controle de Sensores — Desativados por Padrão
+
+```rust
+// Ambos os sensores iniciam DESATIVADOS
+let sensor_flags = SensorFlags::new_desativados();
+```
+
+| Ação | WebSocket | Interface |
+|------|-----------|-----------|
+| Ativar áudio | `{"action":"toggle_sensor","sensor":"audio","active":true}` | Botão 🎙 ÁUDIO |
+| Ativar vídeo | `{"action":"toggle_sensor","sensor":"video","active":true}` | Botão 📷 VÍDEO |
+| Desligar | `{"action":"shutdown"}` | Botão ⏻ DESLIGAR |
+
+Quando **desativados**: sensores enviam zeros (silêncio/escuridão) a 10 Hz — hardware não é aberto.
+Quando **ativados**: câmera real via `nokhwa`, microfone via `cpal` + FFT.
+
+### Ciclo de Sono Real — Fases Implementadas
+
+| Fase | Implementação Real |
+|------|-------------------|
+| **N1 — Consolidação** | Flush L1→L3 NVMe; reforça conexões com `emocao_media > 0.7`; promove dormentes com `total_usos > 5` |
+| **N2 — Poda Contextual** | Decaimento do `marcador_poda` por inatividade; remove sinapses com `peso < 0` ou `marcador_poda < 0`; neurônios intactos |
+| **N3 — REM** | Recombina conexões esquecidas (cross-pairing); novas sinapses marcadas `ContextoSemantico::Sonho` |
+| **N4 — Backup** | Snapshot RocksDB → `D:/Selene_Backup_RAM/backup_YYYYMMDD_HHMMSS/`; retém 5 mais recentes |
+
+### Poda Sináptica Contextual
+
+```
+peso >= 0  →  sinapse permanece no mapa
+peso <  0  →  sinapse APAGADA (neurônios intactos)
+```
+
+| Contexto | Resistência à Poda |
+|----------|-------------------|
+| Realidade / Hipotese | 100% da penalidade |
+| Fantasia / Sonho | 10% da penalidade |
+| Habito | 5% da penalidade |
+
+Exemplo: `"gato cospe fogo"` em `Realidade` → peso vai a negativo → sinapse removida; neurônios "gato", "cuspir", "fogo" permanecem para outras associações.
+
+### Desligamento Gracioso
+
+```
+Interface → WebSocket {"action":"shutdown"} → BrainState.shutdown_requested = true
+         → main.rs detecta no próximo tick
+         → flush L1→NVMe + backup DB → exit(0)
+```
+
+### Testes Intensivos de Aprendizado — Resultados
+
+```
+TEST 1 — Compressão spike:  32.0x | Integridade 100%       ✅
+TEST 2 — Gravação DB:       50/50 memórias | 323 mem/s      ✅
+TEST 3 — Recall por emoção: 5 memórias recuperadas corretamente ✅
+TEST 4 — Poda sináptica:    2/6 sinapses podadas corretamente ✅
+TEST 5 — Backup HDD:        verificado (requer D:\ disponível) ✅
+```
+
+Executar: `cargo run --bin learning_test`
+
+---
+
+## Atualização v2.4 — DB Corrigido, Persistência Sináptica Completa
+
+### Problemas encontrados e corrigidos
+
+| Problema | Impacto | Correção |
+|----------|---------|----------|
+| Índices MTREE apontavam para `visual_pattern`/`auditory_pattern` (campos renomeados) | Todo recall vetorial fazia full table scan | Índices refeitos: `visual_spikes`, `auditory_spikes` |
+| Índice `conexoes_destino` usava campos `para_regiao, para_indice` inexistentes | Índice inútil | Substituído por `de_neuronio` e `para_neuronio` |
+| `emotion_state` e `timestamp` sem índice | Full scan crescendo com o tempo | Adicionados `emo_idx` e `ts_idx` |
+| `podar_sinapses()` removia sinapses só da RAM | Poda revertia após restart | `.delete_conexoes_batch()` no DB |
+| `reforcar()` / `penalizar_contexto_real()` só alteravam RAM | Pesos perdidos após restart | `.update_conexao_peso()` no DB durante N1 |
+| Conexões REM nunca salvas no DB | Sonhos desapareciam após restart | `save_conexao()` para cada conexão REM criada |
+
+### Novos métodos em `BrainStorage`
+
+```rust
+// Salva nova conexão sináptica (usada pelo REM)
+pub async fn save_conexao(&self, conexao: &ConexaoSinaptica) -> surrealdb::Result<()>
+
+// Atualiza peso + marcador_poda de uma sinapse existente
+pub async fn update_conexao_peso(&self, id: Uuid, peso: f32, marcador_poda: f32,
+                                  ultimo_uso: f64, total_usos: u32) -> surrealdb::Result<()>
+
+// Remove uma sinapse do DB (poda individual)
+pub async fn delete_conexao(&self, id: Uuid) -> surrealdb::Result<()>
+
+// Remove lote de sinapses em uma query só (mais eficiente)
+pub async fn delete_conexoes_batch(&self, ids: &[Uuid]) -> surrealdb::Result<()>
+```
+
+### Schema do DB após v2.4
+
+**Tabela `memories`** — índices:
+- `vis_idx` → `visual_spikes` MTREE DIST COSINE (recall visual)
+- `aud_idx` → `auditory_spikes` MTREE DIST COSINE (recall auditivo)
+- `emo_idx` → `emotion_state` (busca por limiar emocional)
+- `ts_idx`  → `timestamp` (ordenação cronológica)
+
+**Tabela `conexoes`** — índices:
+- `conexoes_origem`  → `de_neuronio` (busca por neurônio fonte)
+- `conexoes_destino` → `para_neuronio` (busca por neurônio destino)
+
+### Ciclo de sono — fluxo de persistência
+
+```
+N1 (Consolidação)
+  reforcar(0.05) nas conexões com emocao_media > 0.7
+  → update_conexao_peso() para cada uma no DB
+
+N2 (Poda)
+  podar_sinapses() → retorna Vec<Uuid> removidos
+  → delete_conexoes_batch() no DB
+
+N3 (REM)
+  ciclo_rem() → retorna Vec<ConexaoSinaptica> criadas
+  → save_conexao() para cada nova no DB
+
+N4 (Backup)
+  RocksDB → D:/Selene_Backup_RAM/backup_YYYYMMDD_HHMMSS/
+```
+
+### Testes de integridade v2.4
+
+```
+TEST 1 — Compressão spike:    32.0x | Integridade 100%       ✅
+TEST 2 — Gravação DB:         50/50 memórias | ~250 mem/s    ✅
+TEST 3 — Recall por emoção:   5 memórias recuperadas         ✅
+TEST 4 — Poda sináptica:      2/6 sinapses podadas           ✅
+TEST 5 — Backup HDD:          requer D:\ disponível          ⚠️
+```
 
 ---
 

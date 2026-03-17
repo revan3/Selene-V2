@@ -16,24 +16,38 @@
 use nokhwa::{
     Camera,
     pixel_format::RgbFormat,
-    utils::{CameraIndex, RequestedFormat, RequestedFormatType},  // CameraIndex está em utils, não na raiz
+    utils::{CameraIndex, RequestedFormat, RequestedFormatType},
 };
 use std::sync::mpsc::Sender;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::time::Duration;
 use crate::brain_zones::RegionType;
 
 pub struct VisualTransducer {
     resolution: usize,
+    /// Controlado externamente via SensorFlags — false = envia zeros
+    ativo: Arc<AtomicBool>,
 }
 
 impl VisualTransducer {
-    pub fn new(resolution: usize) -> Self {
-        Self { resolution }
+    /// Cria o transdutor visual.
+    /// `ativo` é compartilhado com `SensorFlags::video_ativo` — quando false,
+    /// o sensor envia zeros em vez de capturar da câmera.
+    pub fn new(resolution: usize, ativo: Arc<AtomicBool>) -> Self {
+        Self { resolution, ativo }
     }
 
     /// Inicia o loop de captura. Deve ser chamada dentro de `thread::spawn`.
     /// Se não houver câmera, usa modo placeholder (fosfeno — ruído visual leve).
+    /// Quando `ativo == false`, envia escuridão (zeros) a 10 Hz.
     pub fn run(&mut self, tx: Sender<Vec<f32>>) {
+        // Modo desativado — aguarda ativação
+        while !self.ativo.load(Ordering::Relaxed) {
+            if tx.send(vec![0.0f32; self.resolution]).is_err() { return; }
+            std::thread::sleep(Duration::from_millis(100)); // 10 Hz no idle
+        }
+        println!("[CAMERA] Sensor de vídeo ativado — iniciando captura...");
+
         let format = RequestedFormat::new::<RgbFormat>(
             RequestedFormatType::AbsoluteHighestFrameRate
         );
@@ -60,16 +74,21 @@ impl VisualTransducer {
 
         // ── Loop de captura — `continue` é válido AQUI dentro do loop ──────
         loop {
-            // CORREÇÃO E0268: `continue` agora está dentro do loop, não em match arm solto
+            // Se desativado em runtime, envia zeros até reativar
+            if !self.ativo.load(Ordering::Relaxed) {
+                if tx.send(vec![0.0f32; self.resolution]).is_err() { break; }
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+
             let frame = match cam.frame() {
                 Ok(f) => f,
                 Err(e) => {
                     eprintln!("[CAMERA] Erro ao capturar frame: {e}");
-                    continue;  // ✅ válido: estamos dentro do loop
+                    continue;
                 }
             };
 
-            // CORREÇÃO E0308: frame.buffer() retorna &[u8] — tipo correto
             let neural_signal = self.frame_para_neuronio(frame.buffer());
 
             if tx.send(neural_signal).is_err() {
@@ -109,17 +128,23 @@ impl VisualTransducer {
             .collect()
     }
 
-    /// Modo sem câmera — envia ruído baixo simulando fosfeno (~30 Hz).
+    /// Modo sem câmera — quando ativo: ruído baixo simulando fosfeno (~30 Hz).
+    /// Quando inativo: envia zeros a 10 Hz.
     fn run_placeholder(&self, tx: Sender<Vec<f32>>) {
-        println!("[CAMERA] Modo fosfeno ativo (sem câmera, 30Hz).");
+        println!("[CAMERA] Modo fosfeno ativo (sem câmera física).");
         loop {
-            let fosfeno: Vec<f32> = (0..self.resolution)
-                .map(|_| rand::random::<f32>() * 0.05)
-                .collect();
-            if tx.send(fosfeno).is_err() {
-                break;
+            if self.ativo.load(Ordering::Relaxed) {
+                // Fosfeno: ruído visual leve simulado
+                let fosfeno: Vec<f32> = (0..self.resolution)
+                    .map(|_| rand::random::<f32>() * 0.05)
+                    .collect();
+                if tx.send(fosfeno).is_err() { break; }
+                std::thread::sleep(Duration::from_millis(33)); // ~30 Hz
+            } else {
+                // Desativado: escuridão
+                if tx.send(vec![0.0f32; self.resolution]).is_err() { break; }
+                std::thread::sleep(Duration::from_millis(100)); // 10 Hz idle
             }
-            std::thread::sleep(Duration::from_millis(33));
         }
     }
 }
