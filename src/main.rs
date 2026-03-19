@@ -242,22 +242,21 @@ async fn async_main() {
     let sensor_for_sleep = Arc::clone(&sensor);
     let memory_for_sleep = Arc::clone(&memory_tier);
 
-    // Task de monitoramento simples (mantida como estava)
-    tokio::task::spawn_blocking(move || {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let mut interval = tokio::time::interval(Duration::from_secs(1));
-            loop {
-                interval.tick().await;
-                if let Ok(sensor_guard) = sensor_for_sleep.try_lock() {
-                    let _ = sensor_guard.get_cpu_temp();
-                }
-                if let Ok(_memory_guard) = memory_for_sleep.try_lock() {
-                    // vazio intencional
-                }
-                log::debug!("Sleep manager heart-beat");
+    // Task de monitoramento simples
+    // FIX exit-code-101 (docx v2.3 §07): spawn_blocking + Runtime::new() dentro de runtime
+    // ativo causava panic com nested tokio runtime. Substituído por tokio::spawn.
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+            if let Ok(sensor_guard) = sensor_for_sleep.try_lock() {
+                let _ = sensor_guard.get_cpu_temp();
             }
-        });
+            if let Ok(_memory_guard) = memory_for_sleep.try_lock() {
+                // vazio intencional
+            }
+            log::debug!("Sleep manager heart-beat");
+        }
     });
 
     // --- 8. INSTANCIAÇÃO DOS LOBOS ---
@@ -576,7 +575,22 @@ async fn async_main() {
         // O. Limpeza periódica
         if step % 10000 == 0 {
             let mut swap = swap_manager.lock().await;
-            let _ = swap.limpar_neurônios_inativos(); 
+            let _ = swap.limpar_neurônios_inativos();
+        }
+
+        // P. Cap dinâmico de neurônios por RAM (docx v2.3 §03 — BLOCKER)
+        // Verificado a cada 500 ticks para não sobrecarregar o lock
+        if step % 500 == 0 {
+            if let Ok(sensor_guard) = sensor.try_lock() {
+                use sysinfo::System;
+                let mut sys = System::new();
+                sys.refresh_memory();
+                let ram_total_gb = sys.total_memory() as f64 / 1e9;
+                let ram_livre_gb = sys.available_memory() as f64 / 1e9;
+                drop(sensor_guard);
+                let mut swap = swap_manager.lock().await;
+                swap.verificar_cap_ram(ram_total_gb, ram_livre_gb);
+            }
         }
     }
 }

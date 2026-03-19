@@ -5,6 +5,11 @@
 #![allow(dead_code)]
 use std::time::Duration;
 
+/// Hz de referência para calibração STDP e cap de neurônios (hardware S145)
+pub const HZ_REFERENCIA: f32 = 200.0;
+/// Limiar LTD padrão (trace_pre abaixo disto → depressão anti-Hebbiana)
+pub const BASE_JANELA_STDP: f32 = 0.1;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ModoOperacao {
     Humano,      // 100 Hz - Eficiente, padrão
@@ -12,6 +17,38 @@ pub enum ModoOperacao {
     Boost800,    // 800 Hz - Performance
     Ultra,       // 3200 Hz - Máxima performance
     Insano,      // 6400 Hz - Extreme
+    // Modos dinâmicos v2.3 — tier-aware
+    Economia,    // 5–50 Hz  | CPU ≤ 25% | apenas em hardware < 16 GB
+    Normal,      // 5–100 Hz | CPU ≤ 50% | hardware ≥ 8 GB
+    Turbo,       // 200–300 Hz | CPU ≤ 90% | requer RAM ≥ 20 GB + temp < 85 °C
+}
+
+/// Retorna o Hz alvo para o modo e carga de CPU atual.
+/// `carga_cpu` em 0.0–1.0 (ex: 0.5 = 50%).
+pub fn hz_alvo(modo: ModoOperacao, carga_cpu: f32) -> u32 {
+    match modo {
+        ModoOperacao::Economia => (50.0 * (1.0 - carga_cpu)).max(5.0) as u32,
+        ModoOperacao::Normal | ModoOperacao::Humano =>
+            (100.0 * (1.0 - carga_cpu)).max(5.0) as u32,
+        ModoOperacao::Turbo | ModoOperacao::Boost200 =>
+            (300.0 * (1.0 - carga_cpu)).max(200.0) as u32,
+        ModoOperacao::Boost800 =>
+            (800.0 * (1.0 - carga_cpu)).max(200.0) as u32,
+        ModoOperacao::Ultra =>
+            (3200.0 * (1.0 - carga_cpu)).max(200.0) as u32,
+        ModoOperacao::Insano =>
+            (6400.0 * (1.0 - carga_cpu)).max(200.0) as u32,
+    }
+}
+
+/// Escala o limiar LTD do STDP proporcionalmente ao Hz atual.
+/// A ticks lentos (Hz baixo), reduz o limiar para evitar
+/// anti-depressão excessiva causada por decay de trace entre ticks longos.
+///
+/// `hz_atual`: frequência real do tick loop (Hz)
+/// Retorna o limiar LTD ajustado (usado em `if trace_pre < limiar`)
+pub fn janela_stdp_atual(hz_atual: f32) -> f32 {
+    BASE_JANELA_STDP * (hz_atual / HZ_REFERENCIA).clamp(0.1, 3.0)
 }
 
 #[derive(Debug, Clone)]
@@ -117,16 +154,69 @@ impl Config {
                 use_mixed_precision: true,
                 swap_threshold_seconds: 300, // 5 minutos
             },
+
+            ModoOperacao::Economia => Self {
+                modo,
+                frequencia_base_hz: 25.0,           // centro da faixa 5–50 Hz
+                dt_simulacao: 0.04,                 // 40ms
+                energia_watts: 8.0,
+                tempo_refratario_ms: 40.0,
+                taxa_aprendizado: 0.0005,
+                precision_distribution: vec![
+                    (crate::synaptic_core::PrecisionType::FP32, 0.02),
+                    (crate::synaptic_core::PrecisionType::FP16, 0.28),
+                    (crate::synaptic_core::PrecisionType::INT8, 0.60),
+                    (crate::synaptic_core::PrecisionType::INT4, 0.10),
+                ],
+                use_mixed_precision: true,
+                swap_threshold_seconds: 7200, // 2 horas
+            },
+
+            ModoOperacao::Normal => Self {
+                modo,
+                frequencia_base_hz: 50.0,           // centro da faixa 5–100 Hz
+                dt_simulacao: 0.02,                 // 20ms
+                energia_watts: 18.0,
+                tempo_refratario_ms: 20.0,
+                taxa_aprendizado: 0.001,
+                precision_distribution: vec![
+                    (crate::synaptic_core::PrecisionType::FP32, 0.04),
+                    (crate::synaptic_core::PrecisionType::FP16, 0.36),
+                    (crate::synaptic_core::PrecisionType::INT8, 0.50),
+                    (crate::synaptic_core::PrecisionType::INT4, 0.10),
+                ],
+                use_mixed_precision: true,
+                swap_threshold_seconds: 3600, // 1 hora
+            },
+
+            ModoOperacao::Turbo => Self {
+                modo,
+                frequencia_base_hz: 250.0,          // centro da faixa 200–300 Hz
+                dt_simulacao: 0.004,                // 4ms
+                energia_watts: 35.0,
+                tempo_refratario_ms: 8.0,
+                taxa_aprendizado: 0.003,
+                precision_distribution: vec![
+                    (crate::synaptic_core::PrecisionType::FP32, 0.04),
+                    (crate::synaptic_core::PrecisionType::FP16, 0.36),
+                    (crate::synaptic_core::PrecisionType::INT8, 0.50),
+                    (crate::synaptic_core::PrecisionType::INT4, 0.10),
+                ],
+                use_mixed_precision: true,
+                swap_threshold_seconds: 1800, // 30 minutos
+            },
         }
     }
-    
+
     pub fn fator_boost(&self) -> f32 {
         match self.modo {
-            ModoOperacao::Humano => 1.0,
-            ModoOperacao::Boost200 => 2.0,   // 2x humano
+            ModoOperacao::Humano  => 1.0,
+            ModoOperacao::Economia => 0.25,
+            ModoOperacao::Normal  => 0.5,
+            ModoOperacao::Boost200 | ModoOperacao::Turbo => 2.0,
             ModoOperacao::Boost800 => 8.0,
-            ModoOperacao::Ultra => 32.0,
-            ModoOperacao::Insano => 64.0,
+            ModoOperacao::Ultra   => 32.0,
+            ModoOperacao::Insano  => 64.0,
         }
     }
 }

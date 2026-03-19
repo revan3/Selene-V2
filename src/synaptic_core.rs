@@ -589,10 +589,25 @@ impl NeuronioHibrido {
 
         // ── 6. STDP no spike ──────────────────────────────────────────────
         if spiked {
+            // Limiar LTD escalonado pelo Hz atual (docx v2.3 §05):
+            // A ticks lentos, reduz o limiar para evitar anti-depressão
+            // excessiva causada pelo decay completo do trace_pre entre ticks longos.
+            let hz_atual = 1000.0 / dt_ms;
+            let ltd_threshold = crate::config::janela_stdp_atual(hz_atual);
+
+            // Diagnóstico: log quando Hz < 200 (confirmar hipótese de janela distorcida)
+            #[cfg(debug_assertions)]
+            if hz_atual < crate::config::HZ_REFERENCIA && self.trace_pre < ltd_threshold {
+                log::debug!(
+                    "[STDP] Hz={:.1} trace_pre={:.4} < limiar={:.4} → LTD disparado (janela baixo-Hz)",
+                    hz_atual, self.trace_pre, ltd_threshold
+                );
+            }
+
             // LTP: spike quando trace_pre alto → correlação causal → potencia
             let delta_ltp = LTP_RATE * self.trace_pre;
             // LTD anti-Hebbiano: spike sem pré correlacionado → anticausal → deprime
-            let delta_ltd = if self.trace_pre < 0.1 {
+            let delta_ltd = if self.trace_pre < ltd_threshold {
                 -LTD_RATE * (1.0 - self.trace_pre)
             } else {
                 0.0

@@ -15,6 +15,21 @@ const RAM_PERCENT_FOR_NEURONS: f32 = 0.8;      // 80% da RAM para neurônios ati
 const LIMITE_BIOLOGICO: usize = 946_000_000;   // 1,1% de 86B neurônios humanos
 const SYNAPSES_PER_NEURON: usize = 8500;       // Média biológica
 
+// ── CAP DINÂMICO POR TIER DE RAM (docx v2.3 §03) ──────────────────────────
+/// Calcula o cap de neurônios ativos baseado no tier de hardware.
+/// Retorna (cap_neuronios, modo_liberado_str).
+pub fn calcular_cap(ram_total_gb: f64, ram_livre_gb: f64) -> (usize, &'static str) {
+    if ram_total_gb >= 20.0 && ram_livre_gb >= 6.0 {
+        (500_000, "Todos + Turbo")
+    } else if ram_total_gb >= 16.0 && ram_livre_gb >= 4.0 {
+        (200_000, "Economia + Normal")
+    } else if ram_total_gb >= 8.0 && ram_livre_gb >= 2.0 {
+        (50_000, "Só Economia")
+    } else {
+        (10_000, "Só Economia (RAM crítica)")
+    }
+}
+
 pub struct SwapManager {
     // RAM: neurônios ativos
     pub ram: HashMap<Uuid, NeuronioHibrido>,
@@ -65,25 +80,70 @@ impl SwapManager {
         }
     }
     
-    /// Adiciona um neurônio existente ao sistema
-    pub async fn adicionar_neuronio(&mut self, neuronio: NeuronioHibrido, contexto: &str) {
+    /// Adiciona um neurônio existente ao sistema.
+    /// Retorna `false` se o cap biológico foi atingido (neurônio descartado).
+    pub async fn adicionar_neuronio(&mut self, neuronio: NeuronioHibrido, contexto: &str) -> bool {
+        let total = self.ram.len() + self.ssd.len();
+        if total >= LIMITE_BIOLOGICO {
+            println!("⚠️ Cap biológico atingido ({} neurônios). Neurônio descartado.", LIMITE_BIOLOGICO);
+            return false;
+        }
+
         let id = Uuid::new_v4();
-        
+
         // Adiciona aos índices
         self.indices.entry(contexto.to_string())
             .or_insert_with(Vec::new)
             .push(id);
-        
+
         // Tenta colocar na RAM primeiro
         if self.ram.len() < self.max_ram_neurons {
             self.ultimo_acesso.insert(id, current_time());
             self.ram.insert(id, neuronio);
         } else {
-            // Se RAM cheia, vai direto para SSD
+            // Se RAM cheia, vai direto para SSD (dormente)
             self.ssd.insert(id, neuronio);
         }
-        
+
         self.total_neurons_criados += 1;
+        true
+    }
+
+    /// Coloca `excesso` neurônios ativos (RAM) em estado dormente (SSD),
+    /// preservando pesos, conexões e histórico STDP.
+    /// Seleciona os menos recentemente usados (LRU).
+    pub fn dormir_excesso(&mut self, excesso: usize) {
+        if excesso == 0 { return; }
+
+        // Coleta candidatos da RAM ordenados por último acesso (mais antigos primeiro)
+        let mut candidatos: Vec<(Uuid, f64)> = self.ultimo_acesso
+            .iter()
+            .filter(|(id, _)| self.ram.contains_key(id))
+            .map(|(id, t)| (*id, *t))
+            .collect();
+        candidatos.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let n = excesso.min(candidatos.len());
+        for (id, _) in candidatos.into_iter().take(n) {
+            if let Some(neuronio) = self.ram.remove(&id) {
+                self.ultimo_acesso.remove(&id);
+                self.ssd.insert(id, neuronio);
+            }
+        }
+        if n > 0 {
+            println!("💤 {} neurônios enviados para estado dormente (cap RAM atingido).", n);
+        }
+    }
+
+    /// Verifica o cap de RAM e dorme o excesso se necessário.
+    /// Deve ser chamado dentro do tick loop.
+    /// `ram_total_gb` e `ram_livre_gb`: valores atuais do sistema.
+    pub fn verificar_cap_ram(&mut self, ram_total_gb: f64, ram_livre_gb: f64) {
+        let (cap, _modo) = calcular_cap(ram_total_gb, ram_livre_gb);
+        let ativos = self.ram.len();
+        if ativos > cap {
+            self.dormir_excesso(ativos - cap);
+        }
     }
     
     /// CRIA um novo neurônio sob demanda (neurogênese)

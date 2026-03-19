@@ -51,8 +51,9 @@ impl NeuroChem {
 
         // Dopamina - CORRIGIDO: todos os modos cobertos
         let target_dopa = match config.modo {
-            ModoOperacao::Humano => (ram_usage / 100.0).clamp(0.5, 1.0),
-            ModoOperacao::Boost200 => (ram_usage / 90.0).clamp(0.6, 1.2),
+            ModoOperacao::Economia => (ram_usage / 110.0).clamp(0.3, 0.8),
+            ModoOperacao::Humano | ModoOperacao::Normal => (ram_usage / 100.0).clamp(0.5, 1.0),
+            ModoOperacao::Boost200 | ModoOperacao::Turbo => (ram_usage / 90.0).clamp(0.6, 1.2),
             ModoOperacao::Boost800 => (ram_usage / 80.0).clamp(0.7, 1.5),
             ModoOperacao::Ultra => (ram_usage / 70.0).clamp(0.8, 1.8),
             ModoOperacao::Insano => (ram_usage / 60.0).clamp(0.9, 2.0),
@@ -64,8 +65,9 @@ impl NeuroChem {
 
         // Noradrenalina - CORRIGIDO: todos os modos cobertos
         self.noradrenaline = match config.modo {
-            ModoOperacao::Humano => (temp / 100.0).clamp(0.5, 1.0),
-            ModoOperacao::Boost200 => (temp / 95.0).clamp(0.6, 1.1),
+            ModoOperacao::Economia => (temp / 110.0).clamp(0.3, 0.8),
+            ModoOperacao::Humano | ModoOperacao::Normal => (temp / 100.0).clamp(0.5, 1.0),
+            ModoOperacao::Boost200 | ModoOperacao::Turbo => (temp / 95.0).clamp(0.6, 1.1),
             ModoOperacao::Boost800 => (temp / 85.0).clamp(0.8, 1.2),
             ModoOperacao::Ultra => (temp / 75.0).clamp(0.9, 1.4),
             ModoOperacao::Insano => (temp / 65.0).clamp(1.0, 1.6),
