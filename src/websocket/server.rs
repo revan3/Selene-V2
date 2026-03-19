@@ -173,6 +173,116 @@ pub async fn handle_connection(
                                     }
                                 }
 
+                                // ── LEARN ─────────────────────────────────────────────
+                                Some("learn") => {
+                                    let texto   = json["text"].as_str().unwrap_or("").to_string();
+                                    let valence = json["valence"].as_f64().unwrap_or(0.0) as f32;
+                                    let context = json["context"].as_str().unwrap_or("Realidade").to_string();
+
+                                    if !texto.is_empty() {
+                                        let mut state = brain.lock().await;
+                                        let (dopa, sero, nor) = state.neurotransmissores;
+                                        let (step, alerta, emocao) = state.atividade;
+
+                                        // Valência modula neurotransmissores
+                                        let nova_dopa = (dopa + valence * 0.04).clamp(0.0, 2.0);
+                                        let nova_sero = (sero + if valence >= 0.0 { 0.015 } else { -0.02 }).clamp(0.0, 1.5);
+                                        let nova_nor  = (nor  + valence.abs() * 0.01).clamp(0.0, 2.0);
+                                        state.neurotransmissores = (nova_dopa, nova_sero, nova_nor);
+
+                                        // Estado emocional se aproxima da valência (EMA α=0.1)
+                                        let nova_emocao = (emocao * 0.9 + valence * 0.1).clamp(-1.0, 1.0);
+                                        state.atividade = (step, alerta, nova_emocao);
+
+                                        // Registra pensamento no ego
+                                        let pensamento = format!("[{}] {} (val={:.2})", context, texto, valence);
+                                        if state.ego.pensamentos_recentes.len() >= 10 {
+                                            state.ego.pensamentos_recentes.pop_front();
+                                        }
+                                        state.ego.pensamentos_recentes.push_back(pensamento);
+
+                                        let ack = serde_json::json!({
+                                            "event":        "learn_ack",
+                                            "word":         texto,
+                                            "valence":      valence,
+                                            "context":      context,
+                                            "dopamine":     nova_dopa,
+                                            "serotonin":    nova_sero,
+                                            "noradrenaline": nova_nor,
+                                            "emotion":      nova_emocao,
+                                            "step":         step,
+                                        }).to_string();
+                                        let _ = ws_tx.send(Message::text(ack)).await;
+                                        log::debug!("[LEARN] '{}' val={:.2} ctx={}", texto, valence, context);
+                                    }
+                                }
+
+                                // ── REWARD ────────────────────────────────────────────
+                                Some("reward") => {
+                                    let value = json["value"].as_f64().unwrap_or(0.3) as f32;
+                                    let mut state = brain.lock().await;
+                                    let (dopa, sero, nor) = state.neurotransmissores;
+                                    let nova_dopa = (dopa + value * 0.5).clamp(0.0, 2.0);
+                                    let nova_sero = (sero + value * 0.2).clamp(0.0, 1.5);
+                                    state.neurotransmissores = (nova_dopa, nova_sero, nor);
+                                    let ack = serde_json::json!({
+                                        "event":     "reward_ack",
+                                        "dopamine":  nova_dopa,
+                                        "serotonin": nova_sero,
+                                    }).to_string();
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                    println!("🏆 [REWARD] +{:.2} → dopa={:.3} sero={:.3}", value, nova_dopa, nova_sero);
+                                }
+
+                                // ── PUNISH ────────────────────────────────────────────
+                                Some("punish") => {
+                                    let value = json["value"].as_f64().unwrap_or(0.3) as f32;
+                                    let mut state = brain.lock().await;
+                                    let (dopa, sero, nor) = state.neurotransmissores;
+                                    let nova_dopa = (dopa - value * 0.3).clamp(0.0, 2.0);
+                                    let nova_sero = (sero - value * 0.2).clamp(0.0, 1.5);
+                                    let nova_nor  = (nor  + value * 0.4).clamp(0.0, 2.0);
+                                    state.neurotransmissores = (nova_dopa, nova_sero, nova_nor);
+                                    let ack = serde_json::json!({
+                                        "event":          "punish_ack",
+                                        "dopamine":       nova_dopa,
+                                        "noradrenaline":  nova_nor,
+                                    }).to_string();
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                    println!("⚡ [PUNISH] -{:.2} → dopa={:.3} nor={:.3}", value, nova_dopa, nova_nor);
+                                }
+
+                                // ── CHECK_CONNECTION ──────────────────────────────────
+                                Some("check_connection") => {
+                                    let pair = json["pair"].as_array().and_then(|a| {
+                                        let w1 = a.get(0)?.as_str()?.to_string();
+                                        let w2 = a.get(1)?.as_str()?.to_string();
+                                        Some((w1, w2))
+                                    });
+
+                                    if let Some((w1, w2)) = pair {
+                                        let state = brain.lock().await;
+                                        // Heurística: verifica presença nos pensamentos recentes
+                                        let hits = state.ego.pensamentos_recentes.iter()
+                                            .filter(|t| {
+                                                let t = t.to_lowercase();
+                                                t.contains(&w1.to_lowercase()) || t.contains(&w2.to_lowercase())
+                                            })
+                                            .count();
+                                        let (_, _, emocao) = state.atividade;
+                                        // Força da conexão: hits recentes + polaridade emocional
+                                        let strength = (hits as f32 * 0.15 + emocao.abs() * 0.25).clamp(0.0, 1.0);
+                                        let resp = serde_json::json!({
+                                            "event":     "connection_result",
+                                            "w1":        w1,
+                                            "w2":        w2,
+                                            "strength":  strength,
+                                            "in_memory": hits > 0,
+                                        }).to_string();
+                                        let _ = ws_tx.send(Message::text(resp)).await;
+                                    }
+                                }
+
                                 _ => {
                                     log::debug!("[WS] Ação desconhecida: {:?}", json["action"]);
                                 }
