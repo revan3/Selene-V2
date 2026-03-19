@@ -172,7 +172,8 @@ impl GrafoNeuralCompleto {
 pub struct MemoryTierV2 {
     pub conexoes_ativas: HashMap<Uuid, ConexaoSinaptica>,
     pub conexoes_dormentes: HashMap<Uuid, ConexaoSinaptica>,
-    pub grafo_completo: Arc<GrafoNeuralCompleto>,
+    /// Grafo não precisa de Arc interno — MemoryTierV2 já é protegido por Arc<TokioMutex<>>
+    pub grafo_completo: GrafoNeuralCompleto,
     cache_importancia: HashMap<Uuid, f32>,
 }
 
@@ -181,14 +182,14 @@ impl MemoryTierV2 {
         Self {
             conexoes_ativas: HashMap::new(),
             conexoes_dormentes: HashMap::new(),
-            grafo_completo: Arc::new(GrafoNeuralCompleto::new()),
+            grafo_completo: GrafoNeuralCompleto::new(),
             cache_importancia: HashMap::new(),
         }
     }
-    
+
     pub async fn criar_conexao(&mut self, conexao: ConexaoSinaptica) {
         // 1. Salva NO GRAFO COMPLETO (nunca será apagada)
-        Arc::get_mut(&mut self.grafo_completo).unwrap().conexoes.insert(conexao.id, conexao.clone());
+        self.grafo_completo.conexoes.insert(conexao.id, conexao.clone());
         
         // 2. Se for importante o suficiente, vai para ativas
         if conexao.emocao_media > 0.6 {
@@ -216,8 +217,7 @@ impl MemoryTierV2 {
         println!("💤 Iniciando ciclo REM...");
 
         // 1. Pega conexões "esquecidas" (não usadas há mais de 24h)
-        let grafo = self.grafo_completo.clone();
-        let esquecidas: Vec<_> = grafo.conexoes
+        let esquecidas: Vec<_> = self.grafo_completo.conexoes
             .values()
             .filter(|c| {
                 c.ultimo_uso.map(|u| u < current_time() - 86400.0).unwrap_or(false)
@@ -242,14 +242,13 @@ impl MemoryTierV2 {
                     contexto_semantico: ContextoSemantico::Sonho,
                     marcador_poda: 0.5,
                 };
-                Arc::get_mut(&mut self.grafo_completo).unwrap()
-                    .conexoes.insert(nova_conexao.id, nova_conexao.clone());
+                self.grafo_completo.conexoes.insert(nova_conexao.id, nova_conexao.clone());
                 novas.push(nova_conexao);
             }
         }
 
         // 3. Reforço: fortalece conexões emocionalmente salientes
-        for conexao in Arc::get_mut(&mut self.grafo_completo).unwrap().conexoes.values_mut() {
+        for conexao in self.grafo_completo.conexoes.values_mut() {
             if conexao.emocao_media > 0.8 {
                 conexao.peso = (conexao.peso + 0.01).min(1.0);
             }
@@ -265,10 +264,8 @@ impl MemoryTierV2 {
     /// Conexões de Fantasia/Sonho têm limiar mais alto para sobreviver.
     /// Retorna os IDs das sinapses podadas (para o sleep cycle deletar no DB).
     pub fn podar_sinapses(&mut self) -> Vec<Uuid> {
-        let grafo = Arc::get_mut(&mut self.grafo_completo).expect("grafo em uso");
-
         // Coleta IDs a podar (sem modificar o HashMap durante iteração)
-        let a_podar: Vec<Uuid> = grafo.conexoes
+        let a_podar: Vec<Uuid> = self.grafo_completo.conexoes
             .values()
             .filter(|c| {
                 if c.deve_podar() { return true; }
@@ -285,11 +282,11 @@ impl MemoryTierV2 {
             .collect();
 
         for id in &a_podar {
-            grafo.conexoes.remove(id);
-            for idx in grafo.conexoes_por_origem.values_mut() {
+            self.grafo_completo.conexoes.remove(id);
+            for idx in self.grafo_completo.conexoes_por_origem.values_mut() {
                 idx.retain(|x| x != id);
             }
-            for idx in grafo.conexoes_por_destino.values_mut() {
+            for idx in self.grafo_completo.conexoes_por_destino.values_mut() {
                 idx.retain(|x| x != id);
             }
             self.conexoes_ativas.remove(id);

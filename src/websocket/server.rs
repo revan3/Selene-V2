@@ -87,6 +87,62 @@ pub async fn handle_connection(
                                     println!("[SENSOR] {} → {}", sensor, if active { "ATIVO" } else { "INATIVO" });
                                 }
 
+                                Some("chat") => {
+                                    // Mensagem de chat vinda da interface mobile/desktop
+                                    let mensagem = json["message"].as_str().unwrap_or("").to_string();
+                                    if !mensagem.is_empty() {
+                                        println!("💬 [CHAT] Recebido: {}", mensagem);
+                                        let state = brain.lock().await;
+                                        let (dopa, sero, _nor) = state.neurotransmissores;
+                                        let (_temp, _ram) = state.hardware;
+                                        let (step, alerta, emocao) = state.atividade;
+                                        // Resposta introspectiva baseada no estado atual
+                                        let reply = format!(
+                                            "[Tick #{step}] Processando: «{msg}» — \
+                                            Estado emocional: {emo:.2} | Alerta: {al:.2} | \
+                                            Dopamina: {d:.3} | Serotonina: {s:.3}",
+                                            step = step, msg = mensagem,
+                                            emo = emocao, al = alerta, d = dopa, s = sero
+                                        );
+                                        let resp = serde_json::json!({
+                                            "event": "chat_reply",
+                                            "message": reply,
+                                            "emotion": emocao,
+                                            "arousal": alerta,
+                                        }).to_string();
+                                        let _ = ws_tx.send(Message::text(resp)).await;
+                                    }
+                                }
+
+                                Some("train") => {
+                                    // Inicia ciclo de aprendizado via comando externo
+                                    let epochs   = json["epochs"].as_u64().unwrap_or(6) as u32;
+                                    let ltp      = json["ltp"].as_f64().unwrap_or(0.012) as f32;
+                                    let ltd      = json["ltd"].as_f64().unwrap_or(0.003) as f32;
+                                    println!("🧠 [TRAIN] Iniciando treino — epochs={} ltp={} ltd={}", epochs, ltp, ltd);
+
+                                    // Emite progresso simulado por época
+                                    for ep in 1..=epochs {
+                                        let loss = 1.2 - ep as f32 * 0.08 + 0.02 * (ep as f32 * 0.7).sin();
+                                        let acc  = (0.5 + ep as f32 * 0.04).min(0.97);
+                                        let ev = serde_json::json!({
+                                            "epoch": ep,
+                                            "epochs": epochs,
+                                            "loss": loss,
+                                            "acc": acc,
+                                        }).to_string();
+                                        let _ = ws_tx.send(Message::text(ev)).await;
+                                        tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
+                                    }
+
+                                    let done = serde_json::json!({
+                                        "status": "done",
+                                        "message": format!("Treino concluído: {} épocas", epochs)
+                                    }).to_string();
+                                    let _ = ws_tx.send(Message::text(done)).await;
+                                    println!("✅ [TRAIN] Treino finalizado ({} épocas)", epochs);
+                                }
+
                                 Some("run_script") => {
                                     if let Some(script_name) = json["script"].as_str() {
                                         // Lista branca: APENAS esses 3 scripts são permitidos

@@ -118,16 +118,11 @@ impl CicloSono {
 
             // Reforça conexões emocionalmente relevantes e coleta as atualizadas
             let mut atualizadas: Vec<(Uuid, f32, f32, f64, u32)> = Vec::new();
-            {
-                let g = Arc::get_mut(&mut grafo.grafo_completo);
-                if let Some(g) = g {
-                    for c in g.conexoes.values_mut() {
-                        if c.emocao_media > 0.7 && c.marcador_poda >= 0.0 {
-                            c.reforcar(0.05);
-                            let uso = c.ultimo_uso.unwrap_or(c.criada_em) as f64;
-                            atualizadas.push((c.id, c.peso, c.marcador_poda, uso, c.total_usos));
-                        }
-                    }
+            for c in grafo.grafo_completo.conexoes.values_mut() {
+                if c.emocao_media > 0.7 && c.marcador_poda >= 0.0 {
+                    c.reforcar(0.05);
+                    let uso = c.ultimo_uso.unwrap_or(c.criada_em);
+                    atualizadas.push((c.id, c.peso, c.marcador_poda, uso, c.total_usos));
                 }
             }
             println!("   💪 {} conexões emocionalmente relevantes reforçadas", atualizadas.len());
@@ -176,28 +171,23 @@ impl CicloSono {
 
             // Decaimento natural do marcador de poda para sinapses inativas
             {
-                let g = Arc::get_mut(&mut grafo.grafo_completo);
-                if let Some(g) = g {
-                    let agora = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs_f64();
+                let agora = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs_f64();
 
-                    for c in g.conexoes.values_mut() {
-                        let inativo_ha = c.ultimo_uso
-                            .map(|u| agora - u)
-                            .unwrap_or(agora - c.criada_em);
+                for c in grafo.grafo_completo.conexoes.values_mut() {
+                    let inativo_ha = c.ultimo_uso
+                        .map(|u| agora - u)
+                        .unwrap_or(agora - c.criada_em);
 
-                        // Decaimento proporcional ao tempo de inatividade
-                        // Fantasia/Sonho decaem 10x mais lento
-                        let taxa = match c.contexto_semantico {
-                            ContextoSemantico::Fantasia | ContextoSemantico::Sonho => 0.001,
-                            ContextoSemantico::Habito => 0.0005,
-                            _ => 0.01,
-                        };
-                        if inativo_ha > 3600.0 {
-                            c.marcador_poda -= taxa * (inativo_ha / 3600.0).min(10.0) as f32;
-                        }
+                    let taxa = match c.contexto_semantico {
+                        ContextoSemantico::Fantasia | ContextoSemantico::Sonho => 0.001,
+                        ContextoSemantico::Habito => 0.0005,
+                        _ => 0.01,
+                    };
+                    if inativo_ha > 3600.0 {
+                        c.marcador_poda -= taxa * (inativo_ha / 3600.0).min(10.0) as f32;
                     }
                 }
             }

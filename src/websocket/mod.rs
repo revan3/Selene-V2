@@ -34,15 +34,18 @@ pub async fn start_websocket_server(brain_state: Arc<Mutex<BrainState>>) {
         });
 
     // Serve neural_interface.html na raiz (/)
-    // O arquivo deve estar em: selene_kernel/neural_interface.html
     let index = warp::path::end().and(warp::fs::file("neural_interface.html"));
 
+    // Serve selene_mobile_ui.html em /mobile
+    let mobile = warp::path("mobile").and(warp::fs::file("selene_mobile_ui.html"));
+
     // Combina as rotas
-    let routes = index.or(ws_route);
+    let routes = index.or(mobile).or(ws_route);
 
     println!("✨ Servidor Neural rodando em http://127.0.0.1:3030");
-    println!("   → WebSocket em ws://127.0.0.1:3030/selene");
-    println!("   → Interface em http://127.0.0.1:3030/");
+    println!("   → WebSocket em  ws://127.0.0.1:3030/selene");
+    println!("   → Desktop       http://127.0.0.1:3030/");
+    println!("   → Mobile        http://127.0.0.1:3030/mobile");
 
     // Task de telemetria: envia status do cérebro a cada ~500ms para todos os clientes
     tokio::spawn(async move {
