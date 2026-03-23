@@ -156,6 +156,26 @@ impl HippocampusV2 {
         std::mem::take(&mut self.conexoes_recentes)
     }
 
+    /// Persiste a matriz LTP em `selene_hippo_ltp.json`.
+    /// Chamada periodicamente para sobreviver ao restart do kernel.
+    pub fn save_ltp(&self, path: &str) {
+        if let Ok(json) = serde_json::to_string(&self.ltp_matrix) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+
+    /// Carrega a matriz LTP de `selene_hippo_ltp.json` (se existir e tamanho compatível).
+    /// Chamada logo após `new()` para restaurar o estado sináptico anterior.
+    pub fn load_ltp(&mut self, path: &str) {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(loaded) = serde_json::from_str::<Vec<f32>>(&content) {
+                if loaded.len() == self.ltp_matrix.len() {
+                    self.ltp_matrix = loaded;
+                }
+            }
+        }
+    }
+
     pub fn estatisticas(&self) -> HipocampoStats {
         HipocampoStats {
             ca1: self.ca1_encoding.estatisticas(),

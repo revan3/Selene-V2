@@ -17,11 +17,13 @@ mod sleep_cycle;
 mod websocket;
 mod compressor;
 mod ego;
+mod encoding;
 mod thalamus;
 mod interoception;
 mod basal_ganglia;
 mod brainstem;
 mod learning;
+mod meta;
 
 // Imports necessários
 use std::sync::mpsc::{channel, Sender, Receiver};
@@ -77,6 +79,9 @@ use storage::memory_graph::MemoryTierV2;
 // Chunking engine
 use learning::chunking::ChunkingEngine;
 
+// Metacognição
+use meta::MetaCognitive;
+
 // Outros imports
 use neurochem::NeuroChem;
 use sleep_manager::SleepManagerV2 as SleepManager;
@@ -119,10 +124,21 @@ fn calcular_max_neurons() -> usize {
 // ================== FUNÇÃO PRINCIPAL ==================
 fn main() {
     // 1. Inicializa o Sistema de Logs
+    let debug_config = ConfigBuilder::new()
+        .add_filter_ignore_str("hyper")
+        .add_filter_ignore_str("warp")
+        .add_filter_ignore_str("tungstenite")
+        .add_filter_ignore_str("tokio_tungstenite")
+        .add_filter_ignore_str("tracing")
+        .add_filter_ignore_str("surrealdb")
+        .add_filter_ignore_str("surrealdb_core")
+        .add_filter_ignore_str("kvs")
+        .build();
+
     let _ = CombinedLogger::init(
         vec![
             TermLogger::new(LevelFilter::Info, ConfigBuilder::new().build(), TerminalMode::Mixed, ColorChoice::Auto),
-            WriteLogger::new(LevelFilter::Debug, ConfigBuilder::new().build(), File::create("selene_debug.log").unwrap()),
+            WriteLogger::new(LevelFilter::Debug, debug_config, File::create("selene_debug.log").unwrap()),
         ]
     );
 
@@ -265,7 +281,8 @@ async fn async_main() {
     let mut parietal = ParietalLobe::new(n_neurons, 0.2, &config);
     let mut temporal = TemporalLobe::new(n_neurons, 0.005, 0.2, &config);
     let mut limbic = LimbicSystem::new(n_neurons / 2, &config);
-    let hippocampus = Hippocampus::new(n_neurons / 2, &config);
+    let mut hippocampus = Hippocampus::new(n_neurons / 2, &config);
+    hippocampus.load_ltp("selene_hippo_ltp.json"); // restaura pesos sinápticos persistidos
     let mut frontal = FrontalLobe::new(n_neurons, 0.2, 0.1, &config);
     let mut corpus_callosum = CorpusCallosum::new(10.0, 8);
 
@@ -311,6 +328,9 @@ async fn async_main() {
 
     // --- 12b. CHUNKING ENGINE ---
     let mut chunking = ChunkingEngine::new(RegionType::Temporal);
+
+    // --- 12d. METACOGNIÇÃO ---
+    let mut metacognitive = MetaCognitive::new();
 
     // --- 12c. CONTROLE DE FREQUÊNCIA ADAPTIVA ---
     // Média ponderada exponencial de atividade recente (0.0 = ocioso, 1.0 = pleno)
@@ -362,10 +382,12 @@ async fn async_main() {
         let elapsed = start_time.elapsed().as_secs_f32();
 
         // A. Atualiza sinais corporais
+        // Adenosina acumula com o tempo acordado (pressão de sono biológica):
+        // 0.0 ao acordar → ~0.9 após 16h, revertido pelo sono.
         {
             let sensor_lock = sensor.lock().await;
             let cpu_temp = sensor_lock.get_cpu_temp();
-            let adenosina = 0.1;
+            let adenosina = (tempo_acordado.as_secs_f32() / (16.0 * 3600.0)).clamp(0.0, 0.95);
             interoception.update(adenosina, cpu_temp, neuro.noradrenaline);
             brainstem.update(adenosina, dt);
         }
@@ -446,8 +468,67 @@ async fn async_main() {
         let safe_len = 10.min(cochlea_input.len());
         let (emotion, arousal) = limbic.evaluate(&cochlea_input[0..safe_len], 0.0, dt, current_time, &config);
 
+        // ── FASE 1a: Emoção (Plutchik) → viés do vocabulário de fala ──────────
+        // EmotionalState deriva joy/fear/sadness dos neurotransmissores atuais.
+        // O resultado (emocao_bias) desloca o alvo emocional da caminhada no grafo,
+        // fazendo o vocabulário espelhar o estado interno: alegria → palavras positivas,
+        // medo → palavras negativas, tristeza → moderação negativa.
+        let plutchik = neurochem::EmotionalState::from_neurochem(
+            neuro.dopamine, neuro.serotonin, neuro.cortisol, neuro.noradrenaline,
+        );
+        let emocao_bias = plutchik.joy * 0.3 - plutchik.fear * 0.4 - plutchik.sadness * 0.25;
+
+        // ── FASE 1b: Hipocampo → Grafo linguístico ───────────────────────────
+        // Hipocampo roda quando há emoção significativa (≥ 0.35).
+        // CA3 recorrente com onda theta codifica o padrão reconhecido em memória
+        // episódica. Conexões geradas são propagadas ao grafo de associações via
+        // brain_state quando o chunk acompanhou emoção forte.
+        if emotion.abs() >= 0.35 {
+            let (hippo_out, _conexoes_hippo) = hippocampus.memorize_with_connections(
+                &recognized, emotion, dt, current_time, &config,
+            );
+
+            // ── FASE 1c: Saída do hipocampo → canal de imaginação mental ─────
+            // Quando a emoção é intensa (≥ 0.6), o padrão hipocampal é enviado de
+            // volta como "eco de memória" — alimenta mental_imagery_visual/auditory,
+            // fazendo a Selene "lembrar" de experiências parecidas enquanto processa.
+            if emotion.abs() >= 0.6 {
+                // frontal_intent não disponível aqui ainda — usamos o padrão hipocampal
+                // como proxy (o hipocampo já modulou o padrão com emoção e theta)
+                let memory_echo = NeuralEnactiveMemory::from_firing_rates(
+                    elapsed as f64,
+                    emotion,
+                    arousal,
+                    &hippo_out,
+                    &hippo_out,
+                    hippo_out.clone(),
+                    format!("hippo_echo_{}", step),
+                );
+                let _ = tx_feedback.send(memory_echo);
+            }
+        }
+
         frontal.set_dopamine(neuro.dopamine + emotion);
         let action = frontal.decide(&recognized, &internal_goal, dt, current_time, &config);
+
+        // ── FASE 1d: Onda dominante → profundidade da caminhada no grafo ──────
+        // Derivado do estado neurológico atual — a onda modula quantos passos
+        // o graph-walk percorre, refletindo o estado atencional:
+        //   delta (ocioso profundo): 6 passos — respostas curtas e simples
+        //   theta/alpha (repouso alerta): 9 passos — respostas contemplativas
+        //   beta (foco ativo): 10 passos — respostas precisas
+        //   gamma (aprendizado intenso): 13 passos — respostas ricas e expansivas
+        let n_passos_walk: usize = if neuro.dopamine > 1.1 && atividade_recente > 0.04 {
+            13  // gamma
+        } else if neuro.dopamine > 0.75 && atividade_recente > 0.01 {
+            10  // beta
+        } else if neuro.serotonin > 0.65 {
+            9   // alpha
+        } else if neuro.serotonin > 0.4 {
+            8   // theta
+        } else {
+            6   // delta
+        };
 
         // G. Núcleos da Base
         basal_ganglia.update_habits(&vision_full, &action, emotion);
@@ -490,29 +571,44 @@ async fn async_main() {
             });
         }
 
-        // J. Atualização do ego
+        // J. Atualização do ego + tick semântico dos neurônios conceituais
+        // Pensamentos espontâneos (DMN) são propagados ao brain_state para
+        // aparecerem na telemetria da interface neural.
         let body_feeling = interoception.sentir();
         if let Some(pensamento) = ego.update(body_feeling, current_time).await {
-            if step % 100 == 0 { println!("    💭 Pensamento: {}", pensamento); }
-            
-            // Correção: removido narrative_voice (não existe)
-            if let Ok(mut state) = brain_state.try_lock() {
-                state.ego.pensamentos_recentes.push_back(pensamento.clone());
-                if state.ego.pensamentos_recentes.len() > 10 {
-                    state.ego.pensamentos_recentes.pop_front();
+            if let Ok(mut brain_guard) = brain_state.try_lock() {
+                brain_guard.ego.pensamentos_recentes.push_back(pensamento);
+                if brain_guard.ego.pensamentos_recentes.len() > 10 {
+                    brain_guard.ego.pensamentos_recentes.pop_front();
                 }
             }
         }
 
+        // Roda Izhikevich+STDP nos neurônios conceituais aprendidos via WS
+        {
+            let mut swap = swap_manager.lock().await;
+            swap.tick_semantico(dt, current_time * 1000.0);
+        }
+
         // K. Telemetria
         if step % 500 == 0 {
+            // Fase 1e: atualiza metacognição com estado neural atual
+            let n_vocab = brain_state.try_lock()
+                .map(|s| s.palavra_valencias.len()).unwrap_or(0);
+            metacognitive.observe(arousal, emotion, n_vocab);
+
             let swap_guard = swap_manager.lock().await;
             let chunk_stats = chunking.stats();
-            println!("🧪 [BIO] Sero: {:.2} | Dop: {:.2} | RAM: {:.1}GB | Tempo: {:?}",
-                neuro.serotonin, neuro.dopamine, sensor.lock().await.get_ram_usage_gb(), tempo_acordado
+            println!("🧪 [BIO] Sero: {:.2} | Dop: {:.2} | Cort: {:.2} | Emoção: {} | Onda: {}p",
+                neuro.serotonin, neuro.dopamine, neuro.cortisol,
+                plutchik.dominante(), n_passos_walk,
             );
-            println!("   🧬 Neurônios: {} ativos | Hábitos: {} | Alerta: {:.2}",
-                swap_guard.ram_count(), basal_ganglia.stats().num_habitos, brainstem.stats().alertness
+            println!("   🧬 Neurônios: {} ativos | Hábitos: {} | Alerta: {:.2} | RAM: {:.1}GB",
+                swap_guard.ram_count(), basal_ganglia.stats().num_habitos,
+                brainstem.stats().alertness, sensor.lock().await.get_ram_usage_gb(),
+            );
+            println!("   🧠 META: {} | Vocab: {} palavras",
+                metacognitive.descricao(), n_vocab,
             );
             println!("   🔤 {} | Freq: {}Hz | Atividade: {:.3}",
                 chunk_stats, freq_hz, atividade_recente
@@ -530,8 +626,28 @@ async fn async_main() {
                 .count();
             spikes_ativos as f32 / n_neurons as f32
         };
-        // EMA rápida: α=0.1 para suavizar sem lag excessivo
-        atividade_recente = atividade_recente * 0.90 + atividade_tick * 0.10;
+
+        // Lê sinal de atividade WS e atualiza brain_state com estado neural real
+        // Isso garante 200Hz durante sessões de treinamento mesmo sem spikes neurais
+        // e permite que o chat handler use step/neurotransmissores/emocao atualizados.
+        let ws_sinal = {
+            if let Ok(mut brain_guard) = brain_state.try_lock() {
+                let v = brain_guard.ws_atividade;
+                brain_guard.ws_atividade = (v * 0.985).max(0.0);
+                // Atualiza estado neural real no brain_state para o chat handler usar
+                let emocao_real = (neuro.serotonin - 0.5).clamp(-1.0, 1.0);
+                brain_guard.atividade = (step, brainstem.stats().alertness, emocao_real);
+                brain_guard.neurotransmissores = (neuro.dopamine, neuro.serotonin, neuro.noradrenaline);
+                // Fase 1a + 1d: propaga viés emocional e profundidade de walk para o chat handler
+                brain_guard.emocao_bias = emocao_bias;
+                brain_guard.n_passos_walk = n_passos_walk;
+                v
+            } else { 0.0 }
+        };
+
+        // EMA rápida: α=0.1; usa o maior entre spikes neurais e sinal WS
+        let atividade_combinada = atividade_tick.max(ws_sinal);
+        atividade_recente = atividade_recente * 0.90 + atividade_combinada * 0.10;
 
         // L2. Controle de frequência adaptiva
         if atividade_recente < ATIVIDADE_MINIMA {
@@ -572,10 +688,11 @@ async fn async_main() {
         }
         tempo_acordado += Duration::from_millis(periodo_ms.max(1));
 
-        // O. Limpeza periódica
+        // O. Limpeza periódica + persistência do hipocampo (LTP)
         if step % 10000 == 0 {
             let mut swap = swap_manager.lock().await;
             let _ = swap.limpar_neurônios_inativos();
+            hippocampus.save_ltp("selene_hippo_ltp.json");
         }
 
         // P. Cap dinâmico de neurônios por RAM (docx v2.3 §03 — BLOCKER)

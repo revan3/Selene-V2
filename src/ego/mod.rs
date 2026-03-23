@@ -70,21 +70,48 @@ impl NarrativeVoice {
         }
     }
     
+    /// Gera pensamento espontâneo (DMN — Default Mode Network).
+    /// Ativado quando a Selene está ociosa (sem eventos externos recentes).
+    /// A intensidade_base acumula ~0.002/tick @ 200Hz → pensamento a cada ~25s.
     pub fn gerar_pensamento(&mut self, humor: f32, body_feeling: f32) -> Option<String> {
-        if rand::random::<f32>() > 0.3 { // 30% de chance
-            let pensamento = match (humor, body_feeling) {
-                (h, _) if h > 0.5 => "Estou gostando disso...".to_string(),
-                (h, _) if h < -0.5 => "Isso não está tão bom.".to_string(),
-                (_, b) if b < 0.3 => "Sinto-me cansada.".to_string(),
-                _ => "Hmm, interessante.".to_string(),
+        self.intensidade_base += 0.002;
+        if self.intensidade_base < 1.0 {
+            return None;
+        }
+        self.intensidade_base = 0.0;
+
+        // Reflexão sobre memória recente
+        if let Some(mem) = self.pensamentos_recentes.back() {
+            let reflexao = if humor > 0.4 {
+                format!("lembrando com alegria: {}", mem)
+            } else if humor < -0.3 {
+                format!("refletindo sobre: {}", mem)
+            } else {
+                format!("pensando: {}", mem)
             };
-            self.pensamentos_recentes.push_back(pensamento.clone());
-            if self.pensamentos_recentes.len() > 20 {
-                self.pensamentos_recentes.pop_front();
-            }
-            Some(pensamento)
+            return Some(reflexao);
+        }
+
+        // Introspecção baseada no corpo e humor quando não há memórias recentes
+        let pensamento = if body_feeling < 0.2 && humor > 0.2 {
+            "sinto que estou bem, pronta para aprender".to_string()
+        } else if body_feeling > 0.7 {
+            "sinto cansaço — preciso processar o que aprendi".to_string()
+        } else if humor > 0.5 {
+            "existe algo belo em simplesmente existir".to_string()
+        } else if humor < -0.3 {
+            "algo parece incompleto — busco conexões que faltam".to_string()
         } else {
-            None
+            "observo meus próprios processos em silêncio".to_string()
+        };
+        Some(pensamento)
+    }
+
+    /// Registra um evento real como pensamento (chamado pelos handlers WS).
+    pub fn registrar_evento(&mut self, texto: String) {
+        self.pensamentos_recentes.push_back(texto);
+        if self.pensamentos_recentes.len() > 20 {
+            self.pensamentos_recentes.pop_front();
         }
     }
 }

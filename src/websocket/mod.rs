@@ -1,7 +1,16 @@
 // src/websocket/mod.rs
+use std::net::UdpSocket;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 use warp::Filter;
+
+/// Descobre o IP local da máquina abrindo uma conexão UDP fictícia (não envia dados)
+fn local_ip_address() -> Option<String> {
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    let addr = socket.local_addr().ok()?;
+    Some(addr.ip().to_string())
+}
 
 // Re-exportar para o main.rs conseguir acessar
 pub mod bridge;
@@ -42,10 +51,17 @@ pub async fn start_websocket_server(brain_state: Arc<Mutex<BrainState>>) {
     // Combina as rotas
     let routes = index.or(mobile).or(ws_route);
 
+    // Descobre o IP local para exibir no console
+    let local_ip = local_ip_address();
+
     println!("✨ Servidor Neural rodando em http://127.0.0.1:3030");
     println!("   → WebSocket em  ws://127.0.0.1:3030/selene");
     println!("   → Desktop       http://127.0.0.1:3030/");
     println!("   → Mobile        http://127.0.0.1:3030/mobile");
+    if let Some(ip) = &local_ip {
+        println!("   → Celular (LAN) http://{}:3030/mobile", ip);
+        println!("   → WebSocket LAN ws://{}:3030/selene", ip);
+    }
 
     // Task de telemetria: envia status do cérebro a cada ~500ms para todos os clientes
     tokio::spawn(async move {
@@ -64,8 +80,8 @@ pub async fn start_websocket_server(brain_state: Arc<Mutex<BrainState>>) {
         }
     });
 
-    // Inicia o servidor Warp
+    // Inicia o servidor Warp (0.0.0.0 = todas as interfaces — permite acesso pelo celular na mesma rede Wi-Fi)
     warp::serve(routes)
-        .run(([127, 0, 0, 1], 3030))
+        .run(([0, 0, 0, 0], 3030))
         .await;
 }

@@ -1,12 +1,28 @@
 // src/websocket/bridge.rs
 
 use serde::{Serialize, Deserialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex as TokioMutex;
 use crate::config::Config;
 use crate::storage::swap_manager::SwapManager;
 use crate::sensors::SensorFlags;
+use crate::encoding::spike_codec::SpikePattern;
+use crate::encoding::helix_store::HelixStore;
+use crate::brain_zones::occipital::OccipitalLobe;
+
+/// Ondas cerebrais simuladas a partir da atividade neural agregada.
+/// Baseadas nas bandas EEG biológicas — derivadas do estado atual do sistema.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct OndasCerebrais {
+    pub delta: f32,   // 0.5–4 Hz  — sono profundo, recuperação
+    pub theta: f32,   // 4–8 Hz    — memória, criatividade, hipnagógico
+    pub alpha: f32,   // 8–13 Hz   — relaxamento alerta, ocioso produtivo
+    pub beta: f32,    // 13–30 Hz  — foco ativo, cognição, atenção
+    pub gamma: f32,   // 30–100 Hz — consciência, binding, aprendizado intenso
+    pub dominante: String, // banda de maior potência no momento
+}
 
 // Estrutura principal que representa o "Estado Mental" para a Web
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -16,6 +32,7 @@ pub struct NeuralStatus {
     pub ego: EgoStatus,
     pub atividade: AtividadeStatus,
     pub swap: SwapStatus,
+    pub ondas: OndasCerebrais,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -62,15 +79,200 @@ pub struct BrainState {
     pub shutdown_requested: bool,
     /// Flags de controle de sensores (AtomicBool compartilhados com threads dos sensores)
     pub sensor_flags: SensorFlags,
+    /// Mapa palavra → valência aprendida (persistente entre sessões de chat)
+    pub palavra_valencias: HashMap<String, f32>,
+    /// Grafo semântico: palavra → [(palavra_associada, peso)]
+    /// Construído via selene_associacoes.py e selene_leitor.py
+    pub grafo_associacoes: HashMap<String, Vec<(String, f32)>>,
+    /// Padrões de início de frase aprendidos (ex: ["eu","sinto"], ["cada","sinapse"])
+    pub frases_padrao: Vec<Vec<String>>,
+    /// Sinal de atividade WS: setado para 1.0 em cada ação de aprendizado,
+    /// lido pelo loop principal para manter 200Hz durante treinamento.
+    pub ws_atividade: f32,
+    /// Profundidade da caminhada no grafo — definida pela onda dominante.
+    /// delta=6, theta/alpha=9, beta=10, gamma=13
+    pub n_passos_walk: usize,
+    /// Viés emocional derivado da roda de Plutchik (joy - fear - sadness).
+    /// Desloca o alvo emocional da caminhada no grafo, colorindo o vocabulário.
+    pub emocao_bias: f32,
+    /// In-memory spike vocabulary: palavra → SpikePattern
+    /// Built incrementally from `learn` actions; persisted via HelixStore.
+    pub spike_vocab: HashMap<String, SpikePattern>,
+    /// Persistent mmap-based spike store (selene_spikes.hlx).
+    /// None if the file could not be opened (e.g. permission error).
+    pub helix: Option<HelixStore>,
+    /// Nível de curiosidade dopaminérgica (0.0-1.0).
+    /// Cresce a cada interação de chat; dispara pergunta autônoma quando >0.75 + dopamina>0.55.
+    pub curiosity_level: f32,
+    /// Fila de perguntas autônomas geradas pela Selene a partir de lacunas no grafo.
+    pub perguntas_proprias: VecDeque<String>,
+    /// Contador global de respostas geradas. Usado como seed de diversidade para
+    /// `gerar_resposta_emergente` — garante prefixos únicos mesmo quando o `step`
+    /// neural não avançou entre perguntas consecutivas (ex: testes automáticos).
+    pub reply_count: u64,
+    /// Contagem de travessias por aresta do grafo: (a, b) → vezes percorrida.
+    /// Usada pela consolidação noturna para reforçar sinapses mais ativas.
+    pub aresta_contagem: HashMap<(String, String), u32>,
+    /// Último caminho percorrido no grafo durante um walk de resposta.
+    /// Usado pelo evento `feedback` para reforçar/penalizar arestas específicas.
+    pub ultimo_caminho_walk: Vec<String>,
+    /// Instante da última atividade de chat (para detecção de inatividade/sono).
+    pub ultima_atividade: Instant,
+    /// Contador de exposições por palavra auto-aprendida do contexto de chat.
+    /// Cada menção numa conversa incrementa o contador; a valência escala com ele.
+    /// 1ª exposição: ±0.15 | 2ª: ±0.30 | 3ª+: ±0.45 (máx)
+    pub auto_learn_contagem: HashMap<String, u32>,
+    /// true quando Selene está no ciclo de sono noturno (00:00–05:00).
+    /// Qualquer interação de chat/audio/video desperta imediatamente.
+    pub dormindo: bool,
+    /// Fase atual do sono: "N1 - Consolidação", "N2 - Poda", "N3 - REM", "N4 - Backup"
+    /// Vazio quando acordada.
+    pub fase_sono: String,
+    /// Córtex occipital — processa frames visuais da webcam/screen share do browser.
+    /// Aplica detecção de movimento (flicker_buffer), contraste e orientação (V1→V2)
+    /// antes de gerar o spike pattern que vai para spike_vocab.
+    pub occipital: OccipitalLobe,
+    /// Tempo visual acumulado (segundos) — passado para visual_sweep como current_time.
+    /// Permite que o OccipitalLobe calcule variações temporais entre frames.
+    pub visual_time: f32,
 }
 
 pub struct EgoVoiceState {
     pub pensamentos_recentes: VecDeque<String>,
     pub sentimento: f32,
+    /// Traços de personalidade aprendidos: (nome_do_traço, intensidade 0.0-1.0)
+    /// Ex: [("curiosa", 0.7), ("cautelosa", 0.4)]
+    /// Atualizados automaticamente após interações com emoção forte (|emocao|>0.4).
+    pub tracos: Vec<(String, f32)>,
 }
 
 impl BrainState {
     pub fn new(swap: Arc<TokioMutex<SwapManager>>, cfg: &Config, sensor_flags: SensorFlags) -> Self {
+        // Pré-carrega léxico se existir.
+        // Suporta dois formatos:
+        //   Array: [{word, valence, ...}, ...]  (formato legado)
+        //   Object: {"categoria": [{word, valence, ...}], ...}  (formato generate_lexicon.py)
+        let mut palavra_valencias: HashMap<String, f32> = HashMap::new();
+        if let Ok(content) = std::fs::read_to_string("selene_lexicon.json") {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                let mut carregar_entrada = |c: &serde_json::Value| {
+                    if let (Some(word), Some(val)) = (c["word"].as_str(), c["valence"].as_f64()) {
+                        palavra_valencias.insert(word.to_lowercase(), val as f32);
+                    }
+                };
+                match &json {
+                    serde_json::Value::Array(arr) => {
+                        for c in arr { carregar_entrada(c); }
+                    }
+                    serde_json::Value::Object(map) => {
+                        for (_cat, lista) in map {
+                            if let Some(arr) = lista.as_array() {
+                                for c in arr { carregar_entrada(c); }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                if !palavra_valencias.is_empty() {
+                    println!("📖 Léxico pré-carregado: {} palavras conhecidas.", palavra_valencias.len());
+                }
+            }
+        }
+
+        // Restaura backup de linguagem se existir (grafo + frases)
+        let mut grafo_associacoes: HashMap<String, Vec<(String, f32)>> = HashMap::new();
+        let mut frases_padrao: Vec<Vec<String>> = Vec::new();
+        if let Ok(content) = std::fs::read_to_string("selene_linguagem.json") {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(lingua) = json.get("selene_linguagem_v1") {
+                    // Restaura vocabulário → palavra_valencias
+                    if let Some(vocab) = lingua.get("vocabulario").and_then(|v| v.as_object()) {
+                        for (word, val) in vocab {
+                            if let Some(v) = val.as_f64() {
+                                // Não sobrescreve palavras já carregadas do selene_lexicon.json
+                                palavra_valencias.entry(word.clone()).or_insert(v as f32);
+                            }
+                        }
+                    }
+
+                    // Restaura associações
+                    if let Some(assoc) = lingua.get("associacoes").and_then(|v| v.as_object()) {
+                        for (w1, vizinhos) in assoc {
+                            if let Some(arr) = vizinhos.as_array() {
+                                for pair in arr {
+                                    if let (Some(w2), Some(peso)) = (
+                                        pair.get(0).and_then(|v| v.as_str()),
+                                        pair.get(1).and_then(|v| v.as_f64()),
+                                    ) {
+                                        grafo_associacoes
+                                            .entry(w1.clone())
+                                            .or_default()
+                                            .push((w2.to_string(), peso as f32));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Restaura frases padrão
+                    if let Some(frases) = lingua.get("frases_padrao").and_then(|v| v.as_array()) {
+                        for frase in frases {
+                            if let Some(palavras) = frase.as_array() {
+                                let fv: Vec<String> = palavras.iter()
+                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                    .collect();
+                                if !fv.is_empty() { frases_padrao.push(fv); }
+                            }
+                        }
+                    }
+                    let n_assoc: usize = grafo_associacoes.values().map(|v| v.len()).sum();
+                    if n_assoc > 0 || !frases_padrao.is_empty() {
+                        println!("🗣️  Linguagem restaurada: {} associações, {} frases padrão.",
+                            n_assoc, frases_padrao.len());
+                    }
+                }
+            }
+        }
+
+        // Open (or create) the Helix spike store and restore spike_vocab from it
+        let mut spike_vocab: HashMap<String, SpikePattern> = HashMap::new();
+        let helix = match HelixStore::open("selene_spikes.hlx") {
+            Ok(store) => {
+                let n = store.len();
+                if n > 0 {
+                    for (label, pattern) in store.iter_all() {
+                        spike_vocab.insert(label, pattern);
+                    }
+                    println!("🧬 Helix restaurado: {} padrões spike carregados.", n);
+                }
+                Some(store)
+            }
+            Err(e) => {
+                eprintln!("⚠️  Helix store não disponível ({}). Spike vocab será só RAM.", e);
+                None
+            }
+        };
+
+        // Carrega traços de personalidade persistidos (selene_ego.json).
+        // Formato: [["curiosa", 0.7], ["reflexiva", 0.5], ...]
+        let tracos_persistidos: Vec<(String, f32)> =
+            std::fs::read_to_string("selene_ego.json")
+                .ok()
+                .and_then(|s| serde_json::from_str::<Vec<(String, f32)>>(&s).ok())
+                .unwrap_or_else(|| vec![
+                    ("curiosa".to_string(), 0.5),
+                    ("reflexiva".to_string(), 0.5),
+                    ("cautelosa".to_string(), 0.3),
+                ]);
+
+        // Carrega pensamentos recentes persistidos (selene_memoria_ego.json).
+        // Formato: ["pensamento1", "pensamento2", ...]
+        let pensamentos_persistidos: VecDeque<String> =
+            std::fs::read_to_string("selene_memoria_ego.json")
+                .ok()
+                .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                .map(VecDeque::from)
+                .unwrap_or_default();
+
         Self {
             swap_manager: swap,
             config: cfg.clone(),
@@ -78,19 +280,81 @@ impl BrainState {
             hardware: (40.0, 0.0),
             atividade: (0, 1.0, 0.0),
             ego: EgoVoiceState {
-                pensamentos_recentes: VecDeque::with_capacity(10),
+                pensamentos_recentes: pensamentos_persistidos,
                 sentimento: 0.0,
+                tracos: tracos_persistidos,
             },
             shutdown_requested: false,
             sensor_flags,
+            palavra_valencias,
+            grafo_associacoes,
+            frases_padrao,
+            ws_atividade: 0.0,
+            n_passos_walk: 9,
+            emocao_bias: 0.0,
+            spike_vocab,
+            helix,
+            curiosity_level: 0.0,
+            perguntas_proprias: VecDeque::with_capacity(5),
+            reply_count: 0,
+            aresta_contagem: HashMap::new(),
+            ultimo_caminho_walk: Vec::new(),
+            ultima_atividade: Instant::now(),
+            auto_learn_contagem: HashMap::new(),
+            dormindo: false,
+            fase_sono: String::new(),
+            // 512 neurônios = 70% V1 (358) + 30% V2 (154) — coincide com 32×16 pixels do browser
+            occipital: OccipitalLobe::new(512, 0.2, cfg),
+            visual_time: 0.0,
         }
     }
 }
 
-// Esta função traduz o BrainState complexo para o NeuralStatus (JSON)
+// Esta função traduz o BrainState complexo para o NeuralStatus (JSON).
+// Usa try_lock no swap_manager para NÃO bloquear enquanto mantém o brain lock.
+// Se o swap estiver ocupado, retorna 0 para neuronios_ativos (valor será atualizado
+// na próxima telemetria). Isso evita starvation do chat handler.
 pub async fn collect_neural_status(state: &BrainState) -> NeuralStatus {
-    let swap_guard = state.swap_manager.lock().await;
-    
+    let neuronios_ativos = state.swap_manager
+        .try_lock()
+        .map(|g| g.ram_count())
+        .unwrap_or(0);
+
+    // Estimativa de ondas cerebrais baseada no estado neural atual.
+    // Derivação biológica aproximada:
+    //   alerta (arousal) e emoção → determinam qual banda domina
+    //   dopamina → modula beta/gamma (foco e aprendizado)
+    //   serotonina → modula alpha (calma e equilíbrio)
+    //   ws_atividade → sinal de engajamento externo (treino/chat)
+    let (dopa, sero, _nor) = state.neurotransmissores;
+    let (_, alerta, emocao) = state.atividade;
+    let ws_ativ = state.ws_atividade;
+
+    // Atividade normalizada 0-1
+    let atividade_geral = (alerta / 3.5).clamp(0.0, 1.0);
+    let engajamento = ws_ativ.clamp(0.0, 1.0);
+
+    // Banda Delta: forte quando ocioso sem engajamento externo (pseudo-sono)
+    let delta = ((1.0 - atividade_geral) * (1.0 - engajamento) * 0.8).clamp(0.0, 1.0);
+
+    // Banda Theta: memoria, criatividade — moderada atividade + serotonina
+    let theta = (sero * 0.5 * (1.0 - engajamento * 0.5) * 0.9).clamp(0.0, 1.0);
+
+    // Banda Alpha: ocioso alerta — serotonina alta, baixo engajamento externo
+    let alpha = (sero * (1.0 - engajamento * 0.8) * atividade_geral * 1.2).clamp(0.0, 1.0);
+
+    // Banda Beta: foco ativo — alta dopamina, engajamento médio/alto
+    let beta = (dopa * 0.7 * (atividade_geral * 0.5 + engajamento * 0.5)).clamp(0.0, 1.0);
+
+    // Banda Gamma: aprendizado intenso/chat — engajamento alto + dopamina alta
+    let gamma = (dopa * engajamento * emocao.abs() * 1.5).clamp(0.0, 1.0);
+
+    let dominante = if gamma > 0.6 { "gamma".to_string() }
+        else if beta > alpha && beta > theta { "beta".to_string() }
+        else if alpha > theta { "alpha".to_string() }
+        else if theta > delta { "theta".to_string() }
+        else { "delta".to_string() };
+
     NeuralStatus {
         neurotransmissores: NeurochemStatus {
             dopamina: state.neurotransmissores.0,
@@ -111,8 +375,15 @@ pub async fn collect_neural_status(state: &BrainState) -> NeuralStatus {
             emocao: state.atividade.2,
         },
         swap: SwapStatus {
-            neuronios_ativos: swap_guard.ram_count(),
-            capacidade_max: 1_000_000, // MAX_RAM_NEURONS
+            neuronios_ativos,
+            // Lê o limite real calculado pelo SwapManager (tier de RAM dinâmico)
+            capacidade_max: state.swap_manager
+                .try_lock()
+                .map(|g| g.max_ram_neurons)
+                .unwrap_or(1_000_000),
+        },
+        ondas: OndasCerebrais {
+            delta, theta, alpha, beta, gamma, dominante,
         },
     }
 }

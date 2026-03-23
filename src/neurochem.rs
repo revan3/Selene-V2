@@ -14,11 +14,50 @@ pub struct NeuroChem {
     last_temp: f32,
 }
 
-// Adicionar em neurochem.rs
+/// Roda de emoções de Plutchik — derivada dos neurotransmissores.
+/// Usada para colorir os pensamentos e respostas da Selene.
 pub struct EmotionalState {
-    // Roda de emoções de Plutchik
-    joy: f32, trust: f32, fear: f32, surprise: f32,
-    sadness: f32, disgust: f32, anger: f32, anticipation: f32,
+    pub joy: f32,          // dopamina alta + serotonina alta
+    pub trust: f32,        // serotonina alta + cortisol baixo
+    pub fear: f32,         // noradrenalina alta + cortisol alto
+    pub surprise: f32,     // noradrenalina spike (delta grande)
+    pub sadness: f32,      // dopamina baixa + serotonina baixa
+    pub disgust: f32,      // cortisol alto + dopamina baixa
+    pub anger: f32,        // noradrenalina alta + dopamina alta
+    pub anticipation: f32, // dopamina moderada + noradrenalina moderada
+}
+
+impl EmotionalState {
+    /// Deriva o estado emocional de Plutchik dos neurotransmissores atuais.
+    pub fn from_neurochem(dopa: f32, sero: f32, cort: f32, nor: f32) -> Self {
+        Self {
+            joy:          (dopa * sero).clamp(0.0, 1.0),
+            trust:        (sero * (1.0 - cort)).clamp(0.0, 1.0),
+            fear:         (nor * cort).clamp(0.0, 1.0),
+            surprise:     (nor * (1.0 - sero) * 0.5).clamp(0.0, 1.0),
+            sadness:      ((1.0 - dopa) * (1.0 - sero)).clamp(0.0, 1.0),
+            disgust:      (cort * (1.0 - dopa)).clamp(0.0, 1.0),
+            anger:        (nor * dopa * (1.0 - sero)).clamp(0.0, 1.0),
+            anticipation: (dopa * nor * 0.5).clamp(0.0, 1.0),
+        }
+    }
+
+    /// Retorna a emoção dominante como string legível.
+    pub fn dominante(&self) -> &'static str {
+        let arr = [
+            (self.joy,          "alegria"),
+            (self.trust,        "confiança"),
+            (self.fear,         "medo"),
+            (self.surprise,     "surpresa"),
+            (self.sadness,      "tristeza"),
+            (self.disgust,      "repulsa"),
+            (self.anger,        "raiva"),
+            (self.anticipation, "antecipação"),
+        ];
+        arr.iter().max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(_, name)| *name)
+            .unwrap_or("neutro")
+    }
 }
 
 impl NeuroChem {

@@ -1,44 +1,55 @@
-# 🧠 Selene Brain V2 — Sistema Neural Bio-Inspirado
+# Selene Brain V2 — Sistema Neural Bio-Inspirado
 
-> **Simulação de cérebro artificial em Rust com neurônios Izhikevich, precisão mista, STDP e 7 tipos neuronais biológicos.**
+> Simulacao de cerebro artificial em Rust com neuronios Izhikevich+HH, precisao mista, STDP, 7 tipos neuronais biologicos, visao, audio, sono e linguagem emergente.
 
 ---
 
-## Índice
+## Indice
 
-1. [Visão Geral](#visão-geral)
+1. [Visao Geral](#visao-geral)
 2. [Arquitetura do Sistema](#arquitetura-do-sistema)
-3. [Núcleo Neural — synaptic_core](#núcleo-neural--synaptic_core)
-4. [Tipos de Neurônio](#tipos-de-neurônio)
-5. [Precisão Mista](#precisão-mista)
-6. [Regiões Cerebrais](#regiões-cerebrais)
-7. [Neuroquímica](#neuroquímica)
-8. [Memória e Storage](#memória-e-storage)
-9. [Modos de Operação](#modos-de-operação)
-10. [Como Compilar e Rodar](#como-compilar-e-rodar)
-11. [Estrutura de Arquivos](#estrutura-de-arquivos)
-12. [Bugs Corrigidos na V2.1](#bugs-corrigidos-na-v21)
-13. [Atualização v2.3](#atualização-v23--spike-storage-sensores-controlados-e-ciclo-de-sono-real)
-14. [Atualização v2.4](#atualização-v24--db-corrigido-persistência-sináptica-completa)
-15. [Roadmap](#roadmap)
+3. [Nucleo Neural — synaptic_core](#nucleo-neural--synaptic_core)
+4. [Tipos de Neuronio](#tipos-de-neuronio)
+5. [Precisao Mista](#precisao-mista)
+6. [Regioes Cerebrais](#regioes-cerebrais)
+7. [Neuroquimica](#neuroquimica)
+8. [Linguagem Emergente](#linguagem-emergente)
+9. [Sensores e Percepcao](#sensores-e-percepcao)
+10. [Ciclo de Sono](#ciclo-de-sono)
+11. [Memoria e Storage](#memoria-e-storage)
+12. [Interface WebSocket](#interface-websocket)
+13. [Benchmark](#benchmark)
+14. [Como Compilar e Rodar](#como-compilar-e-rodar)
+15. [Estrutura de Arquivos](#estrutura-de-arquivos)
+16. [Historico de Versoes](#historico-de-versoes)
+17. [Roadmap](#roadmap)
 
 ---
 
-## Visão Geral
+## Visao Geral
 
-Selene é uma simulação de sistema nervoso artificial que replica aspectos centrais da neurobiologia computacional:
+Selene e uma simulacao de sistema nervoso artificial que replica aspectos centrais da neurobiologia computacional:
 
-- **Neurônios Izhikevich** com 7 tipos funcionais distintos (RS, IB, CH, FS, LT, TC, RZ)
-- **Precisão mista** (FP32/FP16/INT8/INT4) por neurônio, economia de ~60% de memória
-- **STDP** (Spike-Timing Dependent Plasticity) com LTP e LTD anti-Hebbiana
-- **9 regiões cerebrais** com composição neuronal específica por área
-- **Neuroquímica dinâmica** (serotonina, dopamina, cortisol, noradrenalina)
-- **Memória hierárquica** L1→L4 (RAM → NVMe → SurrealDB/RocksDB)
-- **Interface WebSocket** em tempo real para monitoramento neural
-- **Ciclo de sono/vigília** com consolidação de memórias em REM
+- **Neuronios Izhikevich** com 7 tipos funcionais distintos (RS, IB, CH, FS, LT, TC, RZ)
+- **Hodgkin-Huxley** completo para tipos TC e RZ — canais ionicos Na+/K+/leak reais
+- **Precisao mista** (FP32/FP16/INT8/INT4) por neuronio — economia de ~60% de memoria
+- **STDP bidirecional** com LTP causal e LTD anti-Hebbiano + threshold adaptivo
+- **Neuromodulacao HH**: dopamina/serotonina/cortisol modulam condutancias ionicas
+- **9 regioes cerebrais** com composicao neuronal especifica por area
+- **Neuroquimica dinamica** (serotonina, dopamina, cortisol, noradrenalina) + Plutchik
+- **Linguagem emergente** via grafo de associacoes spike-based com bigrams sequenciais
+- **Visao**: webcam -> OccipitalLobe V1/V2 -> grafo linguistico
+- **Audio**: microfone -> TemporalLobe -> spike_vocab -> aprendizado
+- **Ciclo de sono** biologico: N1 -> N2 -> N3/REM -> consolidacao/poda/backup
+- **Memorias episodicas** com hipocampo CA1/CA3 e onda theta (~8Hz)
+- **Interface WebSocket** em tempo real com TTS e interface visual
 
 ```
-Sensores → Tálamo → Regiões Cerebrais → Neuroquímica → Memória → WebSocket
+Webcam/Mic -> Thalamo -> Occipital/Temporal -> Parietal -> Limbico -> Hipocampo -> Frontal
+                                                     |
+                                          Linguagem Emergente (grafo)
+                                                     |
+                                          WebSocket -> TTS -> Usuario
 ```
 
 ---
@@ -46,299 +57,326 @@ Sensores → Tálamo → Regiões Cerebrais → Neuroquímica → Memória → W
 ## Arquitetura do Sistema
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     SELENE BRAIN V2                          │
-│                                                              │
-│  ┌──────────┐    ┌──────────┐    ┌──────────────────────┐  │
-│  │  Câmera  │    │   Mic    │    │   Hardware Sensor    │  │
-│  └────┬─────┘    └────┬─────┘    └──────────┬───────────┘  │
-│       │               │                      │               │
-│  ┌────▼───────────────▼──────────────────────▼───────────┐  │
-│  │                    TÁLAMO                             │  │
-│  │  (filtra, amplifica e roteia sinais sensoriais)       │  │
-│  └────────────────────┬──────────────────────────────────┘  │
-│                        │                                      │
-│  ┌─────────────────────▼──────────────────────────────────┐ │
-│  │                REGIÕES CEREBRAIS                       │ │
-│  │                                                        │ │
-│  │  Occipital ──► Parietal ──► Temporal ──► Frontal      │ │
-│  │      ↓                                     ↑          │ │
-│  │   Limbic ◄──────── Hipocampo ──────────────┘          │ │
-│  │      ↓                                                 │ │
-│  │  Cerebelo    Corpus Callosum    Tronco Encefálico      │ │
-│  └────────────────────┬───────────────────────────────────┘ │
-│                        │                                      │
-│  ┌─────────────────────▼──────────────────────────────────┐ │
-│  │            NEUROQUÍMICA + EGO                          │ │
-│  │  Serotonina · Dopamina · Cortisol · Noradrenalina      │ │
-│  └────────────────────┬───────────────────────────────────┘ │
-│                        │                                      │
-│  ┌─────────────────────▼──────────────────────────────────┐ │
-│  │              MEMÓRIA HIERÁRQUICA                       │ │
-│  │  L1: RAM (ativo) → L2: NVMe → L3: RocksDB → L4: Cold  │ │
-│  └────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
++-------------------------------------------------------------------+
+|                        SELENE BRAIN V2                            |
+|                                                                   |
+|  [Webcam]     [Microfone]    [Hardware Sensor]                    |
+|      |              |               |                             |
+|  +-----------TALAMO (filtra + roteia)----------------------------+|
+|  |                                                               ||
+|  |  [Occipital V1/V2]  [Temporal]  [Parietal]                   ||
+|  |       |                  |           |                         ||
+|  |  [Limbico/Amigdala] [Hipocampo CA1/CA3]  [Frontal PFC]       ||
+|  |       |                  |           |                         ||
+|  |  [BasalGanglia]  [CorpusCallosum]  [Brainstem]                ||
+|  |                                                               ||
+|  +---[NeuroChem: dopamina/serotonina/cortisol/noradrenalina]---+ ||
+|                                                                   |
+|  [Grafo de Linguagem]  [STDP/ChunkingEngine]  [RL/Q-table]       |
+|                                                                   |
+|  [WebSocket Server] -> [TTS] -> [Interface HTML]                  |
++-------------------------------------------------------------------+
+```
+
+### Fluxo Principal (main loop a 200Hz)
+
+```
+A. Interoception + Brainstem (adenosina, temperatura)
+B. NeuroChem.update() — neuroquimica dinamica
+C. rx_vision + rx_audio — sensores
+D. Thalamus.relay() + Brainstem.modulate()
+E. OccipitalLobe.visual_sweep() — V1/V2
+F. ParietalLobe.integrate() — atencao espacial
+G. TemporalLobe.process() — reconhecimento
+H. ChunkingEngine.registrar_spikes() — emergencia de chunks
+I. LimbicSystem.evaluate() — emocao + arousal
+J. Plutchik EmotionalState — alegria/medo/tristeza/etc
+K. HippocampusV2.memorize_with_connections() — memoria episodica
+L. FrontalLobe.decide() — acao executiva
+M. BasalGanglia.update_habits() — habitos e gatekeeping
+N. CorpusCallosum.sincronizar() — sync hemisferios
+O. NeuralEnactiveMemory (feedback de memoria -> imaginacao)
+P. WebSocket broadcast — telemetria
 ```
 
 ---
 
-## Núcleo Neural — synaptic_core
+## Nucleo Neural — synaptic_core
 
-`src/synaptic_core.rs` é o coração do projeto. Toda atividade neural passa por aqui.
+O modelo neuronal e hibrido de 4 camadas:
 
-### Modelo Izhikevich
-
-O modelo escolhido combina realismo biológico com eficiência computacional:
-
+### Camada 1 — Izhikevich (todos os tipos)
 ```
-dv/dt = 0.04v² + 5v + 140 − u + I
-du/dt = a(bv − u)
-if v ≥ 30mV → v = c, u += d   (reset após spike)
+dv/dt = 0.04v^2 + 5v + 140 - u + I_eff
+du/dt = a(bv - u)
+```
+Captura 20+ padroes de disparo biologicos com custo O(1) por tick.
+
+### Camada 2 — Refratario / LIF
+Periodo refratario absoluto de 2ms + hiperpolarizacao pos-spike.
+
+### Camada 3 — Hodgkin-Huxley (TC e RZ apenas)
+```
+I_Na = g_Na * m^3 * h * (V - E_Na)   <- canal sodio
+I_K  = g_K  * n^4  * (V - E_K)       <- canal potassio
+I_L  = g_L         * (V - E_L)       <- corrente de vazamento
+```
+Variaveis de portao m, h, n com cinetica Alpha/Beta completa (Hodgkin-Huxley 1952).
+
+TC: modo burst (sono, h->0) <-> tonico (vigilia, h->1) via inativacao do canal Na+.
+RZ (Purkinje): g_Na alto, bursts de alta frequencia, timing preciso.
+
+### Camada 4 — STDP bidirecional
+```
+trace_pre -> LTP: pre antes de pos -> potencia peso
+trace_pos -> LTD: pos sem pre     -> deprime peso
++ Threshold adaptivo (spike-frequency adaptation)
 ```
 
-Onde `dt` deve estar **sempre em milissegundos**. O código resolve internamente a conversão `dt_segundos → substeps de 1ms`.
-
-### Ciclo de update por neurônio
-
+### Neuromodulacao HH
 ```
-1. Período refratário?  → v = -70mV, decai traços STDP, retorna
-2. Adapta input à precisão (INT8/INT4: quantização com escala dinâmica)
-3. Divide dt em substeps de ~1ms
-4. Para cada substep: integra Izhikevich, verifica spike
-5. Se spiked: aplica LTP/LTD, atualiza threshold adaptivo, seta refr_count
-6. Decai traços STDP com τ = 20ms
-7. Retorna threshold ao padrão gradualmente
-```
-
-### Plasticidade STDP
-
-```
-LTP (potenciação):  spike pós quando trace_pre > 0.1 → +0.012 × trace_pre
-LTD (depressão):   spike pós sem trace_pre        → −0.006 × (1 − trace_pre)
-Decaimento traço:  trace *= exp(−dt_ms / 20ms)     → meia-vida ~14ms
+dopamina  alto -> g_K_mod  baixo -> repolarizacao lenta -> mais disparo
+serotonina alto -> g_L_mod  baixo -> menos vazamento     -> mais excitavel
+cortisol  alto -> g_Na_mod baixo -> Na+ reduzido        -> limiar mais alto
 ```
 
 ---
 
-## Tipos de Neurônio
+## Tipos de Neuronio
 
-A Selene implementa os 7 tipos funcionais do modelo Izhikevich 2003:
-
-| Tipo | a     | b    | c     | d    | Uso biológico | Regiões da Selene |
-|------|-------|------|-------|------|---------------|-------------------|
-| **RS** — Regular Spiking   | 0.02 | 0.20 | -65 | 8.0 | Córtex piramidal (80% dos neurônios) | Todas |
-| **IB** — Intrinsic Bursting | 0.02 | 0.20 | -55 | 4.0 | Camada 5, resposta de medo em burst | Amígdala (50%) |
-| **CH** — Chattering         | 0.02 | 0.20 | -50 | 2.0 | Visual V2/V3, padrões rápidos | Occipital V2 (70%), Temporal (30%) |
-| **FS** — Fast Spiking       | 0.10 | 0.20 | -65 | 2.0 | Interneurônios GABAérgicos inibitórios | Frontal (20%), Camada Inibitória (100%) |
-| **LT** — Low-Threshold      | 0.02 | 0.25 | -65 | 2.0 | Interneurônios de threshold baixo | Parietal (20%), CA1 (20%) |
-| **TC** — Thalamo-Cortical   | 0.02 | 0.25 | -65 | 0.05| Tálamo — dois modos (tônico/burst) | Tálamo |
-| **RZ** — Resonator          | 0.10 | 0.26 | -65 | 2.0 | Giro dentado, detecção rítmica | Cerebelo granular (100%), CA3 (30%) |
-
-### Como funcionam na prática
-
-**RS (Regular Spiking)** — dispara regularmente sob corrente constante. Taxa proporcional à intensidade. Neurônio "padrão" do córtex.
-
-**IB (Intrinsic Bursting)** — dispara em burst intenso inicial, depois regular. Na amígdala, isso significa que eventos emocionais disparam uma salva intensa de spikes antes de se estabilizar — biologicamente correto.
-
-**CH (Chattering)** — bursts rápidos repetitivos. Ideal para reconhecimento visual: responde a bordas, faces e padrões com alta frequência de disparo.
-
-**FS (Fast Spiking)** — dispara muito rápido sem adaptação. Os interneurônios FS do Frontal implementam inibição lateral real: quando muitos executivos disparam juntos, os FS são ativados e reduzem o potencial dos vizinhos — prevenindo epilepsia cortical.
-
-**TC (Thalamo-Cortical)** — em modo tônico (acordado): dispara regularmente para retransmitir sinais. Em modo burst (sono/desatenção): silêncio seguido de burst.
+| Tipo | Nome | Comportamento | Regiao |
+|------|------|---------------|--------|
+| RS | Regular Spiking | Disparo regular, ~80% dos neuronios corticais | Frontal, Parietal, Temporal |
+| IB | Intrinsic Bursting | Burst inicial + regular; amigdala | Limbico |
+| CH | Chattering | Bursts rapidos repetitivos | Occipital V2, Temporal |
+| FS | Fast Spiking | Interneuronio GABAergico, sem adaptacao | Frontal (inibicao lateral) |
+| LT | Low-Threshold Spiking | Interneuronio de limiar baixo | Parietal, Hipocampo CA1 |
+| TC | Thalamo-Cortical | Burst/tonico via inativacao h (HH) | Talamo |
+| RZ | Resonator/Purkinje | Burst alta frequencia, timing motor (HH) | Cerebelo, Hipocampo CA3 |
 
 ---
 
-## Precisão Mista
+## Precisao Mista
 
-Cada neurônio tem um nível de precisão para seu peso sináptico:
+Cada neuronio recebe precisao conforme seu papel funcional:
 
-| Precisão | Bytes/peso | Range | Quando usar |
-|----------|-----------|-------|-------------|
-| **FP32** | 4 bytes | ±3.4×10³⁸ | Neurônios críticos (decisão, emoção) — 5% |
-| **FP16** | 2 bytes | ±65504 | Working memory, reconhecimento — 35% |
-| **INT8** | 1 byte  | depende da escala | Processamento em massa — 50% |
-| **INT4** | 0.5 bytes* | -8 a +7 × escala | Background, reservatório — 10% |
+| Precisao | Bytes | Uso |
+|----------|-------|-----|
+| FP32 | 4 | Neuronios criticos (~5%) |
+| FP16 | 2 | Working memory, encoding (~50%) |
+| INT8 | 1 | Processamento em massa (~35%) |
+| INT4 | 0.5 | Alta densidade, baixa precisao (~10%) |
 
-\* INT4 empacota dois valores em um byte (`Int4Par(u8)` com nibble alto e baixo).
-
-### Escala dinâmica para INT8/INT4
-
-**Correção crítica:** a escala para quantização é calculada como `I_max / 127.0` para INT8 e `I_max / 7.0` para INT4, com base na corrente máxima esperada para cada região — não mais fixada em 0.125 (que causava overflow de 97.7% para correntes típicas de 38pA).
-
-Exemplos por região:
-- Frontal: `escala = 50.0 / 127.0 ≈ 0.394`
-- Amígdala: `escala = 35.0 / 127.0 ≈ 0.276`
-- Cerebelo granular: `escala = 20.0 / 127.0 ≈ 0.157`
+Economia media: ~60% vs FP32 puro para 1024 neuronios.
 
 ---
 
-## Regiões Cerebrais
+## Regioes Cerebrais
 
-### Fluxo principal no loop neural
-
-```
-retina → Tálamo → Occipital (V1→V2) → Parietal → Temporal → Frontal
-                                                ↓
-cochlea → Brainstem → Límbico (Amígdala + Accumbens)
-                              ↓
-                    Hipocampo (CA1→CA3) → Memória
-                              ↓
-                    Cerebelo (Granular→Purkinje) → Motor
-```
-
-### Composição por região
-
-| Região | Tipos neuronais | Foco |
-|--------|----------------|------|
-| **Occipital V1** | 60% RS + 40% CH | Detecção de bordas, contraste, movimento |
-| **Occipital V2** | 70% CH + 30% RS | Integração de características visuais |
-| **Parietal** | 80% RS + 20% LT | Atenção espacial, integração multissensorial |
-| **Temporal** | 70% RS + 30% CH | Reconhecimento auditivo, semântica |
-| **Frontal exec.** | 80% RS + 20% FS | Decisão, working memory, planejamento |
-| **Frontal inhib.** | 100% FS | Inibição lateral, controle de ganho |
-| **Amígdala** | 50% IB + 50% RS | Resposta de medo em burst, emoção |
-| **Accumbens** | 100% RS | Recompensa, prazer, motivação |
-| **CA1 (Hipocampo)** | 80% RS + 20% LT | Encoding de memórias episódicas |
-| **CA3 (Hipocampo)** | 70% RS + 30% RZ | Recorrência com ondas theta |
-| **Purkinje (Cerebelo)** | 80% RS + 20% RZ | Controle motor, output inibitório |
-| **Granular (Cerebelo)** | 100% RZ | Detecção de padrões rítmicos temporais |
+| Regiao | Arquivo | Composicao | Conectada ao Loop |
+|--------|---------|------------|-------------------|
+| OccipitalLobe | brain_zones/occipital.rs | 70% RS + 40% CH (V1), 70% CH + 30% RS (V2) | Sim — visual_sweep() |
+| ParietalLobe | brain_zones/parietal.rs | RS + 20% LT | Sim — integrate() |
+| TemporalLobe | brain_zones/temporal.rs | 70% RS + 30% CH | Sim — process() |
+| LimbicSystem | brain_zones/limbic.rs | 50% IB/RS (amigdala) + RS (accumbens) | Sim — evaluate() |
+| HippocampusV2 | brain_zones/hippocampus.rs | 80% RS + 20% LT (CA1), 70% RS + 30% RZ (CA3) | Sim — memorize_with_connections() |
+| FrontalLobe | brain_zones/frontal.rs | 80% RS + 20% FS (exec), 100% FS (inhib) | Sim — decide() |
+| CorpusCallosum | brain_zones/corpus_callosum.rs | Sincronizador de hemisferios | Sim — sincronizar() |
+| BasalGanglia | basal_ganglia/mod.rs | Gating + habitos | Sim — update_habits() |
+| Cerebellum | brain_zones/cerebellum.rs | 80% RS + 20% RZ (Purkinje), 100% RZ (granular) | Nao — instanciado, nao chamado |
 
 ---
 
-## Neuroquímica
-
-O sistema neuroquímico modula a dinâmica de todas as regiões:
-
-| Neurotransmissor | Fonte de input | Efeito |
-|-----------------|----------------|--------|
-| **Serotonina** | Jitter de CPU + context switches | Estabilidade emocional, humor |
-| **Dopamina** | Uso de RAM | Motivação, ganho frontal |
-| **Cortisol** | Delta de temperatura | Stress, consolidação de medo |
-| **Noradrenalina** | Temperatura da CPU | Alerta, atenção |
-
-### Ciclo neuroquímico
+## Neuroquimica
 
 ```rust
-// Serotonina: penalidade por jitter e context switches
-let target_sero = 1.0 - 0.5 * (jitter_penalty + switches_penalty);
-self.serotonin += (target_sero - self.serotonin) * decay_rate;
-
-// Dopamina: proporcional ao uso de RAM (recurso de processamento)
-let target_dopa = ram_usage / i_max_por_modo;
-self.dopamine += (target_dopa - self.dopamine) * decay_rate;
-
-// Cortisol: resposta a picos de temperatura (stress térmico)
-self.cortisol = (delta_temp / 5.0).clamp(0.0, 1.0);
+pub struct NeuroChem {
+    pub serotonin: f32,      // 0.0..2.0 — estabilidade emocional
+    pub dopamine: f32,       // 0.0..2.0 — recompensa, motivacao
+    pub cortisol: f32,       // 0.0..1.0 — estresse, limiar alto
+    pub noradrenaline: f32,  // 0.0..2.0 — arousal, atencao
+}
 ```
+
+Atualizado a cada tick com base em: jitter de CPU, context switches, RAM usage, temperatura.
+
+**Roda de Plutchik** (EmotionalState): joy, trust, fear, surprise, sadness, disgust, anger, anticipation — derivados das 4 substancias quimicas. Usado para colorir a linguagem emergente.
 
 ---
 
-## Memória e Storage
+## Linguagem Emergente
 
-### Hierarquia de 4 camadas
+O sistema de linguagem roda no WebSocket server (server.rs) em paralelo ao loop neural:
 
-```
-L1: RAM  (ativo)    → neurônios ativos, acesso < 1μs
-L2: NVMe (buffer)   → neurônios recentes, acesso < 1ms
-L3: RocksDB         → memória de longo prazo, acesso < 10ms
-L4: SurrealDB (cold)→ arquivo histórico, acesso < 100ms
-```
+### Componentes
+- **spike_vocab**: HashMap<palavra, SpikePattern(512 bits)> — representacao esparsa de palavras
+- **grafo**: HashMap<palavra, HashMap<vizinho, peso>> — associacoes aprendidas
+- **frases_padrao**: Vec<Vec<String>> — prefixos de frases para inicializacao do walk
+- **helix_store**: armazenamento de padroes spike em arquivo .hlx
 
-### Tipos de memória
+### Aprendizado
+- `audio_learn`: STT -> spike pattern -> spike_vocab + associacoes no grafo
+- `visual_learn`: webcam pixels -> OccipitalLobe V1/V2 -> spike pattern -> `visual:{palavra}`
+- `learn_frase`: ensina frase completa com bigrams sequenciais (peso 0.90-0.95)
+- `associate`: associa duas palavras diretamente com peso customizado
+- `train`: STDP sobre o grafo (N epocas) — LTP nas arestas mais ativas
 
-- **NeuralEnactiveMemory**: snapshot emocional (padrão visual + auditivo + estado emocional)
-- **ConexaoSinaptica**: peso + contexto de criação, consolidada pelo hipocampo
-- **Memória autobiográfica**: registrada pelo Ego quando emoção > 0.8
+### Geracao de Linguagem
+- `gerar_resposta_emergente()`: graph-walk guiado por valencia emocional
+- Profundidade do walk varia com estado neuronal: delta=6, theta=9, beta=10, gamma=13 passos
+- Bigrams sequenciais dominam o walk (0.90) -> frases ordenadas
+- Conectivo emocional inserido em posicao >=60% da frase (so para frases >=7 palavras)
 
-### Ciclo de sono
-
-Durante o sono, o `CicloSono` executa:
-1. Transfere neurônios de L1 → L2 (liberando RAM)
-2. Consolida ConexaoSinaptica de CA3 para RocksDB
-3. Executa fase REM: reativa padrões de alta emoção para reforço
-4. Poda conexões fracas (peso < 0.1 após 24h sem uso)
+### Fases do Sono Linguistico
+- **N1 Consolidacao**: reforca top-30 arestas mais ativas (+0.07)
+- **N2 Poda**: remove arestas com peso < 0.12
+- **N3/REM**: fechamento transitivo — cria novas associacoes entre palavras com vizinho comum
+- **N4 Backup**: serializa grafo completo para selene_linguagem.json
 
 ---
 
-## Modos de Operação
+## Sensores e Percepcao
 
-| Modo | Hz | dt | Energia | Uso |
-|------|----|----|---------|-----|
-| **Humano** | 100 Hz | 10ms | 15W | Eficiência máxima, uso geral |
-| **Boost200** | 200 Hz | 5ms | 25W | Equilíbrio — modo padrão recomendado |
-| **Boost800** | 800 Hz | 1.25ms | 45W | Performance elevada |
-| **Ultra** | 3200 Hz | 0.31ms | 80W | Alta performance, GPU recomendada |
-| **Insano** | 6400 Hz | 0.16ms | 120W | Máximo, requer GPU dedicada |
+### Visao
+- `VisualTransducer` (sensors/camera.rs): captura webcam via nokhwa, resampling para n_neurons pontos
+- `OccipitalLobe.visual_sweep()`: V1 (deteccao de bordas + contraste) -> V2 (integracao de features)
+- Pipeline completo: webcam -> thalamo -> occipital -> parietal -> temporal
+- `visual_learn` WebSocket: recebe pixels 32x16 -> `pixels_to_spike_pattern()` -> grafo linguistico
 
-> **Nota sobre dt:** independente do modo, o núcleo sempre usa substeps de ~1ms internamente para garantir estabilidade do modelo Izhikevich. O dt externo apenas controla a frequência do loop principal.
+### Audio
+- `sensors/audio.rs`: microfone -> FFT -> bandas de frequencia + energia + pitch
+- `audio_learn` WebSocket: STT (Web Speech API) + FFT bands -> spike_vocab + grafo
+- Modo escuta continua: reconhecimento continuo com auto-restart
+
+### Compartilhamento de Tela
+- `getDisplayMedia` no frontend: captura tela/aba + audio (ex: YouTube)
+- Frames visuais -> `visual_learn`, audio bands -> `audio_learn`
+
+---
+
+## Ciclo de Sono
+
+Sono baseado em horario: 00:00 - 05:00 a Selene dorme.
+
+```
+Fases:
+  N1 Consolidacao  40 min  — reforca sinapses ativas
+  N2 Poda          30 min  — remove conexoes fracas
+  N3 REM          100 min  — criatividade: novas associacoes transitivas
+  N2 Poda          30 min
+  N3 REM           90 min  — (maior fase REM)
+  N1 Consolidacao  20 min
+  N4 Backup        10 min  — salva estado completo
+```
+
+Desperta com qualquer interacao (chat, audio, video).
+Interface exibe overlay de sono com fase atual.
+
+---
+
+## Memoria e Storage
+
+### Hierarquia
+```
+L1: RAM (vetores neurais ativos, working memory)
+L2: NVMe buffer (nvme_buffer.bin — spikes recentes)
+L3: SurrealDB / RocksDB (episodios, sinapses de longo prazo)
+L4: JSON files (selene_linguagem.json, selene_hippo_ltp.json)
+```
+
+### Tipos de Memoria
+- **NeuralEnactiveMemory**: episodio sensorial-motor com timestamp e valencia emocional
+- **MemoryTier**: gerencia L1/L2/L3 com swap automatico por tempo de acesso
+- **SwapManager**: neurogênese dinamica — novos neuronios conforme RAM disponivel
+- **HippocampusV2.ltp_matrix**: pesos sinapticos de longo prazo persistidos em JSON
+- **HelixStore**: arquivo binario compacto para spike patterns (.hlx)
+
+---
+
+## Interface WebSocket
+
+### Acoes disponiveis (cliente -> servidor)
+
+| Acao | Descricao |
+|------|-----------|
+| `chat` | Envia mensagem, recebe resposta por linguagem emergente |
+| `audio_learn` | Envia FFT bands + transcript para aprendizado auditivo |
+| `visual_learn` | Envia pixels 32x16 + transcript para aprendizado visual |
+| `learn` | Aprende uma palavra isolada |
+| `learn_frase` | Aprende frase com bigrams sequenciais |
+| `associate` | Associa duas palavras com peso customizado |
+| `train` | Executa N epocas STDP no grafo |
+| `curiosidade` | Selene faz uma pergunta sobre lacuna no grafo |
+| `diagnostico` | Retorna estat­isticas do grafo e vocabulario |
+| `export_linguagem` | Salva estado do grafo em JSON |
+| `shutdown` | Encerra o processo com seguranca |
+
+### Eventos (servidor -> cliente)
+
+| Evento | Descricao |
+|--------|-----------|
+| `chat_reply` | Resposta de linguagem emergente |
+| `neural_status` | Telemetria neurologica (spikes, ondas, neuro) |
+| `curiosidade` | Selene questiona uma lacuna de conhecimento |
+| `sono` | Selene entra em fase de sono (overlay na UI) |
+| `despertar` | Selene acorda |
+
+---
+
+## Benchmark
+
+Resultados em hardware: Windows 11, release build.
+
+```
+Velocidade Neural (1024 neuronios):
+  Ticks/segundo : 19.192
+  Tempo/tick    : 52 µs
+  Headroom      : 99% (96x mais rapido que 200 Hz)
+
+Escala de Neuronios:
+  1.024    ->  20.211 ticks/s  (49 µs/tick)
+  4.096    ->   5.102 ticks/s  (196 µs/tick)
+  16.384   ->   1.277 ticks/s  (783 µs/tick)
+  65.536   ->     320 ticks/s  (3.1 ms/tick)
+
+Testes Unitarios: 25/25 passando
+  - encoding/phoneme: 6 testes
+  - encoding/spike_codec: 8 testes
+  - encoding/helix_store: 5 testes
+  - learning/chunking: 6 testes
+```
 
 ---
 
 ## Como Compilar e Rodar
 
-### Pré-requisitos
+### Pre-requisitos
+- Rust 1.75+ (nightly recomendado)
+- Python 3.10+ (para scripts de treinamento)
+- Windows 10/11 (sensor de hardware usa API Win32)
 
-- Rust 1.75+ (`rustup update stable`)
-- Windows 10/11 (para `timeBeginPeriod` de alta resolução)
-- 8GB RAM mínimo (16GB recomendado para Boost800+)
-- Opcional: câmera USB e microfone para input real
-
-### Compilação
-
+### Compilar
 ```bash
-# Debug (mais lento, logs completos)
-cargo build
-
-# Release (otimizado)
+cd selene_kernel
 cargo build --release
-
-# Com verificação do sistema
-cargo build --features test-bin
-cargo run --bin check_selene --features test-bin
 ```
 
-### Executar
-
+### Rodar
 ```bash
-# Modo padrão (Boost200)
-cargo run --release
+# Inicia o servidor (porta 3030)
+./target/release/selene_brain.exe
 
-# O modo é configurado em main.rs:
-# let config = Config::new(ModoOperacao::Boost200);
+# Acessa a interface
+# Abra neural_interface.html ou selene_mobile_ui.html no browser
 ```
 
-### Interface WebSocket
-
-Com o sistema rodando, acesse `http://localhost:3030` no navegador para abrir a interface neural.
-
-O WebSocket é exposto em `ws://localhost:3030/selene`.
-
-Formato da mensagem enviada pelo Rust (`NeuralStatus`):
-```json
-{
-  "neurotransmissores": {
-    "dopamina": 0.72,
-    "serotonina": 0.85,
-    "noradrenalina": 0.60
-  },
-  "hardware": {
-    "cpu_temp": 62.5,
-    "ram_usage_gb": 8.3
-  },
-  "ego": {
-    "pensamentos": ["Processando estímulo visual..."],
-    "sentimento_atual": 0.15
-  },
-  "atividade": {
-    "step": 12450,
-    "alerta": 0.95,
-    "emocao": -0.03
-  },
-  "swap": {
-    "neuronios_ativos": 5000,
-    "capacidade_max": 1000000
-  }
-}
+### Treinamento inicial (sequencia recomendada)
+```bash
+cd selene_kernel
+python scripts/selene_genesis.py       # vocabulario base
+python scripts/selene_identidade.py    # identidade da Selene
+python scripts/selene_abc.py           # alfabeto e silabas
+python scripts/selene_frases_estruturais.py  # 127 frases estruturais + bigrams
 ```
 
 ---
@@ -346,346 +384,105 @@ Formato da mensagem enviada pelo Rust (`NeuralStatus`):
 ## Estrutura de Arquivos
 
 ```
-src/
-├── main.rs                    # Loop neural principal + integração
-├── config.rs                  # Modos de operação e parâmetros globais
-├── synaptic_core.rs           # ⭐ Núcleo: Izhikevich, STDP, precisão mista
-├── neurochem.rs               # Dinâmica de neurotransmissores
-├── ego.rs                     # Identidade, estado interno, autobiografia
-├── thalamus.rs                # Filtragem e roteamento sensorial
-├── brainstem.rs               # Tronco encefálico, arousal, adenosina
-├── interoception.rs           # Propriocepção, fadiga, fome de CPU
-│
-├── brain_zones/
-│   ├── mod.rs                 # Re-exportações e RegionType
-│   ├── frontal.rs             # Córtex pré-frontal: decisão + FS inibitório
-│   ├── occipital.rs           # Córtex visual: V1 (RS+CH) + V2 (CH)
-│   ├── parietal.rs            # Integração espacial: RS + LT
-│   ├── temporal.rs            # Reconhecimento: RS + CH
-│   ├── limbic.rs              # Emoção: IB (amígdala) + RS (accumbens)
-│   ├── hippocampus.rs         # Memória: CA1 (RS+LT) + CA3 (RS+RZ)
-│   ├── cerebellum.rs          # Motor: Purkinje (RS+RZ) + granular (RZ)
-│   └── corpus_callosum.rs     # Comunicação inter-hemisférica
-│
-├── sensors/
-│   ├── camera.rs              # Câmera → array de luminância para Occipital
-│   ├── audio.rs               # Microfone → FFT 32 bandas para Temporal
-│   └── hardware.rs            # CPU temp, RAM, jitter para NeuroChem
-│
-├── storage/
-│   ├── mod.rs                 # BrainStorage, NeuralEnactiveMemory
-│   ├── memory_tier.rs         # Hierarquia L1→L4
-│   ├── checkpoint.rs          # Serialização de estado neural
-│   ├── episodic.rs            # Memória episódica
-│   └── swap_manager.rs        # Neurogênese: RAM ↔ NVMe
-│
-├── compressor/
-│   └── salient.rs             # Compressor de spikes (75% redução)
-│
-├── learning/
-│   └── rl.rs                  # Q-Learning com TD(λ) para reforço
-│
-├── io/
-│   └── pipeline.rs            # Canal de eventos: câmera/áudio/texto/motor
-│
-├── websocket/
-│   ├── mod.rs
-│   ├── bridge.rs              # BrainState → JSON
-│   ├── server.rs              # Servidor warp WebSocket
-│   └── converter.rs           # Conversão de tipos
-│
-├── sleep_manager.rs           # Gerenciamento de sono e consolidação
-├── sleep_cycle.rs             # Fases: N1/N2/N3/REM
-├── basal_ganglia.rs           # Hábitos e seleção de ação
-├── pid_controller.rs          # Controle de homeostase
-│
-├── meta/
-│   └── consciousness.rs       # Metacognição (stub)
-│
-├── gpu/
-│   ├── mod.rs                 # Backend GPU (stub)
-│   └── wgpu.rs                # wgpu para aceleração (stub)
-│
-├── drivers/
-│   └── opencl_gen.rs          # OpenCL (stub)
-│
-├── telemetry/
-│   ├── mod.rs
-│   └── broadcaster.rs         # BrainSnapshot para telemetria
-│
-└── bin/
-    └── check_selene.rs        # Diagnóstico do sistema
+selene_kernel/
+├── src/
+│   ├── main.rs                     # Loop principal + instanciacao dos lobos
+│   ├── synaptic_core.rs            # Neuronio hibrido Izhikevich+HH+STDP
+│   ├── neurochem.rs                # Neuroquimica + Plutchik
+│   ├── config.rs                   # Modos de operacao e parametros
+│   ├── brain_zones/
+│   │   ├── occipital.rs            # Visao V1/V2 (CH dominante)
+│   │   ├── temporal.rs             # Audio + linguagem
+│   │   ├── parietal.rs             # Integracao sensorial + atencao
+│   │   ├── frontal.rs              # Decisao executiva + working memory
+│   │   ├── limbic.rs               # Amigdala (IB) + accumbens
+│   │   ├── hippocampus.rs          # Memoria episodica CA1/CA3 + theta
+│   │   ├── cerebellum.rs           # Timing motor (Purkinje + granular)
+│   │   └── corpus_callosum.rs      # Sincronizador de hemisferios
+│   ├── sensors/
+│   │   ├── camera.rs               # VisualTransducer (nokhwa)
+│   │   ├── audio.rs                # Microfone + FFT
+│   │   └── hardware.rs             # CPU temp, jitter, RAM
+│   ├── learning/
+│   │   ├── chunking.rs             # Emergencia de chunks via STDP
+│   │   └── rl.rs                   # Q-Learning TD-lambda
+│   ├── encoding/
+│   │   ├── spike_codec.rs          # Codificacao de palavras em spike patterns
+│   │   ├── helix_store.rs          # Armazenamento compacto .hlx
+│   │   └── phoneme.rs              # Formantes foneticos pt-BR
+│   ├── storage/
+│   │   ├── episodic.rs             # Memoria episodica
+│   │   ├── memory_graph.rs         # Grafo de memoria sinaptica
+│   │   ├── memory_tier.rs          # Hierarquia L1-L3
+│   │   └── swap_manager.rs        # Neurogênese dinamica
+│   ├── websocket/
+│   │   ├── server.rs               # Logica principal + linguagem emergente
+│   │   └── bridge.rs               # BrainState compartilhado
+│   ├── thalamus/mod.rs             # Filtragem e roteamento sensorial
+│   ├── basal_ganglia/mod.rs        # Habitos + gating de acoes
+│   ├── brainstem/mod.rs            # Modulacao auditiva + adenosina
+│   ├── ego/mod.rs                  # Narrativa de self
+│   ├── interoception/mod.rs        # Sinais corporais internos
+│   ├── meta/consciousness.rs       # Metacognicao
+│   └── sleep_cycle.rs              # Ciclo sono biologico
+├── scripts/
+│   ├── selene_genesis.py           # Vocabulario base
+│   ├── selene_identidade.py        # Identidade e relacoes
+│   ├── selene_abc.py               # Alfabeto e silabas
+│   ├── selene_frases_estruturais.py # 127 frases com bigrams sequenciais
+│   └── selene_diagnostico.py       # Diagnostico do grafo
+├── neural_interface.html           # Interface principal (desktop)
+└── selene_mobile_ui.html           # Interface mobile
 ```
 
 ---
 
-## Bugs Corrigidos na V2.2
+## Historico de Versoes
 
-### 🔴 Erros de compilação (impediam `cargo build`)
+### v2.5 (atual)
+- OccipitalLobe conectado ao pipeline visual completo (webcam -> V1/V2 -> grafo)
+- `visual_learn` — pixels da webcam processados pelo OccipitalLobe antes de entrar no grafo
+- Ciclo de sono biologico baseado em horario (00:00-05:00) com fases N1/N2/N3/REM/N4
+- TTS (Web Speech API) com voz feminina jovem pt-BR
+- Modo escuta continua — microfone sempre aberto com auto-restart
+- Compartilhamento de tela (getDisplayMedia) — Selene pode "assistir" YouTube
+- Frases estruturais: 127 frases com bigrams sequenciais corrigindo ordem das palavras
+- Fix: conectivo emocional nao mais inserido na posicao 1 (causava frases embaralhadas)
 
-**1. `tipo_para_regiao` sem chave de fechamento**
-- `arquivar_para_hdd` acidentalmente colocado dentro da função livre — movido para `impl SwapManager`
+### v2.4
+- DB corrigido, persistencia sinaptica completa
+- HelixStore para spike patterns
 
-**2. Import `surrealdb::engine::local::Mem` inválido**
-- Feature `kv-mem` não habilitada no Cargo.toml — import removido
+### v2.3
+- Spike storage, sensores controlados, ciclo de sono real
 
-**3. `tx` e `brain_state` movidos para closure antes do `tokio::spawn`**
-- Clones antecipados antes do closure `ws_route` resolvem o `E0382`
+### v2.2
+- Modelo HH para TC e RZ, neuromodulacao de condutancias
+- ChunkingEngine para emergencia de linguagem
 
-**4. `limbic` sem `mut`**
-- `let limbic` → `let mut limbic` em main.rs
-
-**5. `panic_info.location()` com lifetime inválido (`E0521`)**
-- Substituído por `.map(|l| (l.file().to_string(), l.line()))` para converter antes de escapar o closure
-
-**6. `ModeloDinamico` e `NeuronioHibrido` sem `Serialize/Deserialize`**
-- Necessário para `arquivar_para_hdd` serializar neurônios com `serde_json`
-
----
-
-## Bugs Corrigidos na V2.1
-
-### 🔴 Críticos (impediam qualquer disparo)
-
-**1. dt em unidades erradas**
-- **Antes:** `self.v += dt * (...)` onde `dt = 0.005` segundos
-- **Depois:** Conversão interna para ms + substeps de ~1ms
-- **Impacto:** Neurônios passaram de 0 disparos para ~79 Hz (I=38pA, Boost200)
-
-**2. Período refratário de 2000ms**
-- **Antes:** `refr_count = (2.0 / dt_segundos)` → 400 steps → 2000ms
-- **Depois:** `refr_count = (2.0ms / dt_interno_ms)` → ~2 steps → 2ms
-- **Impacto:** Neurônio ficava travado por 667× mais tempo que o biológico
-
-**3. STDP com meia-vida de 28 segundos**
-- **Antes:** `trace *= exp(-dt_s / 20.0)` → meia-vida 28 segundos
-- **Depois:** `trace *= exp(-dt_ms / 20.0)` → meia-vida 14ms
-- **Impacto:** Plasticidade sináptica completamente ineficaz antes da correção
-
-### 🟠 Altos
-
-**4. INT4 com overflow de sinal**
-- **Antes:** Scale fixo em 0.125 → I=38pA quantizado para 0.875pA (perde 97.7%)
-- **Depois:** Scale dinâmica = `I_max / 7.0` por região
-- **Impacto:** 10% dos neurônios voltam a receber sinal correto
-
-### 🟡 Médios
-
-**5. UUID por neurônio (16 bytes)**
-- **Antes:** `id: Uuid` em cada neurônio
-- **Depois:** `id: u32` — suficiente para identificação dentro da camada
-- **Economia:** ~36KB para 2304 neurônios
-
-**6. Parâmetros a,b,c,d por instância**
-- **Antes:** 4 × f32 = 16 bytes armazenados em cada neurônio
-- **Depois:** `TipoNeuronal::parametros()` retorna constantes por tipo
-- **Economia:** ~36KB para 2304 neurônios
-
-**7. `escala_compartilhada` declarada mas nunca usada**
-- **Antes:** declarada em `CamadaHibrida` mas ignorada no `update()`
-- **Depois:** `escala_camada` é passada a cada `neuronio.update()`
-
-**8. Tipo neuronal único (todos RS)**
-- **Antes:** todos os neurônios com a=0.02, b=0.2, c=-65, d=8
-- **Depois:** 7 tipos com parâmetros e comportamentos distintos por região
-
----
-
-## Atualização v2.3 — Spike Storage, Sensores Controlados e Ciclo de Sono Real
-
-### Arquitetura de Processamento Sináptico Puro
-
-A Selene opera exclusivamente com **spike patterns binários** — sem dados sensoriais crus em memória ou banco de dados:
-
-```
-Áudio  → FFT (32 bandas) → firing_rates_to_spike_bits() → Vec<u8> ← gravado no DB
-Vídeo  → luminância BT.601 → firing_rates_to_spike_bits() → Vec<u8> ← gravado no DB
-```
-
-- **NeuralEnactiveMemory** armazena `visual_spikes: Vec<u8>` e `auditory_spikes: Vec<u8>` (1 bit/neurônio)
-- Compressão de **32x** em relação a `Vec<f32>` (1024 neurônios: 4096 bytes → 128 bytes)
-- Recall reconstrói firing rates via `spike_bits_to_firing_rates()` sem perda funcional
-- O DB é **impenetrável**: não executa código, não armazena strings sensoriais, apenas oscilações binárias
-
-### Controle de Sensores — Desativados por Padrão
-
-```rust
-// Ambos os sensores iniciam DESATIVADOS
-let sensor_flags = SensorFlags::new_desativados();
-```
-
-| Ação | WebSocket | Interface |
-|------|-----------|-----------|
-| Ativar áudio | `{"action":"toggle_sensor","sensor":"audio","active":true}` | Botão 🎙 ÁUDIO |
-| Ativar vídeo | `{"action":"toggle_sensor","sensor":"video","active":true}` | Botão 📷 VÍDEO |
-| Desligar | `{"action":"shutdown"}` | Botão ⏻ DESLIGAR |
-
-Quando **desativados**: sensores enviam zeros (silêncio/escuridão) a 10 Hz — hardware não é aberto.
-Quando **ativados**: câmera real via `nokhwa`, microfone via `cpal` + FFT.
-
-### Ciclo de Sono Real — Fases Implementadas
-
-| Fase | Implementação Real |
-|------|-------------------|
-| **N1 — Consolidação** | Flush L1→L3 NVMe; reforça conexões com `emocao_media > 0.7`; promove dormentes com `total_usos > 5` |
-| **N2 — Poda Contextual** | Decaimento do `marcador_poda` por inatividade; remove sinapses com `peso < 0` ou `marcador_poda < 0`; neurônios intactos |
-| **N3 — REM** | Recombina conexões esquecidas (cross-pairing); novas sinapses marcadas `ContextoSemantico::Sonho` |
-| **N4 — Backup** | Snapshot RocksDB → `D:/Selene_Backup_RAM/backup_YYYYMMDD_HHMMSS/`; retém 5 mais recentes |
-
-### Poda Sináptica Contextual
-
-```
-peso >= 0  →  sinapse permanece no mapa
-peso <  0  →  sinapse APAGADA (neurônios intactos)
-```
-
-| Contexto | Resistência à Poda |
-|----------|-------------------|
-| Realidade / Hipotese | 100% da penalidade |
-| Fantasia / Sonho | 10% da penalidade |
-| Habito | 5% da penalidade |
-
-Exemplo: `"gato cospe fogo"` em `Realidade` → peso vai a negativo → sinapse removida; neurônios "gato", "cuspir", "fogo" permanecem para outras associações.
-
-### Desligamento Gracioso
-
-```
-Interface → WebSocket {"action":"shutdown"} → BrainState.shutdown_requested = true
-         → main.rs detecta no próximo tick
-         → flush L1→NVMe + backup DB → exit(0)
-```
-
-### Testes Intensivos de Aprendizado — Resultados
-
-```
-TEST 1 — Compressão spike:  32.0x | Integridade 100%       ✅
-TEST 2 — Gravação DB:       50/50 memórias | 323 mem/s      ✅
-TEST 3 — Recall por emoção: 5 memórias recuperadas corretamente ✅
-TEST 4 — Poda sináptica:    2/6 sinapses podadas corretamente ✅
-TEST 5 — Backup HDD:        verificado (requer D:\ disponível) ✅
-```
-
-Executar: `cargo run --bin learning_test`
-
----
-
-## Atualização v2.4 — DB Corrigido, Persistência Sináptica Completa
-
-### Problemas encontrados e corrigidos
-
-| Problema | Impacto | Correção |
-|----------|---------|----------|
-| Índices MTREE apontavam para `visual_pattern`/`auditory_pattern` (campos renomeados) | Todo recall vetorial fazia full table scan | Índices refeitos: `visual_spikes`, `auditory_spikes` |
-| Índice `conexoes_destino` usava campos `para_regiao, para_indice` inexistentes | Índice inútil | Substituído por `de_neuronio` e `para_neuronio` |
-| `emotion_state` e `timestamp` sem índice | Full scan crescendo com o tempo | Adicionados `emo_idx` e `ts_idx` |
-| `podar_sinapses()` removia sinapses só da RAM | Poda revertia após restart | `.delete_conexoes_batch()` no DB |
-| `reforcar()` / `penalizar_contexto_real()` só alteravam RAM | Pesos perdidos após restart | `.update_conexao_peso()` no DB durante N1 |
-| Conexões REM nunca salvas no DB | Sonhos desapareciam após restart | `save_conexao()` para cada conexão REM criada |
-
-### Novos métodos em `BrainStorage`
-
-```rust
-// Salva nova conexão sináptica (usada pelo REM)
-pub async fn save_conexao(&self, conexao: &ConexaoSinaptica) -> surrealdb::Result<()>
-
-// Atualiza peso + marcador_poda de uma sinapse existente
-pub async fn update_conexao_peso(&self, id: Uuid, peso: f32, marcador_poda: f32,
-                                  ultimo_uso: f64, total_usos: u32) -> surrealdb::Result<()>
-
-// Remove uma sinapse do DB (poda individual)
-pub async fn delete_conexao(&self, id: Uuid) -> surrealdb::Result<()>
-
-// Remove lote de sinapses em uma query só (mais eficiente)
-pub async fn delete_conexoes_batch(&self, ids: &[Uuid]) -> surrealdb::Result<()>
-```
-
-### Schema do DB após v2.4
-
-**Tabela `memories`** — índices:
-- `vis_idx` → `visual_spikes` MTREE DIST COSINE (recall visual)
-- `aud_idx` → `auditory_spikes` MTREE DIST COSINE (recall auditivo)
-- `emo_idx` → `emotion_state` (busca por limiar emocional)
-- `ts_idx`  → `timestamp` (ordenação cronológica)
-
-**Tabela `conexoes`** — índices:
-- `conexoes_origem`  → `de_neuronio` (busca por neurônio fonte)
-- `conexoes_destino` → `para_neuronio` (busca por neurônio destino)
-
-### Ciclo de sono — fluxo de persistência
-
-```
-N1 (Consolidação)
-  reforcar(0.05) nas conexões com emocao_media > 0.7
-  → update_conexao_peso() para cada uma no DB
-
-N2 (Poda)
-  podar_sinapses() → retorna Vec<Uuid> removidos
-  → delete_conexoes_batch() no DB
-
-N3 (REM)
-  ciclo_rem() → retorna Vec<ConexaoSinaptica> criadas
-  → save_conexao() para cada nova no DB
-
-N4 (Backup)
-  RocksDB → D:/Selene_Backup_RAM/backup_YYYYMMDD_HHMMSS/
-```
-
-### Testes de integridade v2.4
-
-```
-TEST 1 — Compressão spike:    32.0x | Integridade 100%       ✅
-TEST 2 — Gravação DB:         50/50 memórias | ~250 mem/s    ✅
-TEST 3 — Recall por emoção:   5 memórias recuperadas         ✅
-TEST 4 — Poda sináptica:      2/6 sinapses podadas           ✅
-TEST 5 — Backup HDD:          requer D:\ disponível          ⚠️
-```
+### v2.1
+- Modelo Izhikevich completo com 7 tipos
+- Precisao mista FP32/FP16/INT8/INT4
 
 ---
 
 ## Roadmap
 
-### Sprint atual (v2.2) ✅
-- [x] Correção do dt (substeps de 1ms)
-- [x] Período refratário correto
-- [x] STDP com tau=20ms
-- [x] Escala dinâmica para INT4/INT8
-- [x] 7 tipos neuronais (RS, IB, CH, FS, LT, TC, RZ)
-- [x] ID compacto u32 em vez de UUID
-- [x] LTD anti-Hebbiana no STDP
-- [x] Threshold adaptivo
-- [x] 6 erros de compilação corrigidos (E0308, E0382, E0432, E0521, E0596, E0277)
-- [x] `NeuronioHibrido` + `ModeloDinamico` com Serialize/Deserialize
-- [x] Interface WebSocket corrigida (URL, parsing NeuralStatus, handlers deduplicados)
-- [x] `crate-type = ["cdylib", "rlib"]` e `nokhwa` com features corretas
+### Prioritario
+- [ ] Conectar Cerebelo ao loop principal (timing motor, aprendizado por erro)
+- [ ] Integrar RL (Q-Learning) ao loop neural — RPE -> dopamina em tempo real
+- [ ] Aprendizado visual por associacao: ver objeto + ouvir palavra -> par visual-linguistico
+- [ ] Persistencia da Q-table (bincode checkpoint)
 
-### Sprint 2 (v2.3)
-- [ ] `src/gpu/wgpu.rs` — aceleração GPU para camadas densas
-- [ ] `src/meta/consciousness.rs` — metacognição e auto-monitoramento
-- [ ] `src/pid_controller.rs` — homeostase de temperatura neural
-- [ ] Temperatura real de CPU (WMI Windows / sysfs Linux)
+### Medio Prazo
+- [ ] Neurogenese dinamica via SwapManager (novos neuronios conforme experiencia)
+- [ ] Sinapses espinhosas (spine density) — densidade sinaptica por regiao
+- [ ] Correntes de calcio (Ca2+) para plasticidade de longo prazo no hipocampo
+- [ ] GABA shunting inhibition real (nao so fator de escala)
+- [ ] Oscilacoes gamma (30-100Hz) via interneuronios FS acoplados
 
-### Sprint 2 (v2.3)
-- [ ] Onset detection no `audio.rs` para Temporal
-- [ ] Dashboard WebSocket com gráficos de spike em tempo real
-- [ ] Vocabulário com reforço via `learning/rl.rs`
-- [ ] TTS (Text-To-Speech) no `actuators/speech.rs`
-
-### Sprint 4 (v3.0)
-- [ ] Port para Linux (remover dependências Win32)
-- [ ] Binding PyO3 funcional para experimentos Python
-- [ ] Neurogênese dinâmica controlada por `swap_manager.rs`
-- [ ] Multi-instância: Selene conversando com outra Selene
-
----
-
-## Referências
-
-- Izhikevich, E.M. (2003). *Simple Model of Spiking Neurons*. IEEE Transactions on Neural Networks, 14(6), 1569-1572.
-- Izhikevich, E.M. (2007). *Dynamical Systems in Neuroscience*. MIT Press.
-- Bi, G.Q. & Poo, M.M. (1998). *Synaptic modifications in cultured hippocampal neurons*. Journal of Neuroscience.
-- Dayan, P. & Abbott, L.F. (2001). *Theoretical Neuroscience*. MIT Press.
-
----
-
-*Selene V2 — Sistema Neural Bio-Inspirado em Rust*  
-*Licença: proprietária — todos os direitos reservados*
+### Longo Prazo
+- [ ] Rede de modo padrao (DMN) — atividade em repouso
+- [ ] Teoria da mente basica (modelo de outros agentes)
+- [ ] Projecao de futuro (episodic future thinking via hipocampo)
+- [ ] Consciencia de fluxo temporal (senso de passagem do tempo)

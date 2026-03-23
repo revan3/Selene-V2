@@ -362,15 +362,35 @@ pub async fn backup_to_hdd(
 
     std::fs::create_dir_all(&dest)?;
 
-    // Copia todos os arquivos do diretório RocksDB para o destino
+    // Copia arquivos do diretório RocksDB para o destino.
+    // Arquivos de lock são pulados (mantidos abertos exclusivamente pelo DB).
+    // Erros por arquivo são ignorados — o backup é melhor-esforço.
+    let mut copiados = 0usize;
+    let mut pulados  = 0usize;
     for entry in std::fs::read_dir(db_path)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
-        if file_type.is_file() {
-            let dest_file = dest.join(entry.file_name());
-            std::fs::copy(entry.path(), &dest_file)?;
+        if !file_type.is_file() { continue; }
+
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        // Pula LOCK e arquivos .lock — mantidos abertos pelo RocksDB/SurrealDB
+        if name_str == "LOCK" || name_str.ends_with(".lock") {
+            pulados += 1;
+            continue;
+        }
+
+        let dest_file = dest.join(&name);
+        match std::fs::copy(entry.path(), &dest_file) {
+            Ok(_)  => copiados += 1,
+            Err(e) => {
+                log::warn!("[Backup] Pulando {} — {}", name_str, e);
+                pulados += 1;
+            }
         }
     }
+    log::info!("[Backup] {copiados} arquivos copiados, {pulados} pulados.");
 
     // Grava manifesto do backup
     let manifest = format!(
@@ -433,4 +453,44 @@ impl From<NeuralEnactiveMemory> for NeuralEnactiveMemoryV2 {
             conexoes: Vec::new(),
         }
     }
+}
+
+/// Serializa o modelo de linguagem da Selene para JSON exportável.
+/// Contém vocabulário (palavra→valência), grafo de associações e padrões de frase.
+/// Este arquivo é o "cérebro linguístico" — independente do estado neural (RocksDB).
+pub fn exportar_linguagem(
+    vocabulario: &HashMap<String, f32>,
+    associacoes: &HashMap<String, Vec<(String, f32)>>,
+    frases: &[Vec<String>],
+) -> String {
+    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
+    let n_associacoes: usize = associacoes.values().map(|v| v.len()).sum();
+
+    // Converte associacoes para formato JSON [[w2, peso], ...]
+    let assoc_json: HashMap<&String, Vec<serde_json::Value>> = associacoes.iter()
+        .map(|(w1, vizinhos)| {
+            let pares: Vec<serde_json::Value> = vizinhos.iter()
+                .map(|(w2, peso)| serde_json::json!([w2, peso]))
+                .collect();
+            (w1, pares)
+        })
+        .collect();
+
+    let payload = serde_json::json!({
+        "selene_linguagem_v1": {
+            "metadata": {
+                "versao":          "1.0",
+                "criado_em":       timestamp,
+                "n_palavras":      vocabulario.len(),
+                "n_associacoes":   n_associacoes,
+                "n_frases_padrao": frases.len(),
+                "descricao":       "Modelo de linguagem emergente da Selene Brain 2.0"
+            },
+            "vocabulario":    vocabulario,
+            "associacoes":    assoc_json,
+            "frases_padrao":  frases
+        }
+    });
+
+    serde_json::to_string_pretty(&payload).unwrap_or_default()
 }

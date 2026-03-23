@@ -16,6 +16,7 @@ pub mod sleep_cycle;
 pub mod websocket;
 pub mod compressor;
 pub mod ego;
+pub mod encoding;
 pub mod thalamus;
 pub mod interoception;
 pub mod basal_ganglia;
@@ -29,6 +30,7 @@ pub use storage::NeuralEnactiveMemoryV2;
 pub use storage::firing_rates_to_spike_bits;
 pub use storage::spike_bits_to_firing_rates;
 pub use storage::backup_to_hdd;
+pub use storage::exportar_linguagem;
 
 // Brain zones
 pub use brain_zones::frontal::FrontalLobe;
