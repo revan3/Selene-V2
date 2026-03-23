@@ -510,16 +510,72 @@ fn tipo_para_regiao(regiao: &RegionType) -> TipoNeuronal {
 }
 
 impl SwapManager {
-    // --- NOVA FUNÇÃO PARA MEMÓRIA INFINITA ---
+    /// Arquiva um neurônio do SSD para o cold storage em disco (D:/Selene_Archive/).
+    /// Cria o diretório se não existir.
     pub fn arquivar_para_hdd(&mut self, id: &Uuid) -> std::io::Result<()> {
         if let Some(neuronio) = self.ssd.remove(id) {
-            let path_hdd = format!("D:/Selene_Archive/{}.json", id);
-            let dados = serde_json::to_string(&neuronio).unwrap();
-
-            // Grava o neurônio no HDD (D:) e libera espaço no NVMe/RAM
-            std::fs::write(path_hdd, dados)?;
-            println!("📦 [Cold Storage] Neurônio {} movido para o HDD (D:)", id);
+            let dir = "D:/Selene_Archive";
+            std::fs::create_dir_all(dir)?;
+            let path = format!("{}/{}.json", dir, id);
+            let dados = serde_json::to_string(&neuronio).unwrap_or_default();
+            std::fs::write(&path, dados)?;
+            log::debug!("[ColdStorage] Neurônio {} arquivado → {}", id, path);
         }
         Ok(())
+    }
+
+    /// Restaura um neurônio do cold storage para a RAM.
+    /// Retorna true se encontrado e carregado com sucesso.
+    pub fn restaurar_do_hdd(&mut self, id: &Uuid) -> bool {
+        let path = format!("D:/Selene_Archive/{}.json", id);
+        match std::fs::read_to_string(&path) {
+            Ok(dados) => {
+                match serde_json::from_str::<NeuronioHibrido>(&dados) {
+                    Ok(mut neuronio) => {
+                        // Garante invariante tipo↔modelo após deserialização
+                        neuronio.modelo = crate::synaptic_core::ModeloDinamico::para_tipo(neuronio.tipo);
+                        self.ram.insert(*id, neuronio);
+                        self.ultimo_acesso.insert(*id, current_time());
+                        *self.frequencia_acesso.entry(*id).or_insert(0) += 1;
+                        log::info!("[ColdStorage] Neurônio {} restaurado do HDD", id);
+                        true
+                    }
+                    Err(e) => {
+                        log::warn!("[ColdStorage] Falha ao deserializar {}: {}", id, e);
+                        false
+                    }
+                }
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Consolida neurônios dormentes do SSD para RAM se há espaço disponível.
+    /// Prioriza os de maior frequência de acesso (mais "lembrados").
+    /// Chamado automaticamente quando a RAM está abaixo de 60% de capacidade.
+    pub fn consolidar_ssd_para_ram(&mut self) {
+        let ram_usada = self.ram.len();
+        let cap = self.max_ram_neurons;
+        if ram_usada >= (cap as f32 * 0.60) as usize { return; }
+
+        let slots_livres = (cap as f32 * 0.60) as usize - ram_usada;
+
+        // Ordena SSD por frequência de acesso (mais acessados primeiro)
+        let mut candidatos: Vec<(Uuid, u32)> = self.ssd.keys()
+            .map(|id| (*id, *self.frequencia_acesso.get(id).unwrap_or(&0)))
+            .collect();
+        candidatos.sort_by(|a, b| b.1.cmp(&a.1));
+
+        let mut consolidados = 0usize;
+        for (id, _) in candidatos.iter().take(slots_livres) {
+            if let Some(neuronio) = self.ssd.remove(id) {
+                self.ram.insert(*id, neuronio);
+                self.ultimo_acesso.insert(*id, current_time());
+                consolidados += 1;
+            }
+        }
+        if consolidados > 0 {
+            log::info!("[Consolidação] {} neurônios SSD→RAM", consolidados);
+        }
     }
 }

@@ -65,4 +65,51 @@ impl MetaCognitive {
             self.focus_stability,
         )
     }
+
+    /// Retroalimentação metacognitiva: retorna modificadores para os parâmetros neurais.
+    ///
+    /// O metacognitive observer detecta estados internos e ajusta o sistema:
+    ///   - Alta confusão → aumenta ganho no frontal (mais foco necessário)
+    ///   - Baixa estabilidade → aumenta threshold global (menos ruído)
+    ///   - Alta self_awareness → permite mais autonomia (reduz ruído de background)
+    ///   - Foco em Hippocampus → habilita replay de memória
+    ///
+    /// Retorna (ganho_frontal, threshold_offset, habilitar_replay)
+    pub fn retroalimentar(&self) -> MetaFeedback {
+        // Alta confusão → o frontal precisa de mais ganho para focar
+        let ganho_frontal = 1.0 + self.confusion_level * 0.4;
+
+        // Baixa estabilidade → reduz plasticidade (evita aprendizado sob confusão)
+        let plasticidade_mod = self.focus_stability.max(0.3);
+
+        // Self-awareness alta → confia mais no processamento interno, menos no ruído
+        let threshold_offset = if self.self_awareness > 0.7 {
+            -(self.self_awareness - 0.7) * 3.0  // threshold menor → mais sensível
+        } else {
+            (0.5 - self.self_awareness) * 2.0   // threshold maior → filtra ruído
+        };
+
+        // Replay hipocampal quando foco está no hipocampo e atividade é baixa
+        let habilitar_replay = matches!(self.attention_focus, RegionType::Hippocampus)
+            && self.confusion_level < 0.3;
+
+        MetaFeedback {
+            ganho_frontal,
+            plasticidade_mod,
+            threshold_offset,
+            habilitar_replay,
+        }
+    }
+}
+
+/// Modificadores produzidos pela metacognição para retroalimentar o sistema.
+pub struct MetaFeedback {
+    /// Multiplicador de ganho para a camada executiva do frontal.
+    pub ganho_frontal: f32,
+    /// Fator de plasticidade STDP (0..1, 1=normal).
+    pub plasticidade_mod: f32,
+    /// Offset de threshold para todos os lobos (mV, negativo = mais sensível).
+    pub threshold_offset: f32,
+    /// Se verdadeiro, o loop principal deve disparar replay hipocampal neste tick.
+    pub habilitar_replay: bool,
 }

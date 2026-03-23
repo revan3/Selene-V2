@@ -58,6 +58,9 @@ use brain_zones::{
 };
 // Q-Learning TD-lambda
 use learning::rl::ReinforcementLearning;
+// Sinapses inter-lobe e atenção seletiva
+use learning::inter_lobe::BrainConnections;
+use learning::attention::AttentionGate;
 
 // Imports dos novos módulos
 use compressor::salient::SalientCompressor;
@@ -291,10 +294,13 @@ async fn async_main() {
 
     // --- 8b. CEREBELO E RL ---
     println!("🏃 Inicializando Cerebelo e Aprendizado por Reforço...");
-    // Cerebelo: n_purkinje = n/4, n_granular = n/2 (relação biologica ~200:1 granular/purkinje)
     let mut cerebelo = Cerebellum::new(n_neurons / 4, n_neurons / 2, &config);
-    // RL: Q-Learning TD(lambda) — aprende valor de estados via dopamina como sinal de recompensa
-    let mut rl = ReinforcementLearning::new();
+    // RL com persistência: restaura Q-table de sessões anteriores
+    let mut rl = ReinforcementLearning::restaurar_ou_novo("selene_qtable.bin");
+    // Sinapses inter-lobe com STDP — vias de longa distância entre regiões
+    let mut brain_conn = BrainConnections::new(n_neurons);
+    // Gate de atenção seletiva (bottom-up saliência + top-down frontal)
+    let mut attention = AttentionGate::new(n_neurons);
 
     // --- 9. INSTANCIAÇÃO DOS NOVOS MÓDULOS ---
     println!("🌱 Inicializando módulos avançados...");
@@ -341,6 +347,15 @@ async fn async_main() {
 
     // --- 12d. METACOGNIÇÃO ---
     let mut metacognitive = MetaCognitive::new();
+    // Firing rates do tick anterior — usados pelas projeções inter-lobe
+    let mut prev_v1_rates:       Vec<f32> = vec![0.0; n_neurons];
+    let mut prev_temporal_rates: Vec<f32> = vec![0.0; n_neurons];
+    let mut prev_parietal_rates: Vec<f32> = vec![0.0; n_neurons];
+    let mut prev_frontal_rates:  Vec<f32> = vec![0.0; n_neurons];
+    let mut prev_limbic_rates:   Vec<f32> = vec![0.0; n_neurons / 2];
+    let mut prev_hippo_rates:    Vec<f32> = vec![0.0; n_neurons / 2];
+    // Contador para salvar RL periodicamente (a cada ~60s @ 200Hz = 12000 ticks)
+    let mut rl_save_counter: u64 = 0;
 
     // --- 12c. CONTROLE DE FREQUÊNCIA ADAPTIVA ---
     // Média ponderada exponencial de atividade recente (0.0 = ocioso, 1.0 = pleno)
@@ -406,9 +421,6 @@ async fn async_main() {
         neuro.update(&mut *sensor.lock().await, &config);
 
         // B1. Neuromodulação global — propaga dopamina/serotonina/cortisol para TODOS os lobos.
-        // Agora afeta neurônios Izhikevich puro (RS/IB/CH/FS/LT) via threshold adaptivo,
-        // além de TC/RZ (HH) que já recebiam modulação de condutâncias.
-        // Aplicado a cada 5 ticks para evitar overhead desnecessário a 200Hz.
         if step % 5 == 0 {
             let (da, ser, cor) = (neuro.dopamine, neuro.serotonin, neuro.cortisol);
             occipital.v1_primary_layer.modular_neuro(da, ser, cor);
@@ -423,7 +435,20 @@ async fn async_main() {
             parietal.integration_layer.modular_neuro(da, ser, cor);
             cerebelo.purkinje_layer.modular_neuro(da, ser, cor);
             cerebelo.granular_layer.modular_neuro(da, ser, cor);
+            // Propaga serotonina para working memory do frontal (afeta decay WM)
+            frontal.set_serotonin(neuro.serotonin);
+            // Neuromodulação das projeções inter-lobe: dopamina aumenta plasticidade
+            brain_conn.modular_all(da, cor);
         }
+
+        // B2. Metacognição ativa — retroalimenta o sistema com base no estado observado
+        let meta_feedback = {
+            let n_vocab_proxy = 100usize; // proxy — seria state.grafo.len() mas está em Arc
+            metacognitive.observe(neuro.noradrenaline, atividade_recente, n_vocab_proxy);
+            metacognitive.retroalimentar()
+        };
+        // Aplica feedback da metacognição: idle → sinaliza replay hippocampal
+        let idle_replay_agora = meta_feedback.habilitar_replay && atividade_recente < 0.005;
 
         // C. Filtragem sensorial
         let raw_retina = rx_vision.try_recv().unwrap_or_else(|_| vec![0.0f32; n_neurons]);
@@ -453,12 +478,30 @@ async fn async_main() {
             mental_imagery_auditory = memory.auditory_rates();
         }
 
-        // E. Modulação por serotonina
+        // E. Atenção seletiva + modulação por serotonina
+        // Top-down bias: frontal direciona onde olhar (supressão de V1 durante deliberação)
+        attention.set_topdown(&prev_frontal_rates);
+        let retina_attended = attention.attend(&retina_input, dt * 1000.0);
+
+        // Top-down suppression: quando frontal está deliberando (foco interno), atenua V1
+        let suppression_mean = frontal.suppression_signal.iter().sum::<f32>()
+            / frontal.suppression_signal.len().max(1) as f32;
+
+        // Correntes inter-lobe do tick anterior modulam os inputs deste tick
+        let inter_lobe_currents = brain_conn.project_all(
+            &prev_v1_rates, &prev_temporal_rates, &prev_parietal_rates,
+            &prev_frontal_rates, &prev_limbic_rates, &prev_hippo_rates,
+        );
+
         let stability_factor = neuro.serotonin;
-        let hybrid_visual: Vec<f32> = retina_input.iter().enumerate()
+        let hybrid_visual: Vec<f32> = retina_attended.iter().enumerate()
             .map(|(i, &v)| {
                 let base = (v * 0.7) + (mental_imagery_visual.get(i).unwrap_or(&0.0) * 0.3);
-                base * stability_factor
+                // Top-down suppression atenua visual quando frontal está focado internamente
+                let suppressed = base * (1.0 - suppression_mean.clamp(0.0, 0.5));
+                // Adiciona corrente inter-lobe (feedback de hipocampo e frontal)
+                let inter = inter_lobe_currents.para_temporal.get(i).copied().unwrap_or(0.0) * 0.1;
+                (suppressed + inter).clamp(0.0, 1.0) * stability_factor
             })
             .collect();
 
@@ -539,12 +582,23 @@ async fn async_main() {
         }
 
         frontal.set_dopamine(neuro.dopamine + emotion);
-        let action = frontal.decide(&recognized, &internal_goal, dt, current_time, &config);
+        // Corrente inter-lobe para o frontal (limbic bias + parietal + temporal)
+        let frontal_inter: Vec<f32> = inter_lobe_currents.para_frontal.iter()
+            .map(|&v| v * 0.08).collect();
+        let recognized_with_inter: Vec<f32> = recognized.iter().enumerate()
+            .map(|(i, &r)| r + frontal_inter.get(i).copied().unwrap_or(0.0))
+            .collect();
+        let action = frontal.decide(&recognized_with_inter, &internal_goal, dt, current_time, &config);
 
-        // F2. CEREBELO — timing e aprendizado por erro motor/articulatório.
-        // Sinal de erro = diferença entre intenção frontal e reconhecimento temporal.
-        // Fibras trepadeiras (erro) deprimem Purkinje via LTD cerebelar.
-        // Output inibitório cerebelar refina a precisão do loop motor.
+        // F1c. Replay hipocampal em idle — consolida memórias sem estímulo externo
+        // Biologicamente: sharp-wave ripples durante waking rest consolidam episódios em semântica
+        if idle_replay_agora && step % 10 == 0 {
+            let _ = hippocampus.memorize_with_connections(
+                &prev_hippo_rates, 0.1, dt, current_time, &config,
+            );
+        }
+
+        // F2. CEREBELO
         let climbing_error: Vec<f32> = action.iter().zip(recognized.iter())
             .map(|(a, r)| (a - r).clamp(-1.0, 1.0))
             .collect();
@@ -552,16 +606,39 @@ async fn async_main() {
             &recognized, &climbing_error, dt, current_time, &config
         );
 
-        // F3. RL — Q-Learning TD(lambda) com sinal dopaminérgico como recompensa.
-        // RPE > 0: situação melhor que o previsto → dopamina sobe levemente
-        // RPE < 0: situação pior que o previsto  → dopamina cai levemente
-        // Feedback de 4%: pequeno o suficiente para não desestabilizar, grande o bastante
-        // para criar associações temporais entre estados e recompensas.
+        // F3. RL com persistência periódica
         {
             let action_scalar = action.iter().sum::<f32>() / action.len().max(1) as f32;
             let rl_rpe = rl.update(&recognized, neuro.dopamine, action_scalar, &config);
             neuro.dopamine = (neuro.dopamine + rl_rpe * 0.04).clamp(0.0, 2.0);
+            rl_save_counter += 1;
+            // Salva Q-table a cada ~60s (12000 ticks @ 200Hz)
+            if rl_save_counter >= 12000 {
+                rl_save_counter = 0;
+                if let Err(e) = rl.salvar_em_arquivo("selene_qtable.bin") {
+                    log::warn!("[RL] Falha ao salvar Q-table: {}", e);
+                }
+            }
         }
+
+        // F4. STDP inter-lobe (a cada 10 ticks — não precisa ser a cada tick)
+        if step % 10 == 0 {
+            brain_conn.stdp_update_all(
+                &prev_v1_rates, &recognized, &prev_parietal_rates,
+                &action, &prev_limbic_rates, &prev_hippo_rates,
+                dt * 1000.0 * 10.0,
+            );
+        }
+
+        // Salva firing rates para o próximo tick (projeções inter-lobe usam t-1)
+        let v1_len = vision_full.len().min(n_neurons);
+        prev_v1_rates[..v1_len].copy_from_slice(&vision_full[..v1_len]);
+        let t_len = recognized.len().min(n_neurons);
+        prev_temporal_rates[..t_len].copy_from_slice(&recognized[..t_len]);
+        let a_len = action.len().min(n_neurons);
+        prev_frontal_rates[..a_len].copy_from_slice(&action[..a_len]);
+        let l_len = (n_neurons / 2).min(cochlea_input.len());
+        prev_limbic_rates[..l_len].copy_from_slice(&cochlea_input[..l_len]);
 
         // ── FASE 1d: Onda dominante → profundidade da caminhada no grafo ──────
         // Derivado do estado neurológico atual — a onda modula quantos passos

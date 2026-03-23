@@ -137,6 +137,46 @@ impl TipoNeuronal {
         matches!(self, TipoNeuronal::TC | TipoNeuronal::RZ)
     }
 
+    /// Constante de tempo de remoção de Ca²⁺ intracelular (ms) — específica por tipo.
+    ///
+    /// Base biológica (SK channels + Ca²⁺-ATPase):
+    ///   RS/IB: tau longo (~80ms) — adaptação lenta de firing rate
+    ///   FS: tau curto (~20ms) — interneurônios voltam rápido (sem adaptação)
+    ///   CH: tau muito longo (~120ms) — chattering sustenta AHP profundo
+    ///   LT: tau médio (~50ms)
+    ///   TC/RZ: tau médio (~60ms)
+    #[inline]
+    pub fn tau_ca_ms(&self) -> f32 {
+        match self {
+            TipoNeuronal::RS => 80.0,
+            TipoNeuronal::IB => 90.0,
+            TipoNeuronal::CH => 120.0,
+            TipoNeuronal::FS => 20.0,
+            TipoNeuronal::LT => 50.0,
+            TipoNeuronal::TC => 60.0,
+            TipoNeuronal::RZ => 60.0,
+        }
+    }
+
+    /// Atividade média alvo para plasticidade homeostática BCM (Bienenstock-Cooper-Munro).
+    ///
+    /// Cada tipo tem uma taxa de disparo alvo diferente.
+    /// Se a atividade média ultrapassar este threshold (θ_BCM), o STDP passa a
+    /// deprimir (LTD domina). Abaixo, potencia (LTP domina).
+    /// Isso implementa o "sliding threshold" que estabiliza o aprendizado.
+    #[inline]
+    pub fn bcm_theta(&self) -> f32 {
+        match self {
+            TipoNeuronal::RS => 0.10,  // ~10% de spikes por tick — threshold moderado
+            TipoNeuronal::IB => 0.08,  // IB dispara em burst, threshold menor
+            TipoNeuronal::CH => 0.15,  // Chattering dispara bastante — threshold alto
+            TipoNeuronal::FS => 0.25,  // FS é tonicamente ativo — threshold alto
+            TipoNeuronal::LT => 0.07,
+            TipoNeuronal::TC => 0.05,  // TC tem atividade baixa em repouso
+            TipoNeuronal::RZ => 0.12,
+        }
+    }
+
     /// Parâmetros de condutância HH para este tipo.
     /// Retorna `None` para tipos Izhikevich puro — nunca chamado em hot path.
     pub fn parametros_hh(&self) -> Option<ParametrosHH> {
@@ -471,10 +511,16 @@ const THRESHOLD_DECAY: f32 = 0.995; // threshold retorna ao padrão por step
 /// Constantes AHP biológico via Ca²⁺ (SK channels).
 /// Ca²⁺ influi por spike e é removido com tau ~80ms (bomba Ca²⁺-ATPase).
 /// G_AHP converte Ca²⁺ normalizado em mV de threshold extra.
-const TAU_CA_MS:   f32 = 80.0;  // constante de tempo de remoção do Ca²⁺ (ms)
+// TAU_CA_MS movida para TipoNeuronal::tau_ca_ms() — varia por tipo celular
 const CA_POR_SPIKE: f32 = 2.0;  // influxo de Ca²⁺ por spike (unidades normalizadas)
 const CA_MAX:       f32 = 12.0; // limite superior (evita saturação)
 const G_AHP:        f32 = 1.8;  // mV de threshold extra por unidade de Ca²⁺
+
+/// Constante de tempo do sliding threshold BCM (ms).
+/// Lento: o histórico de atividade deve integrar centenas de ticks.
+const TAU_BCM_MS: f32 = 5000.0;
+/// Taxa de ajuste do threshold STDP via BCM.
+const BCM_RATE:   f32 = 0.002;
 
 /// Neurônio com modelo dinâmico híbrido, precisão mista e STDP bidirecional.
 ///
@@ -525,6 +571,10 @@ pub struct NeuronioHibrido {
     pub mod_sero:      f32,
     pub mod_cort:      f32,
 
+    // BCM homeostático: atividade média exponencial (proxy de firing rate)
+    // Integra spikes com tau=5000ms → sliding threshold STDP
+    pub activity_avg:  f32,
+
     // Modelo dinâmico (Izhikevich ou Izhikevich+HH)
     pub modelo:        ModeloDinamico,
 }
@@ -551,6 +601,7 @@ impl NeuronioHibrido {
             mod_dopa:        1.0,
             mod_sero:        1.0,
             mod_cort:        0.0,
+            activity_avg:    0.0,
             modelo:        ModeloDinamico::para_tipo(tipo),
         }
     }
@@ -650,8 +701,9 @@ impl NeuronioHibrido {
             }
         }
 
-        // Ca²⁺ intracelular: decai com tau_Ca, sobe por spike
-        let ca_decay = (-dt_ms / TAU_CA_MS).exp();
+        // ── 4b. Ca²⁺ intracelular: tau específico por tipo (BCa AHP) ────────
+        // FS: tau curto (20ms) → sem adaptação; CH: longo (120ms) → AHP profundo
+        let ca_decay = (-dt_ms / self.tipo.tau_ca_ms()).exp();
         self.ca_intra *= ca_decay;
         if spiked {
             self.ca_intra = (self.ca_intra + CA_POR_SPIKE).min(CA_MAX);
@@ -661,20 +713,24 @@ impl NeuronioHibrido {
             self.ca_intra *= 1.0 - (self.mod_sero - 1.0) * 0.05;
         }
 
+        // ── 4c. BCM homeostático: atualiza atividade média ────────────────
+        // activity_avg integra spikes com tau lento (5000ms).
+        // Quando activity_avg > bcm_theta: LTD domina (homeostase para baixo).
+        // Quando activity_avg < bcm_theta: LTP domina  (homeostase para cima).
+        let bcm_decay = (-dt_ms / TAU_BCM_MS).exp();
+        let spike_val = if spiked { 1.0 } else { 0.0 };
+        self.activity_avg = self.activity_avg * bcm_decay + spike_val * (1.0 - bcm_decay);
+
         // ── 5. Decaimento dos traços STDP ─────────────────────────────────
         let decay = (-dt_ms / TAU_STDP_MS).exp();
         self.trace_pre *= decay;
         self.trace_pos *= decay;
 
-        // ── 6. STDP no spike ──────────────────────────────────────────────
+        // ── 6. STDP no spike com modulação BCM ────────────────────────────
         if spiked {
-            // Limiar LTD escalonado pelo Hz atual (docx v2.3 §05):
-            // A ticks lentos, reduz o limiar para evitar anti-depressão
-            // excessiva causada pelo decay completo do trace_pre entre ticks longos.
             let hz_atual = 1000.0 / dt_ms;
             let ltd_threshold = crate::config::janela_stdp_atual(hz_atual);
 
-            // Diagnóstico: log quando Hz < 200 (confirmar hipótese de janela distorcida)
             #[cfg(debug_assertions)]
             if hz_atual < crate::config::HZ_REFERENCIA && self.trace_pre < ltd_threshold {
                 log::debug!(
@@ -683,11 +739,23 @@ impl NeuronioHibrido {
                 );
             }
 
-            // LTP: spike quando trace_pre alto → correlação causal → potencia
-            let delta_ltp = LTP_RATE * self.trace_pre;
-            // LTD anti-Hebbiano: spike sem pré correlacionado → anticausal → deprime
+            // BCM: escala LTP/LTD baseado na atividade histórica.
+            // activity_avg acima do alvo → LTD extra (homeostase estabilizadora).
+            // activity_avg abaixo do alvo → LTP extra (o neurônio precisa ser mais ativo).
+            let bcm_theta = self.tipo.bcm_theta();
+            let bcm_mod = if self.activity_avg > bcm_theta {
+                // Hiperativo → escala LTD para cima, LTP para baixo
+                let excess = (self.activity_avg - bcm_theta) / bcm_theta.max(0.01);
+                1.0 - BCM_RATE * excess.min(5.0)
+            } else {
+                // Hipoativo → escala LTP para cima
+                let deficit = (bcm_theta - self.activity_avg) / bcm_theta.max(0.01);
+                1.0 + BCM_RATE * deficit.min(5.0)
+            };
+
+            let delta_ltp = LTP_RATE * self.trace_pre * bcm_mod.max(0.1);
             let delta_ltd = if self.trace_pre < ltd_threshold {
-                -LTD_RATE * (1.0 - self.trace_pre)
+                -LTD_RATE * (1.0 - self.trace_pre) / bcm_mod.max(0.1)
             } else {
                 0.0
             };

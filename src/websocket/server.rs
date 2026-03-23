@@ -139,15 +139,27 @@ fn gerar_resposta_emergente(
     let mut atual = inicio;
     let mut visitados: std::collections::HashSet<String> = std::collections::HashSet::new();
 
+    // Coerência sintática: pré-computa quais (word_a, word_b) → word_c aparecem nas frases_padrao.
+    // Durante o walk, damos bonus de score quando a próxima palavra segue um trigrama conhecido.
+    // Isso implementa um modelo de linguagem bigrama/trigrama emergente dos padrões aprendidos.
+    let trigrama_bonus: std::collections::HashMap<(String, String), Vec<String>> = {
+        let mut mapa: std::collections::HashMap<(String, String), Vec<String>> = std::collections::HashMap::new();
+        for frase in frases_padrao {
+            for w in frase.windows(3) {
+                mapa.entry((w[0].clone(), w[1].clone()))
+                    .or_default()
+                    .push(w[2].clone());
+            }
+        }
+        mapa
+    };
+
     for _ in 0..n_passos {
         if visitados.contains(&atual) { break; }
         visitados.insert(atual.clone());
         cadeia.push(atual.clone());
 
         if let Some(vizinhos) = grafo.get(&atual) {
-            // Filtra: exclui visitados e nós com peso negativo (inibição semântica).
-            // Pesos negativos significam "esta associação é inibitória" — a palavra
-            // não deve aparecer neste contexto (ex: "frio" inibe "quente").
             let nao_visitados: Vec<&(String, f32)> = vizinhos.iter()
                 .filter(|(w, peso)| !visitados.contains(w.as_str()) && *peso > -0.1)
                 .collect();
@@ -202,6 +214,15 @@ fn gerar_resposta_emergente(
                     // Peso sináptico do grafo: arestas mais fortes são levemente preferidas
                     s1 -= (a.1 - 0.5) * 0.05;
                     s2 -= (b.1 - 0.5) * 0.05;
+                    // Coerência sintática trigrama: se (prev, atual) → next existe nos padrões,
+                    // dá um bonus à palavra que continua o padrão aprendido.
+                    if let Some(prev) = cadeia.iter().rev().nth(1) {
+                        let chave = (prev.clone(), atual.clone());
+                        if let Some(next_opts) = trigrama_bonus.get(&chave) {
+                            if next_opts.contains(&a.0) { s1 -= 0.20; }
+                            if next_opts.contains(&b.0) { s2 -= 0.20; }
+                        }
+                    }
                     s1.partial_cmp(&s2).unwrap_or(std::cmp::Ordering::Equal)
                 });
             match prox {
@@ -1046,8 +1067,22 @@ pub async fn handle_connection(
                                                     state.historico_episodico.push_back(
                                                         (w1.clone(), w2.clone(), emocao_atual)
                                                     );
+                                                    // Compressão: quando cheio, mescla entradas menos salientes
+                                                    // ao invés de descartar — preserva memórias antigas mais intensas
                                                     if state.historico_episodico.len() > 500 {
-                                                        state.historico_episodico.pop_front();
+                                                        // Remove a entrada com MENOR valência absoluta (menos saliente)
+                                                        // entre as primeiras 100 (mais antigas), não a mais recente
+                                                        if let Some(min_pos) = state.historico_episodico
+                                                            .iter()
+                                                            .take(100)
+                                                            .enumerate()
+                                                            .min_by(|a, b| a.1.2.abs().partial_cmp(&b.1.2.abs()).unwrap())
+                                                            .map(|(i, _)| i)
+                                                        {
+                                                            state.historico_episodico.remove(min_pos);
+                                                        } else {
+                                                            state.historico_episodico.pop_front();
+                                                        }
                                                     }
                                                 }
                                             }

@@ -394,23 +394,51 @@ impl ReinforcementLearning {
     // Persistência (base para CheckpointSystem)
     // -------------------------------------------------------------------------
 
-    /// Serializa a Q-table para bytes (para salvar em arquivo ou banco).
+    /// Salva a Q-table em arquivo binário (formato compacto: 20 bytes por entrada).
     ///
-    /// Use bincode para serialização eficiente:
-    /// ```rust
-    /// let bytes = rl.serializar();
-    /// std::fs::write("rl_checkpoint.bin", bytes)?;
-    /// ```
-    pub fn serializar(&self) -> Vec<u8> {
-        // Converte HashMap<[u8;16], f32> para Vec<([u8;16], f32)> para serializar
-        let pares: Vec<([u8; 16], f32)> = self.q_table
-            .iter()
-            .map(|(&k, &v)| (k, v))
-            .collect();
+    /// Formato: [n_entradas: u64][chave: 16 bytes][valor: f32] × n
+    /// Compatível com `restaurar_de_arquivo()`.
+    pub fn salvar_em_arquivo(&self, path: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut buf = Vec::with_capacity(8 + self.q_table.len() * 20);
+        // Cabeçalho: número de entradas
+        buf.extend_from_slice(&(self.q_table.len() as u64).to_le_bytes());
+        for (&chave, &valor) in &self.q_table {
+            buf.extend_from_slice(&chave);
+            buf.extend_from_slice(&valor.to_le_bytes());
+        }
+        std::fs::write(path, &buf)?;
+        log::info!("[RL] Q-table salva: {} estados → {}", self.q_table.len(), path);
+        Ok(())
+    }
 
-        // bincode::serialize(&pares).unwrap_or_default()
-        // TODO: implementar quando bincode estiver disponível no contexto
-        Vec::new()
+    /// Restaura a Q-table de um arquivo previamente salvo com `salvar_em_arquivo()`.
+    pub fn restaurar_de_arquivo(&mut self, path: &str) -> std::io::Result<()> {
+        let bytes = std::fs::read(path)?;
+        if bytes.len() < 8 { return Ok(()); }
+        let n = u64::from_le_bytes(bytes[0..8].try_into().unwrap_or([0u8;8])) as usize;
+        let mut pos = 8usize;
+        let mut restaurados = 0usize;
+        while pos + 20 <= bytes.len() && restaurados < n {
+            let chave: [u8; 16] = bytes[pos..pos+16].try_into().unwrap_or([0u8;16]);
+            let valor = f32::from_le_bytes(bytes[pos+16..pos+20].try_into().unwrap_or([0u8;4]));
+            self.q_table.insert(chave, valor);
+            pos += 20;
+            restaurados += 1;
+        }
+        log::info!("[RL] Q-table restaurada: {} estados de {}", restaurados, path);
+        Ok(())
+    }
+
+    /// Tenta restaurar do arquivo; cria novo se não existir.
+    pub fn restaurar_ou_novo(path: &str) -> Self {
+        let mut rl = Self::new();
+        match rl.restaurar_de_arquivo(path) {
+            Ok(()) => {},
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            Err(e) => log::warn!("[RL] Falha ao restaurar Q-table: {}", e),
+        }
+        rl
     }
 
     /// Reseta completamente o aprendizado (esquece tudo).
