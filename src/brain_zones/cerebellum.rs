@@ -14,7 +14,7 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
-use crate::synaptic_core::{CamadaHibrida, PrecisionType, TipoNeuronal};
+use crate::synaptic_core::{CamadaHibrida, ModeloDinamico, PrecisionType, TipoNeuronal};
 use crate::config::Config;
 
 pub struct Cerebellum {
@@ -59,6 +59,7 @@ impl Cerebellum {
                 n.threshold = 20.0;
             } else {
                 n.tipo = TipoNeuronal::FS; // células basket/stellate GABAérgicas
+                n.modelo = ModeloDinamico::Izhikevich; // FS não usa HH — corrige invariante tipo/modelo
                 n.threshold = 25.0;
             }
         }
