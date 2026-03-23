@@ -2,8 +2,9 @@
 // Córtex Temporal — Reconhecimento auditivo, linguagem, memória semântica
 //
 // Composição neuronal:
-//   recognition_layer: 70% RS + 30% CH
+//   recognition_layer: 55% RS + 30% CH + 15% FS
 //   CH para reconhecimento rápido de padrões fonéticos repetitivos.
+//   FS (15%) para oscilações gamma auditivas e inibição lateral entre padrões concorrentes.
 
 #![allow(unused_imports)]
 #![allow(unused_variables)]
@@ -35,13 +36,23 @@ impl TemporalLobe {
 
         let escala = 45.0 / 127.0;
 
-        let recognition = CamadaHibrida::new(
+        let mut recognition = CamadaHibrida::new(
             n_neurons, "temporal_recog",
             TipoNeuronal::RS,
             Some((TipoNeuronal::CH, 0.30)),
             Some(dist),
             escala,
         );
+        // Converte os últimos 15% (metade dos CH) para FS:
+        // interneurônios parvalbumin+ que dirigem oscilações gamma auditivas
+        // e implementam inibição lateral entre padrões fonéticos concorrentes.
+        let n_temp = recognition.neuronios.len();
+        let fs_start = (n_temp as f32 * 0.85) as usize;
+        for nr in &mut recognition.neuronios[fs_start..] {
+            nr.tipo = TipoNeuronal::FS;
+            nr.threshold = 25.0; // FS dispara com limiar menor
+        }
+        recognition.init_lateral_inhibition(4, 2.5); // 4 vizinhos, força moderada
 
         Self {
             recognition_layer: recognition,

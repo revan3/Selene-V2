@@ -34,6 +34,7 @@ fn gerar_resposta_emergente(
     frases_padrao: &[Vec<String>],
     contexto_extra: &[String],        // palavras de turnos anteriores → expande o tópico
     caminho_out: &mut Vec<String>,    // registra o caminho percorrido → usado pelo feedback
+    emocao_palavras: &HashMap<String, f32>, // valência emocional amigdaliana por palavra
 ) -> String {
     // Alvo emocional efetivo: mistura o estado atual com o viés de Plutchik.
     // + perturbação determinística derivada do diversity_seed: ±0.10 por resposta.
@@ -144,8 +145,11 @@ fn gerar_resposta_emergente(
         cadeia.push(atual.clone());
 
         if let Some(vizinhos) = grafo.get(&atual) {
+            // Filtra: exclui visitados e nós com peso negativo (inibição semântica).
+            // Pesos negativos significam "esta associação é inibitória" — a palavra
+            // não deve aparecer neste contexto (ex: "frio" inibe "quente").
             let nao_visitados: Vec<&(String, f32)> = vizinhos.iter()
-                .filter(|(w, _)| !visitados.contains(w.as_str()))
+                .filter(|(w, peso)| !visitados.contains(w.as_str()) && *peso > -0.1)
                 .collect();
 
             // Três etapas de preferência para manter a caminhada no cluster do input:
@@ -182,8 +186,23 @@ fn gerar_resposta_emergente(
                 .min_by(|a, b| {
                     let v1 = valencias.get(a.0.as_str()).copied().unwrap_or(emocao);
                     let v2 = valencias.get(b.0.as_str()).copied().unwrap_or(emocao);
-                    (v1 - emocao).abs().partial_cmp(&(v2 - emocao).abs())
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                    // Score base: distância emocional (menor = mais congruente)
+                    let mut s1 = (v1 - emocao).abs();
+                    let mut s2 = (v2 - emocao).abs();
+                    // Bias amigdaliano: palavras com associação emocional forte e
+                    // congruente com o estado atual são preferidas.
+                    // emocao_word * emocao > 0 → congruente → score menor (preferido)
+                    // emocao_word * emocao < 0 → incongruente → score maior (evitado)
+                    if let Some(&ew1) = emocao_palavras.get(a.0.as_str()) {
+                        s1 -= (ew1 * emocao).clamp(-0.25, 0.25);
+                    }
+                    if let Some(&ew2) = emocao_palavras.get(b.0.as_str()) {
+                        s2 -= (ew2 * emocao).clamp(-0.25, 0.25);
+                    }
+                    // Peso sináptico do grafo: arestas mais fortes são levemente preferidas
+                    s1 -= (a.1 - 0.5) * 0.05;
+                    s2 -= (b.1 - 0.5) * 0.05;
+                    s1.partial_cmp(&s2).unwrap_or(std::cmp::Ordering::Equal)
                 });
             match prox {
                 Some(entry) => {
@@ -428,13 +447,45 @@ fn fase_n3_rem(state: &mut crate::websocket::bridge::BrainState) {
     let palavras: Vec<String> = state.grafo_associacoes.keys().cloned().collect();
     if palavras.len() < 3 { return; }
     let mut novas = 0usize;
-    // Amostra até 40 pares aleatórios para criar associações transitivas
-    for i in 0..palavras.len().min(20) {
+    let mut replay = 0usize;
+
+    // ── Parte 1: Replay hipocampal — re-fortalece memórias episódicas ─────────
+    // Durante N3/REM, o hipocampo replica sequências de palavras co-ocorridas
+    // com emoção forte. Isso consolida memórias episódicas em semânticas.
+    // Biologicamente: replay de "place cell" sequences durante NREM sharp-wave ripples.
+    let episodios: Vec<(String, String, f32)> = state.historico_episodico
+        .iter()
+        .filter(|(_, _, em)| em.abs() > 0.35) // só episódios emocionalmente salientes
+        .cloned()
+        .collect();
+
+    for (wa, wb, emocao_ep) in &episodios {
+        // Reforça a aresta wa→wb proporcionalmente à intensidade emocional do episódio
+        let bonus = emocao_ep.abs() * 0.06; // pequeno reforço por replay
+        if let Some(vizinhos) = state.grafo_associacoes.get_mut(wa) {
+            if let Some(aresta) = vizinhos.iter_mut().find(|(w, _)| w == wb) {
+                aresta.1 = (aresta.1 + bonus).min(0.98); // não ultrapassa bigram sequencial
+                replay += 1;
+            } else {
+                // Cria a aresta se não existe (nova associação por replay)
+                vizinhos.push((wb.clone(), (0.35 + bonus).min(0.65)));
+                replay += 1;
+                novas += 1;
+            }
+        }
+        // Também atualiza peso emocional acumulado
+        let entry = state.emocao_palavras.entry(wa.clone()).or_insert(0.0);
+        *entry = (*entry * 0.90 + emocao_ep * 0.10).clamp(-1.0, 1.0);
+    }
+
+    // ── Parte 2: Fechamento transitivo criativo ───────────────────────────────
+    // Cria associações entre palavras que compartilham vizinhos mas não estão
+    // diretamente conectadas — o equivalente a "sonhar" e formar novas ideias.
+    for i in 0..palavras.len().min(25) {
         let a = &palavras[i];
         let b_idx = (i * 7 + 3) % palavras.len(); // pseudoaleatório determinístico
         let b = &palavras[b_idx];
         if a == b { continue; }
-        // Verifica se A e B têm vizinho em comum (elo transitivo)
         let vizinhos_a: std::collections::HashSet<String> = state.grafo_associacoes
             .get(a).map(|v| v.iter().map(|(w, _)| w.clone()).collect())
             .unwrap_or_default();
@@ -443,7 +494,6 @@ fn fase_n3_rem(state: &mut crate::websocket::bridge::BrainState) {
             .unwrap_or_default();
         let em_comum = vizinhos_a.intersection(&vizinhos_b).count();
         if em_comum > 0 {
-            // Cria elo direto A→B com peso proporcional ao elo transitivo
             let a = a.clone(); let b = b.clone();
             let ja_existe = state.grafo_associacoes.get(&a)
                 .map(|v| v.iter().any(|(w, _)| w == &b)).unwrap_or(false);
@@ -454,7 +504,8 @@ fn fase_n3_rem(state: &mut crate::websocket::bridge::BrainState) {
             }
         }
     }
-    println!("   ✨ [N3 REM] {} novas associações criadas enquanto sonhava", novas);
+    println!("   ✨ [N3 REM] {} novas assoc | {} replays hipocampais ({} episódios salientes)",
+        novas, replay, episodios.len());
 }
 
 /// N4 — Backup: persiste linguagem em JSON.
@@ -754,6 +805,7 @@ pub async fn handle_connection(
                                             &state.frases_padrao,
                                             &conversa_ctx,
                                             &mut caminho_local,
+                                            &state.emocao_palavras,
                                         );
                                         state.ultimo_caminho_walk = caminho_local.clone();
                                         // Atualiza contagem de arestas usadas (para consolidação noturna)
@@ -979,6 +1031,7 @@ pub async fn handle_connection(
 
                                         // Associa palavras consecutivas no grafo (co-ocorrência auditiva)
                                         // Peso ligeiramente menor que aprendizado explícito (0.60)
+                                        let emocao_atual = state.emocao_bias;
                                         for i in 0..palavras.len().saturating_sub(1) {
                                             let w1 = palavras[i].clone();
                                             let w2 = palavras[i + 1].clone();
@@ -986,7 +1039,30 @@ pub async fn handle_connection(
                                                 let vizinhos = state.grafo_associacoes
                                                     .entry(w1.clone()).or_default();
                                                 if !vizinhos.iter().any(|(w, _)| w == &w2) {
-                                                    vizinhos.push((w2, 0.60));
+                                                    vizinhos.push((w2.clone(), 0.60));
+                                                }
+                                                // Histórico episódico para replay N3/REM
+                                                if emocao_atual.abs() > 0.25 {
+                                                    state.historico_episodico.push_back(
+                                                        (w1.clone(), w2.clone(), emocao_atual)
+                                                    );
+                                                    if state.historico_episodico.len() > 500 {
+                                                        state.historico_episodico.pop_front();
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Pesos emocionais amigdalianos: acumula valência por palavra
+                                        // Cada exposição com emoção forte reforça a associação emocional
+                                        if emocao_atual.abs() > 0.15 {
+                                            for palavra in &palavras {
+                                                if palavra.len() > 1 {
+                                                    let entry = state.emocao_palavras
+                                                        .entry(palavra.clone()).or_insert(0.0);
+                                                    // Decaimento + nova experiência
+                                                    *entry = (*entry * 0.85 + emocao_atual * 0.15)
+                                                        .clamp(-1.0, 1.0);
                                                 }
                                             }
                                         }
@@ -1576,6 +1652,7 @@ pub async fn handle_connection(
                                     &state.frases_padrao,
                                     &conversa_ctx,
                                     &mut caminho_q,
+                                    &state.emocao_palavras,
                                 );
                                 state.ultimo_caminho_walk = caminho_q.clone();
                                 for i in 0..caminho_q.len().saturating_sub(1) {

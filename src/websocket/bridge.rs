@@ -128,6 +128,16 @@ pub struct BrainState {
     /// Fase atual do sono: "N1 - Consolidação", "N2 - Poda", "N3 - REM", "N4 - Backup"
     /// Vazio quando acordada.
     pub fase_sono: String,
+    /// Valência emocional por palavra aprendida via amígdala.
+    /// Acumulada durante audio_learn quando emocao_bias != 0.
+    /// Positivo = palavra associada a experiências positivas (alegria/confiança).
+    /// Negativo = palavra associada a experiências negativas (medo/tristeza).
+    /// Usado no graph-walk para priorizar palavras emocionalmente congruentes.
+    pub emocao_palavras: HashMap<String, f32>,
+    /// Histórico episódico para replay durante N3/REM: (palavra_a, palavra_b, emocao).
+    /// Pares de palavras co-ocorridas com valência emocional forte.
+    /// Durante a fase REM, essas associações são re-fortalecidas no grafo.
+    pub historico_episodico: VecDeque<(String, String, f32)>,
     /// Córtex occipital — processa frames visuais da webcam/screen share do browser.
     /// Aplica detecção de movimento (flicker_buffer), contraste e orientação (V1→V2)
     /// antes de gerar o spike pattern que vai para spike_vocab.
@@ -303,6 +313,8 @@ impl BrainState {
             auto_learn_contagem: HashMap::new(),
             dormindo: false,
             fase_sono: String::new(),
+            emocao_palavras: HashMap::new(),
+            historico_episodico: VecDeque::with_capacity(500),
             // 512 neurônios = 70% V1 (358) + 30% V2 (154) — coincide com 32×16 pixels do browser
             occipital: OccipitalLobe::new(512, 0.2, cfg),
             visual_time: 0.0,

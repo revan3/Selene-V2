@@ -50,10 +50,20 @@ impl Cerebellum {
         );
 
         // Ajustes biofísicos das células de Purkinje:
-        // threshold menor (20mV) e d menor (2) para disparos mais frequentes
-        for n in &mut purkinje.neuronios {
-            n.threshold = 20.0;
+        // threshold menor (20mV) para disparos mais frequentes
+        // Últimos 15% → FS (células basket/stellate): inibição lateral entre Purkinje
+        let n_purk = purkinje.neuronios.len();
+        let basket_start = (n_purk as f32 * 0.85) as usize;
+        for (i, n) in purkinje.neuronios.iter_mut().enumerate() {
+            if i < basket_start {
+                n.threshold = 20.0;
+            } else {
+                n.tipo = TipoNeuronal::FS; // células basket/stellate GABAérgicas
+                n.threshold = 25.0;
+            }
         }
+        // Basket cells inibem Purkinje vizinhas → timing preciso de output motor
+        purkinje.init_lateral_inhibition(3, 4.0);
 
         let granular = CamadaHibrida::new(
             n_granular, "cerebelo_granular",

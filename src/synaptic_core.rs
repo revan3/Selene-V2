@@ -151,6 +151,11 @@ impl TipoNeuronal {
                 e_k:  -77.0,   // mV
                 e_l:  -54.4,   // mV
                 c_m:    1.0,   // µF/cm²
+                // Canal HCN (I_h): responsável pelas oscilações talâmicas espontâneas.
+                // Ativa-se lentamente abaixo de -70mV (hiperpolarização pós-burst).
+                // E_h ≈ -30mV → corrente despolarizante que empurra TC de volta ao tônico.
+                // g_h = 1.5 mS/cm² (valor fisiológico: McCormick & Pape 1990)
+                g_h:    1.5,
             }),
             TipoNeuronal::RZ => Some(ParametrosHH {
                 // Célula de Purkinje: g_Na alto para upstroke rápido.
@@ -163,6 +168,7 @@ impl TipoNeuronal {
                 e_k:  -80.0,
                 e_l:  -65.0,
                 c_m:    1.0,
+                g_h:    0.0,  // Purkinje não tem I_h significativo
             }),
             _ => None,
         }
@@ -184,11 +190,15 @@ pub struct ParametrosHH {
     pub e_k:  f32,  // potencial de reversão K⁺  (mV)
     pub e_l:  f32,  // potencial de reversão leak (mV)
     pub c_m:  f32,  // capacitância de membrana (µF/cm²)
+    /// Condutância do canal HCN (corrente Ih) — ativado por hiperpolarização.
+    /// Responsável pelas oscilações talâmicas espontâneas burst↔tônico.
+    /// g_h > 0 apenas para TC; RZ e demais = 0.0
+    pub g_h:  f32,
 }
 
 /// Estado das variáveis de portão — muda a cada tick.
 /// Armazenado em heap via `Box<EstadoHH>` em `ModeloDinamico::IzhikevichHH`.
-/// Tamanho no heap: 6 × f32 = 24 bytes por neurônio HH.
+/// Tamanho no heap: 7 × f32 = 28 bytes por neurônio HH.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EstadoHH {
     /// Portão de ativação Na⁺ (0..1). Abre com despolarização → upstroke.
@@ -199,6 +209,11 @@ pub struct EstadoHH {
     pub h: f32,
     /// Portão de ativação K⁺ (0..1). Abre com atraso → repolarização.
     pub n: f32,
+    /// Portão de ativação I_h (canal HCN) — ativado POR hiperpolarização (0..1).
+    /// TC: q_ih sobe lentamente quando V < -70mV → corrente despolarizante Ih.
+    /// Responsável pelo marcapasso das oscilações talâmicas e ondas theta.
+    /// Sempre 0.0 para RZ (g_h=0).
+    pub q_ih: f32,
     /// Modificadores neuromoduladores (default 1.0 = sem efeito).
     /// Ajustados por `modular()` a partir dos valores do NeuroChem.
     pub g_na_mod: f32,
@@ -209,8 +224,10 @@ pub struct EstadoHH {
 impl EstadoHH {
     /// Estado de equilíbrio em potencial de repouso −65 mV.
     /// Valores analíticos: x₀ = α_x(-65) / (α_x(-65) + β_x(-65)).
+    /// q_ih ≈ 0.01 (canal HCN quase fechado em repouso, abre só em hiperpolarização).
     pub fn repouso() -> Self {
         Self { m: 0.053, h: 0.596, n: 0.318,
+               q_ih: 0.01,
                g_na_mod: 1.0, g_k_mod: 1.0, g_l_mod: 1.0 }
     }
 
@@ -318,7 +335,22 @@ impl HH {
         let i_k  = params.g_k  * estado.g_k_mod  * n.powi(4)     * (v - params.e_k);
         let i_l  = params.g_l  * estado.g_l_mod                  * (v - params.e_l);
 
-        i_na + i_k + i_l
+        // Corrente Ih (canal HCN) — ativada por hiperpolarização.
+        // Cinética lenta: ativa-se em dezenas de ms quando V < -70 mV.
+        // alpha_q: taxa de abertura — cresce com hiperpolarização
+        // beta_q:  taxa de fechamento — cresce com despolarização
+        // E_h ≈ -30 mV → corrente despolarizante (puxa V de volta ao tônico)
+        let i_h = if params.g_h > 0.0 {
+            let alpha_q = 0.001 * (-0.1 * (v + 75.0)).exp().min(10.0);
+            let beta_q  = 0.001 * (0.1  * (v + 75.0)).exp().min(10.0);
+            let q_new = estado.q_ih + dt_sub * (alpha_q * (1.0 - estado.q_ih) - beta_q * estado.q_ih);
+            estado.q_ih = q_new.clamp(0.0, 1.0);
+            params.g_h * estado.q_ih * (v - (-30.0))
+        } else {
+            0.0
+        };
+
+        i_na + i_k + i_l + i_h
     }
 }
 
@@ -433,8 +465,16 @@ const LTP_RATE:        f32 = 0.012;  // taxa de potenciação de longo prazo
 const LTD_RATE:        f32 = 0.006;  // taxa de depressão de longo prazo
 const PESO_MAX:        f32 = 2.5;
 const PESO_MIN:        f32 = 0.0;
-const THRESHOLD_DELTA: f32 = 2.0;   // threshold sobe por spike (mV)
+const THRESHOLD_DELTA: f32 = 2.0;   // threshold sobe por spike (mV) — base antes do Ca²⁺
 const THRESHOLD_DECAY: f32 = 0.995; // threshold retorna ao padrão por step
+
+/// Constantes AHP biológico via Ca²⁺ (SK channels).
+/// Ca²⁺ influi por spike e é removido com tau ~80ms (bomba Ca²⁺-ATPase).
+/// G_AHP converte Ca²⁺ normalizado em mV de threshold extra.
+const TAU_CA_MS:   f32 = 80.0;  // constante de tempo de remoção do Ca²⁺ (ms)
+const CA_POR_SPIKE: f32 = 2.0;  // influxo de Ca²⁺ por spike (unidades normalizadas)
+const CA_MAX:       f32 = 12.0; // limite superior (evita saturação)
+const G_AHP:        f32 = 1.8;  // mV de threshold extra por unidade de Ca²⁺
 
 /// Neurônio com modelo dinâmico híbrido, precisão mista e STDP bidirecional.
 ///
@@ -473,6 +513,18 @@ pub struct NeuronioHibrido {
     pub trace_pos:     f32,   // traço pós-sináptico (LTD anti-Hebbiano)
     pub last_spike_ms: f32,
 
+    // Ca²⁺ intracelular para AHP biológico (SK channels)
+    // Sobe a cada spike, decai com tau ≈ 80ms → threshold adaptivo realista
+    pub ca_intra:      f32,
+
+    // Neuromodulação para neurônios Izhikevich puro (RS/IB/CH/FS/LT)
+    // dopamina → threshold menor (mais reativo)
+    // cortisol → threshold maior (menos excitável)
+    // serotonina → Ca²⁺ decai mais rápido (recuperação mais rápida)
+    pub mod_dopa:      f32,
+    pub mod_sero:      f32,
+    pub mod_cort:      f32,
+
     // Modelo dinâmico (Izhikevich ou Izhikevich+HH)
     pub modelo:        ModeloDinamico,
 }
@@ -495,6 +547,10 @@ impl NeuronioHibrido {
             trace_pre:       0.0,
             trace_pos:       0.0,
             last_spike_ms: -1000.0,
+            ca_intra:        0.0,
+            mod_dopa:        1.0,
+            mod_sero:        1.0,
+            mod_cort:        0.0,
             modelo:        ModeloDinamico::para_tipo(tipo),
         }
     }
@@ -568,11 +624,23 @@ impl NeuronioHibrido {
         let (a, b, c, d) = self.tipo.parametros();
         let mut spiked = false;
 
+        // Neuromodulação Izhikevich: ajusta threshold efetivo via dopamina/cortisol.
+        // dopamina > 1.0 → threshold cai → mais reativo (mais disparos)
+        // cortisol > 0.0 → threshold sobe → menos excitável (stress → inibe)
+        // serotonina > 1.0 → threshold cai levemente (estabilidade positiva)
+        let neuro_thresh_offset = -(self.mod_dopa - 1.0) * 2.0   // dopa
+                                  + self.mod_cort * 4.5           // cortisol
+                                  - (self.mod_sero - 1.0) * 0.8; // serotonina
+
+        // Ca²⁺ AHP: threshold efetivo inclui contribuição do Ca²⁺ intracelular
+        let ahp_extra = G_AHP * self.ca_intra;
+        let threshold_efetivo = self.threshold + neuro_thresh_offset + ahp_extra;
+
         for _ in 0..n_sub {
             self.v += dt_int * (0.04 * self.v.powi(2) + 5.0 * self.v + 140.0 - self.u + i_eff);
             self.u += dt_int * a * (b * self.v - self.u);
 
-            if self.v >= self.threshold {
+            if self.v >= threshold_efetivo {
                 self.v = c;
                 self.u += d;
                 self.threshold += THRESHOLD_DELTA;
@@ -580,6 +648,17 @@ impl NeuronioHibrido {
                 spiked = true;
                 break;
             }
+        }
+
+        // Ca²⁺ intracelular: decai com tau_Ca, sobe por spike
+        let ca_decay = (-dt_ms / TAU_CA_MS).exp();
+        self.ca_intra *= ca_decay;
+        if spiked {
+            self.ca_intra = (self.ca_intra + CA_POR_SPIKE).min(CA_MAX);
+        }
+        // Serotonina acelera a remoção do Ca²⁺ (canais SK mais ativos)
+        if self.mod_sero > 1.0 {
+            self.ca_intra *= 1.0 - (self.mod_sero - 1.0) * 0.05;
         }
 
         // ── 5. Decaimento dos traços STDP ─────────────────────────────────
@@ -625,10 +704,23 @@ impl NeuronioHibrido {
         spiked
     }
 
-    /// Aplica neuromodulação ao estado HH (se disponível).
-    /// Sem custo para neurônios Izhikevich puro (branch previsto corretamente).
+    /// Aplica neuromodulação a TODOS os neurônios (Izhikevich puro e HH).
+    ///
+    /// Para Izhikevich puro (RS/IB/CH/FS/LT):
+    ///   dopamina  → ajusta threshold efetivo via mod_dopa (mais reativo com dopa alta)
+    ///   cortisol  → ajusta threshold efetivo via mod_cort (menos excitável com stress)
+    ///   serotonina → acelera remoção de Ca²⁺ AHP (recuperação mais rápida)
+    ///
+    /// Para TC/RZ (IzhikevichHH):
+    ///   Idem + modula condutâncias iônicas g_na/g_k/g_l via EstadoHH.
+    ///
     /// Chamado pelo módulo `NeuroChem` a cada ciclo de atualização química.
     pub fn modular_neuro(&mut self, dopamina: f32, serotonina: f32, cortisol: f32) {
+        // Armazena para uso no update() — afeta threshold_efetivo e decaimento Ca²⁺
+        self.mod_dopa = dopamina;
+        self.mod_sero = serotonina;
+        self.mod_cort = cortisol;
+        // HH adicional: modula condutâncias iônicas
         if let Some(estado) = self.modelo.estado_hh_mut() {
             estado.modular(dopamina, serotonina, cortisol);
         }
@@ -669,6 +761,13 @@ pub struct CamadaHibrida {
     /// Calcular como: I_max_esperado / 127.0 para INT8, I_max / 7.0 para INT4.
     pub escala_camada: f32,
     pub nome:          String,
+    /// Conectividade lateral esparsa: lateral_w[i] = lista de (j, peso)
+    /// onde j é o índice do neurônio destino e peso é negativo (inibitório) ou positivo.
+    /// Implementa inibição lateral FS→RS e excitação recíproca lateral.
+    /// Vazio por padrão; populado via `init_lateral_inhibition()`.
+    pub lateral_w:     Vec<Vec<(usize, f32)>>,
+    /// Spikes do tick anterior — usados para calcular correntes laterais no próximo tick.
+    pub prev_spikes:   Vec<bool>,
 }
 
 impl CamadaHibrida {
@@ -718,15 +817,101 @@ impl CamadaHibrida {
             neuronios.push(NeuronioHibrido::new(i as u32, tipo, prec_cur));
         }
 
-        Self { neuronios, escala_camada, nome: nome.to_string() }
+        let n = neuronios.len();
+        Self {
+            neuronios,
+            escala_camada,
+            nome: nome.to_string(),
+            lateral_w:   Vec::new(),
+            prev_spikes: vec![false; n],
+        }
     }
 
-    /// Processa um tick. Assinatura idêntica à V2.1.
+    /// Inicializa conectividade lateral inibitória (FS → RS).
+    ///
+    /// Neurônios FS (Fast Spiking) inibem neurônios RS vizinhos — winner-take-all.
+    /// Parâmetros:
+    ///   `n_vizinhos`:  quantos RS cada FS inibe (default 8)
+    ///   `peso_inhib`:  corrente inibitória por spike FS (default -3.5 pA)
+    ///
+    /// Deve ser chamado após `new()` nas camadas que têm FS (frontal, parietal, temporal).
+    pub fn init_lateral_inhibition(&mut self, n_vizinhos: usize, peso_inhib: f32) {
+        let n = self.neuronios.len();
+        self.lateral_w = vec![Vec::new(); n];
+
+        // Coleta índices de neurônios FS e RS separadamente
+        let fs_indices: Vec<usize> = self.neuronios.iter().enumerate()
+            .filter(|(_, n)| n.tipo == TipoNeuronal::FS)
+            .map(|(i, _)| i)
+            .collect();
+        let rs_indices: Vec<usize> = self.neuronios.iter().enumerate()
+            .filter(|(_, n)| !n.tipo.e_inibitorico())
+            .map(|(i, _)| i)
+            .collect();
+
+        if fs_indices.is_empty() || rs_indices.is_empty() { return; }
+
+        // Cada FS inibe os N RS mais próximos (por índice — proxy de posição cortical)
+        for &fs in &fs_indices {
+            let vizinhos_rs: Vec<usize> = rs_indices.iter()
+                .filter(|&&rs| rs != fs)
+                .map(|&rs| {
+                    let dist = (fs as isize - rs as isize).unsigned_abs();
+                    let dist_wrap = dist.min(n.saturating_sub(dist));
+                    (rs, dist_wrap)
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .take(n_vizinhos.min(rs_indices.len()))
+                .map(|(rs, _)| rs)
+                .collect();
+
+            for rs in vizinhos_rs {
+                self.lateral_w[fs].push((rs, peso_inhib));
+            }
+        }
+
+        // Excitação lateral fraca RS→RS vizinho imediato (propaga ativação local)
+        for &rs in &rs_indices {
+            let prox = (rs + 1) % n;
+            if !self.neuronios[prox].tipo.e_inibitorico() {
+                self.lateral_w[rs].push((prox, 0.8)); // excitação fraca
+            }
+        }
+    }
+
+    /// Processa um tick. Assinatura idêntica à V2.1 + conectividade lateral.
+    ///
+    /// A corrente lateral é somada ao input externo antes da atualização de cada neurônio.
+    /// Neurônios FS que disparam no tick anterior inibem os RS destino neste tick.
     pub fn update(&mut self, inputs: &[f32], dt: f32, t_ms: f32) -> Vec<bool> {
         let esc = self.escala_camada;
-        self.neuronios.iter_mut().enumerate().map(|(i, n)| {
-            n.update(inputs.get(i).copied().unwrap_or(0.0), dt, t_ms, esc)
-        }).collect()
+        let n = self.neuronios.len();
+
+        // Calcula correntes laterais a partir dos spikes do tick anterior
+        let mut lateral_current = vec![0.0f32; n];
+        if !self.lateral_w.is_empty() {
+            for (from, neighbors) in self.lateral_w.iter().enumerate() {
+                if self.prev_spikes.get(from).copied().unwrap_or(false) {
+                    for &(to, w) in neighbors {
+                        if to < n { lateral_current[to] += w; }
+                    }
+                }
+            }
+        }
+
+        // Atualiza neurônios com input externo + lateral
+        let spikes: Vec<bool> = self.neuronios.iter_mut().enumerate().map(|(i, n_)| {
+            let ext = inputs.get(i).copied().unwrap_or(0.0);
+            let lat = lateral_current.get(i).copied().unwrap_or(0.0);
+            n_.update(ext + lat, dt, t_ms, esc)
+        }).collect();
+
+        // Salva spikes para o próximo tick
+        if self.prev_spikes.len() != n { self.prev_spikes = vec![false; n]; }
+        self.prev_spikes.copy_from_slice(&spikes);
+
+        spikes
     }
 
     /// Versão com compressão SalientPoint. Assinatura idêntica à V2.1.

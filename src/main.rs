@@ -47,14 +47,17 @@ use crate::websocket::bridge::{BrainState, NeuralStatus};
 
 // Imports dos lobos
 use brain_zones::{
-    frontal::FrontalLobe, 
-    occipital::OccipitalLobe, 
+    frontal::FrontalLobe,
+    occipital::OccipitalLobe,
     parietal::ParietalLobe,
-    temporal::TemporalLobe, 
-    limbic::LimbicSystem, 
+    temporal::TemporalLobe,
+    limbic::LimbicSystem,
     hippocampus::HippocampusV2 as Hippocampus,
     corpus_callosum::CorpusCallosum,
+    cerebellum::Cerebellum,
 };
+// Q-Learning TD-lambda
+use learning::rl::ReinforcementLearning;
 
 // Imports dos novos módulos
 use compressor::salient::SalientCompressor;
@@ -286,6 +289,13 @@ async fn async_main() {
     let mut frontal = FrontalLobe::new(n_neurons, 0.2, 0.1, &config);
     let mut corpus_callosum = CorpusCallosum::new(10.0, 8);
 
+    // --- 8b. CEREBELO E RL ---
+    println!("🏃 Inicializando Cerebelo e Aprendizado por Reforço...");
+    // Cerebelo: n_purkinje = n/4, n_granular = n/2 (relação biologica ~200:1 granular/purkinje)
+    let mut cerebelo = Cerebellum::new(n_neurons / 4, n_neurons / 2, &config);
+    // RL: Q-Learning TD(lambda) — aprende valor de estados via dopamina como sinal de recompensa
+    let mut rl = ReinforcementLearning::new();
+
     // --- 9. INSTANCIAÇÃO DOS NOVOS MÓDULOS ---
     println!("🌱 Inicializando módulos avançados...");
     let mut ego = Ego::carregar_ou_criar("Selene");
@@ -394,6 +404,26 @@ async fn async_main() {
 
         // B. Bioquímica
         neuro.update(&mut *sensor.lock().await, &config);
+
+        // B1. Neuromodulação global — propaga dopamina/serotonina/cortisol para TODOS os lobos.
+        // Agora afeta neurônios Izhikevich puro (RS/IB/CH/FS/LT) via threshold adaptivo,
+        // além de TC/RZ (HH) que já recebiam modulação de condutâncias.
+        // Aplicado a cada 5 ticks para evitar overhead desnecessário a 200Hz.
+        if step % 5 == 0 {
+            let (da, ser, cor) = (neuro.dopamine, neuro.serotonin, neuro.cortisol);
+            occipital.v1_primary_layer.modular_neuro(da, ser, cor);
+            occipital.v2_feature_layer.modular_neuro(da, ser, cor);
+            temporal.recognition_layer.modular_neuro(da, ser, cor);
+            frontal.executive_layer.modular_neuro(da, ser, cor);
+            frontal.inhibitory_layer.modular_neuro(da, ser, cor);
+            limbic.amygdala.modular_neuro(da, ser, cor);
+            limbic.nucleus_accumbens.modular_neuro(da, ser, cor);
+            hippocampus.ca1_encoding.modular_neuro(da, ser, cor);
+            hippocampus.ca3_recurrent.modular_neuro(da, ser, cor);
+            parietal.integration_layer.modular_neuro(da, ser, cor);
+            cerebelo.purkinje_layer.modular_neuro(da, ser, cor);
+            cerebelo.granular_layer.modular_neuro(da, ser, cor);
+        }
 
         // C. Filtragem sensorial
         let raw_retina = rx_vision.try_recv().unwrap_or_else(|_| vec![0.0f32; n_neurons]);
@@ -511,6 +541,28 @@ async fn async_main() {
         frontal.set_dopamine(neuro.dopamine + emotion);
         let action = frontal.decide(&recognized, &internal_goal, dt, current_time, &config);
 
+        // F2. CEREBELO — timing e aprendizado por erro motor/articulatório.
+        // Sinal de erro = diferença entre intenção frontal e reconhecimento temporal.
+        // Fibras trepadeiras (erro) deprimem Purkinje via LTD cerebelar.
+        // Output inibitório cerebelar refina a precisão do loop motor.
+        let climbing_error: Vec<f32> = action.iter().zip(recognized.iter())
+            .map(|(a, r)| (a - r).clamp(-1.0, 1.0))
+            .collect();
+        let _cerebelo_out = cerebelo.compute_motor_output(
+            &recognized, &climbing_error, dt, current_time, &config
+        );
+
+        // F3. RL — Q-Learning TD(lambda) com sinal dopaminérgico como recompensa.
+        // RPE > 0: situação melhor que o previsto → dopamina sobe levemente
+        // RPE < 0: situação pior que o previsto  → dopamina cai levemente
+        // Feedback de 4%: pequeno o suficiente para não desestabilizar, grande o bastante
+        // para criar associações temporais entre estados e recompensas.
+        {
+            let action_scalar = action.iter().sum::<f32>() / action.len().max(1) as f32;
+            let rl_rpe = rl.update(&recognized, neuro.dopamine, action_scalar, &config);
+            neuro.dopamine = (neuro.dopamine + rl_rpe * 0.04).clamp(0.0, 2.0);
+        }
+
         // ── FASE 1d: Onda dominante → profundidade da caminhada no grafo ──────
         // Derivado do estado neurológico atual — a onda modula quantos passos
         // o graph-walk percorre, refletindo o estado atencional:
@@ -612,6 +664,9 @@ async fn async_main() {
             );
             println!("   🔤 {} | Freq: {}Hz | Atividade: {:.3}",
                 chunk_stats, freq_hz, atividade_recente
+            );
+            println!("   🎯 RL: {} | Cerebelo LTD: {:.3}",
+                rl, cerebelo.ltd_factor.iter().sum::<f32>() / cerebelo.ltd_factor.len().max(1) as f32
             );
         }
 

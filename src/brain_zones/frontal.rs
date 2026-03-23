@@ -50,13 +50,16 @@ impl FrontalLobe {
         // Escala para correntes típicas do frontal (~50pA)
         let escala = 50.0 / 127.0;
 
-        let executive_layer = CamadaHibrida::new(
+        let mut executive_layer = CamadaHibrida::new(
             n_executive, "frontal_exec",
             TipoNeuronal::RS,
             Some((TipoNeuronal::FS, 0.20)), // 20% FS para inibição lateral
             Some(exec_dist),
             escala,
         );
+        // Lateral inhibition: cada FS inibe 6 RS vizinhos (winner-take-all para decisão)
+        executive_layer.init_lateral_inhibition(6, 3.5);
+
         let inhibitory_layer = CamadaHibrida::new(
             n_inhib, "frontal_inhib",
             TipoNeuronal::FS, // 100% Fast Spiking GABAérgico

@@ -29,13 +29,23 @@ impl ParietalLobe {
         ];
         let escala = 40.0 / 127.0;
 
-        let integration = CamadaHibrida::new(
+        let mut integration = CamadaHibrida::new(
             n_neurons, "parietal_integ",
             TipoNeuronal::RS,
             Some((TipoNeuronal::LT, 0.20)), // LT para atenção de baixo limiar
             Some(dist),
             escala,
         );
+        // Converte os últimos 10% (de LT) para FS:
+        // interneurônios inibitórios que implementam supressão lateral em atenção espacial
+        // (winner-take-all para foco atencional).
+        let n_par = integration.neuronios.len();
+        let fs_start_par = (n_par as f32 * 0.90) as usize;
+        for nr in &mut integration.neuronios[fs_start_par..] {
+            nr.tipo = TipoNeuronal::FS;
+            nr.threshold = 25.0;
+        }
+        integration.init_lateral_inhibition(4, 2.0); // supressão leve para foco atencional
 
         let mut rng = thread_rng();
         let spatial: Vec<f32>  = (0..n_neurons).map(|_| rng.gen_range(0.0..0.2)).collect();
