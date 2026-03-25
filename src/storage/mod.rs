@@ -185,10 +185,32 @@ impl BrainStorage {
     }
     
     pub async fn new() -> surrealdb::Result<Self> {
-        // Tenta abrir o RocksDB no seu NVMe
-        let db = Surreal::new::<RocksDb>("selene_memories.db").await?;
+        const DB_PATH: &str = "selene_memories.db";
+
+        match Self::try_open(DB_PATH).await {
+            Ok(s) => {
+                log::info!("Banco de memoria carregado com sucesso.");
+                Ok(s)
+            }
+            Err(e) => {
+                // Banco corrompido (timestamps futuros por drift de relogio, crash, etc.)
+                // Preserva o banco antigo e inicia com um banco limpo.
+                log::warn!("Banco corrompido ({}). Preservando backup e recriando...", e);
+                let bkp = format!(
+                    "selene_memories_bkp_{}.db",
+                    chrono::Utc::now().format("%Y%m%d_%H%M%S")
+                );
+                let _ = std::fs::rename(DB_PATH, &bkp);
+                log::info!("Banco antigo preservado em: {}", bkp);
+                Self::try_open(DB_PATH).await
+            }
+        }
+    }
+
+    async fn try_open(path: &str) -> surrealdb::Result<Self> {
+        let db = Surreal::new::<RocksDb>(path).await?;
         db.use_ns("selene_project").use_db("brain_v1").await?;
-        
+
         // Índices vetoriais MTREE para recall por similaridade (spike bits)
         let _ = db.query("DEFINE INDEX vis_idx ON TABLE memories FIELDS visual_spikes MTREE DIST COSINE;").await;
         let _ = db.query("DEFINE INDEX aud_idx ON TABLE memories FIELDS auditory_spikes MTREE DIST COSINE;").await;
@@ -198,7 +220,23 @@ impl BrainStorage {
         // Índices de navegação sináptica
         let _ = db.query("DEFINE INDEX conexoes_origem  ON TABLE conexoes FIELDS de_neuronio;").await;
         let _ = db.query("DEFINE INDEX conexoes_destino ON TABLE conexoes FIELDS para_neuronio;").await;
-        
+
+        // Health-check: verifica se o MVCC consegue processar uma escrita.
+        // Detecta o erro "ts is less than or equal to the latest ts" do NodeAgent do SurrealDB
+        // que ocorre quando o relógio do sistema recuou desde a última sessão.
+        let hc: surrealdb::Result<Vec<serde_json::Value>> = db
+            .create("_healthcheck")
+            .content(serde_json::json!({ "ok": true }))
+            .await;
+        if let Err(ref e) = hc {
+            let msg = e.to_string();
+            if msg.contains("ts is less than or equal") || msg.contains("timestamp") {
+                return Err(hc.unwrap_err());
+            }
+        }
+        // Limpa o registro de health-check (melhor esforço)
+        let _ = db.query("DELETE _healthcheck").await;
+
         Ok(Self {
             db,
             conexoes_ativas: HashMap::new(),

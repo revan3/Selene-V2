@@ -130,6 +130,16 @@ fn calcular_max_neurons() -> usize {
 // ================== FUNÇÃO PRINCIPAL ==================
 fn main() {
     // 1. Inicializa o Sistema de Logs
+    let term_config = ConfigBuilder::new()
+        .add_filter_ignore_str("surrealdb")
+        .add_filter_ignore_str("surrealdb_core")
+        .add_filter_ignore_str("kvs")
+        .add_filter_ignore_str("hyper")
+        .add_filter_ignore_str("warp")
+        .add_filter_ignore_str("tungstenite")
+        .add_filter_ignore_str("tracing")
+        .build();
+
     let debug_config = ConfigBuilder::new()
         .add_filter_ignore_str("hyper")
         .add_filter_ignore_str("warp")
@@ -143,7 +153,7 @@ fn main() {
 
     let _ = CombinedLogger::init(
         vec![
-            TermLogger::new(LevelFilter::Info, ConfigBuilder::new().build(), TerminalMode::Mixed, ColorChoice::Auto),
+            TermLogger::new(LevelFilter::Info, term_config, TerminalMode::Mixed, ColorChoice::Auto),
             WriteLogger::new(LevelFilter::Debug, debug_config, File::create("selene_debug.log").unwrap()),
         ]
     );
@@ -443,11 +453,26 @@ async fn async_main() {
 
         // B2. Metacognição ativa — retroalimenta o sistema com base no estado observado
         let meta_feedback = {
-            let n_vocab_proxy = 100usize; // proxy — seria state.grafo.len() mas está em Arc
-            metacognitive.observe(neuro.noradrenaline, atividade_recente, n_vocab_proxy);
+            let n_vocab = brain_state.try_lock()
+                .map(|s| s.palavra_valencias.len()).unwrap_or(100);
+            metacognitive.observe(neuro.noradrenaline, atividade_recente, n_vocab);
             metacognitive.retroalimentar()
         };
-        // Aplica feedback da metacognição: idle → sinaliza replay hippocampal
+
+        // Aplica ganho_frontal: escala o sinal dopaminérgico do frontal.
+        // Alta confusão → mais dopamina no frontal → foco executivo reforçado.
+        neuro.dopamine = (neuro.dopamine * meta_feedback.ganho_frontal).clamp(0.0, 2.0);
+
+        // Aplica threshold_offset nas projeções inter-lobe via cortisol proxy.
+        // threshold_offset < 0 (self_awareness alta) → cortisol menor → neurônios mais sensíveis.
+        // threshold_offset > 0 (baixa awareness) → cortisol maior → filtra ruído.
+        let cortisol_ajustado = (neuro.cortisol - meta_feedback.threshold_offset * 0.1).clamp(0.0, 2.0);
+
+        // Aplica plasticidade_mod ao STDP inter-lobe: baixa estabilidade → menos plasticidade.
+        // Isso evita que Selene "aprenda errado" quando está confusa/instável.
+        brain_conn.modular_all(neuro.dopamine, cortisol_ajustado * (2.0 - meta_feedback.plasticidade_mod));
+
+        // Sinaliza replay hippocampal quando idle e foco está no hipocampo
         let idle_replay_agora = meta_feedback.habilitar_replay && atividade_recente < 0.005;
 
         // C. Filtragem sensorial
@@ -534,6 +559,46 @@ async fn async_main() {
                 for c in &novos_chunks {
                     log::info!("🔤 Chunk emergido: {:?} '{}' (força={:.2}, valence={:.2})",
                         c.tipo, c.simbolo, c.forca_stdp, c.valence);
+                    // Fix 5a: Persiste chunk no grafo neural (fire-and-forget, não bloqueia o loop)
+                    let conexao = c.para_conexao_sinaptica();
+                    let grafo_clone = Arc::clone(&grafo_sinaptico);
+                    tokio::spawn(async move {
+                        grafo_clone.lock().await.criar_conexao(conexao).await;
+                    });
+                }
+                // Fix 5b: Propaga chunks ao BrainState — contexto neural + valência no vocabulário.
+                // IMPORTANTE: símbolos "chunk_X_Y_Z" são placeholders neurais sem valor semântico.
+                // Filtramos esses e usamos o chunk apenas para reforçar palavras JÁ no contexto
+                // (via valência emergente), criando um binding neuron-pattern → word real.
+                if let Ok(mut bs) = brain_state.try_lock() {
+                    for c in &novos_chunks {
+                        let eh_placeholder = c.simbolo.starts_with("chunk_")
+                            || c.simbolo.contains('_');
+                        if eh_placeholder {
+                            // Chunk sem símbolo real: usa valência para reforçar palavras
+                            // do contexto atual que já têm entrada no vocabulário.
+                            // Isso cria o binding neuron-pattern → word de forma emergente.
+                            let palavras_ativas: Vec<String> = bs.neural_context.iter()
+                                .filter(|w| bs.palavra_valencias.contains_key(w.as_str()))
+                                .cloned()
+                                .collect();
+                            for palavra in palavras_ativas.iter().take(3) {
+                                let val_atual = bs.palavra_valencias.get(palavra).copied().unwrap_or(0.0);
+                                let val_nova = val_atual * 0.90 + c.valence * 0.10;
+                                bs.palavra_valencias.insert(palavra.clone(), val_nova);
+                            }
+                        } else {
+                            // Símbolo real (mapeado futuramente a letra/sílaba/palavra):
+                            // injeta diretamente no contexto e vocabulário
+                            bs.neural_context.push_back(c.simbolo.clone());
+                            let val_atual = bs.palavra_valencias.get(&c.simbolo).copied().unwrap_or(0.0);
+                            let val_nova = val_atual * 0.85 + c.valence * 0.15;
+                            bs.palavra_valencias.insert(c.simbolo.clone(), val_nova);
+                        }
+                    }
+                    while bs.neural_context.len() > 20 {
+                        bs.neural_context.pop_front();
+                    }
                 }
             }
         }
@@ -557,9 +622,38 @@ async fn async_main() {
         // episódica. Conexões geradas são propagadas ao grafo de associações via
         // brain_state quando o chunk acompanhou emoção forte.
         if emotion.abs() >= 0.35 {
-            let (hippo_out, _conexoes_hippo) = hippocampus.memorize_with_connections(
+            let (hippo_out, conexoes_hippo) = hippocampus.memorize_with_connections(
                 &recognized, emotion, dt, current_time, &config,
             );
+            // Fix 1: Consolida memória no grafo de linguagem.
+            // O hipocampo sinaliza que AGORA é um momento emocionalmente saliente.
+            // Os chunks ativos em neural_context são os "elementos da experiência".
+            // Reforçamos as associações entre eles — conceitos co-ativos durante emoção
+            // ficam mais fortemente ligados, exatamente como na memória episódica real.
+            if !conexoes_hippo.is_empty() {
+                if let Ok(mut bs) = brain_state.try_lock() {
+                    let ctx: Vec<String> = bs.neural_context.iter().cloned().collect();
+                    let peso_reforco = (emotion.abs() * 0.06).clamp(0.01, 0.15);
+                    for i in 0..ctx.len().min(6) {
+                        for j in (i + 1)..ctx.len().min(6) {
+                            // Reforça a→b
+                            let entry_ab = bs.grafo_associacoes.entry(ctx[i].clone()).or_insert_with(Vec::new);
+                            if let Some(p) = entry_ab.iter_mut().find(|(w, _)| w == &ctx[j]) {
+                                p.1 = (p.1 + peso_reforco).min(1.0);
+                            } else if entry_ab.len() < 50 {
+                                entry_ab.push((ctx[j].clone(), peso_reforco));
+                            }
+                            // Reforça b→a
+                            let entry_ba = bs.grafo_associacoes.entry(ctx[j].clone()).or_insert_with(Vec::new);
+                            if let Some(p) = entry_ba.iter_mut().find(|(w, _)| w == &ctx[i]) {
+                                p.1 = (p.1 + peso_reforco).min(1.0);
+                            } else if entry_ba.len() < 50 {
+                                entry_ba.push((ctx[i].clone(), peso_reforco));
+                            }
+                        }
+                    }
+                }
+            }
 
             // ── FASE 1c: Saída do hipocampo → canal de imaginação mental ─────
             // Quando a emoção é intensa (≥ 0.6), o padrão hipocampal é enviado de
@@ -611,6 +705,10 @@ async fn async_main() {
             let action_scalar = action.iter().sum::<f32>() / action.len().max(1) as f32;
             let rl_rpe = rl.update(&recognized, neuro.dopamine, action_scalar, &config);
             neuro.dopamine = (neuro.dopamine + rl_rpe * 0.04).clamp(0.0, 2.0);
+            // Fix 7: Thalamus aprende a filtrar com base no erro do RL.
+            // RPE positivo (recompensa inesperada) → abre o filtro (mais sensível).
+            // RPE negativo (punição) → fecha o filtro (filtra ruído para focar).
+            thalamus.adapt_filter(rl_rpe * 0.1);
             rl_save_counter += 1;
             // Salva Q-table a cada ~60s (12000 ticks @ 200Hz)
             if rl_save_counter >= 12000 {
@@ -661,8 +759,16 @@ async fn async_main() {
 
         // G. Núcleos da Base
         basal_ganglia.update_habits(&vision_full, &action, emotion);
-        if let Some(_habit_action) = basal_ganglia.suggest_action(&vision_full) {
-            log::info!("🔄 Hábito detectado");
+        // Fix 4: hábito sugerido → frontal.planejar() com prioridade proporcional à força
+        // Os núcleos da base agora influenciam decisões do frontal: comportamentos
+        // reforçados no passado (alta recompensa) entram como goals de alta prioridade.
+        if let Some(habit_action) = basal_ganglia.suggest_action(&vision_full) {
+            let prioridade = basal_ganglia.habitos.iter()
+                .map(|h| h.forca)
+                .fold(0.0f32, f32::max)
+                .clamp(0.3, 0.9);
+            frontal.planejar(habit_action, prioridade, "habito_basal");
+            log::debug!("🔄 Hábito → frontal goal (prioridade={:.2})", prioridade);
         }
 
         // G1. Propaga RPE (sinal dopaminérgico) para reforçar/enfraquecer chunks recentes
@@ -671,13 +777,42 @@ async fn async_main() {
             chunking.aplicar_rpe(rpe);
         }
 
-        // H. Comunicação entre hemisférios
-        if step % 100 == 0 {
-            let spikes_esquerdo = vec![true; n_neurons / 10];
-            corpus_callosum.send_to_right(0, spikes_esquerdo, current_time);
+        // H. Comunicação entre hemisférios — dados reais de spikes
+        // Hemisfério esquerdo (temporal/linguagem) → direito (parietal/espacial)
+        // Hemisfério direito (parietal/visual) → esquerdo (frontal/execução)
+        if step % 50 == 0 {
+            // Esquerdo → Direito: padrão temporal (linguagem/reconhecimento)
+            let spikes_temporal: Vec<bool> = temporal.recognition_layer.neuronios.iter()
+                .take(n_neurons / 10)
+                .map(|n| n.last_spike_ms > 0.0 && n.last_spike_ms >= (current_time * 1000.0) - 50.0)
+                .collect();
+            corpus_callosum.send_to_right(0, spikes_temporal, current_time);
+
+            // Direito → Esquerdo: padrão parietal (atenção espacial)
+            let spikes_parietal: Vec<bool> = parietal.integration_layer.neuronios.iter()
+                .take(n_neurons / 10)
+                .map(|n| n.last_spike_ms > 0.0 && n.last_spike_ms >= (current_time * 1000.0) - 50.0)
+                .collect();
+            corpus_callosum.send_to_left(0, spikes_parietal, current_time);
         }
-        if let Some(spikes) = corpus_callosum.receive_at_right(0, current_time) {
-            log::debug!("🔗 Caloso sync: {} spikes", spikes.len());
+        // Frontal recebe o padrão vindo do hemisfério direito (atenção espacial → decisão)
+        if let Some(spikes_parietal_echo) = corpus_callosum.receive_at_left(0, current_time) {
+            // Converte spikes booleanos em corrente contínua e injeta no frontal
+            let corrente_calosa: Vec<f32> = spikes_parietal_echo.iter()
+                .map(|&s| if s { 0.15 } else { 0.0 })
+                .collect();
+            // Adiciona como bias ao working_memory_trace do frontal
+            let wm_len = frontal.working_memory_trace.len();
+            for (i, &c) in corrente_calosa.iter().enumerate() {
+                if i < wm_len {
+                    frontal.working_memory_trace[i] = (frontal.working_memory_trace[i] + c).clamp(0.0, 1.0);
+                }
+            }
+        }
+        // Parietal recebe o padrão do hemisfério esquerdo (linguagem → atenção espacial)
+        if let Some(spikes_temporal_echo) = corpus_callosum.receive_at_right(0, current_time) {
+            let n_spikes_ativos = spikes_temporal_echo.iter().filter(|&&s| s).count();
+            log::debug!("🔗 Caloso T→P: {} spikes ativos cruzando", n_spikes_ativos);
         }
 
         // I. Memória
@@ -709,6 +844,49 @@ async fn async_main() {
                 brain_guard.ego.pensamentos_recentes.push_back(pensamento);
                 if brain_guard.ego.pensamentos_recentes.len() > 10 {
                     brain_guard.ego.pensamentos_recentes.pop_front();
+                }
+            }
+        }
+        // Fix 6: Propaga estado da WM + goal do frontal ao neural_context.
+        // O que o frontal está "segurando" na working memory e planejando
+        // agora influencia o tema da linguagem. Executa a cada 200 ticks (~1s)
+        // para não sobrecarregar o neural_context com dados de WM a cada tick.
+        if step % 200 == 0 {
+            // Goal atual: palavras da descrição viram sementes de tópico
+            if let Some(goal) = frontal.goal_queue.front() {
+                if !goal.descricao.is_empty() {
+                    if let Ok(mut bs) = brain_state.try_lock() {
+                        for palavra in goal.descricao.split_whitespace() {
+                            let p = palavra.to_lowercase();
+                            if p.len() > 2 && !bs.neural_context.contains(&p) {
+                                bs.neural_context.push_back(p);
+                            }
+                        }
+                        while bs.neural_context.len() > 20 {
+                            bs.neural_context.pop_front();
+                        }
+                    }
+                }
+            }
+            // WM slots ativos: slots com alta saliência sinalizam foco atual do frontal.
+            // Usamos a saliência como indicador: slot muito saliente → frontal focado nisso.
+            // O padrão médio > 0.3 indica ativação real (não ruído de baseline).
+            let wm_snap = frontal.wm_snapshots();
+            let wm_ativo = wm_snap.iter().any(|(sal, med)| *sal > 0.5 && *med > 0.3);
+            if wm_ativo {
+                if let Ok(mut bs) = brain_state.try_lock() {
+                    // Marca que o frontal tem foco ativo — reforça palavras já no contexto
+                    // (aumenta a saliência das que já estão, em vez de adicionar ruído novo)
+                    let boost: Vec<String> = bs.neural_context.iter()
+                        .filter(|w| bs.grafo_associacoes.contains_key(w.as_str()))
+                        .cloned()
+                        .collect();
+                    for w in boost {
+                        bs.neural_context.push_back(w);
+                    }
+                    while bs.neural_context.len() > 20 {
+                        bs.neural_context.pop_front();
+                    }
                 }
             }
         }

@@ -138,6 +138,12 @@ pub struct BrainState {
     /// Pares de palavras co-ocorridas com valência emocional forte.
     /// Durante a fase REM, essas associações são re-fortalecidas no grafo.
     pub historico_episodico: VecDeque<(String, String, f32)>,
+    /// Contexto neural em tempo real: palavras/símbolos que o cérebro neural está
+    /// processando agora (chunks temporais emergentes + goal atual do frontal).
+    /// Preenchido pelo loop neural (main.rs) a cada tick com novos_chunks.simbolo
+    /// e frontal.goal_queue. Consultado pela linguagem como semente de tópico adicional.
+    /// Máximo 20 entradas — janela deslizante dos últimos ~100ms de atividade.
+    pub neural_context: VecDeque<String>,
     /// Córtex occipital — processa frames visuais da webcam/screen share do browser.
     /// Aplica detecção de movimento (flicker_buffer), contraste e orientação (V1→V2)
     /// antes de gerar o spike pattern que vai para spike_vocab.
@@ -315,6 +321,7 @@ impl BrainState {
             fase_sono: String::new(),
             emocao_palavras: HashMap::new(),
             historico_episodico: VecDeque::with_capacity(500),
+            neural_context: VecDeque::with_capacity(20),
             // 512 neurônios = 70% V1 (358) + 30% V2 (154) — coincide com 32×16 pixels do browser
             occipital: OccipitalLobe::new(512, 0.2, cfg),
             visual_time: 0.0,

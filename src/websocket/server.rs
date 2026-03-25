@@ -56,17 +56,17 @@ fn gerar_resposta_emergente(
         .map(|t| t.to_string())
         .collect();
 
-    // Contexto multi-turno: só enriquece o tópico quando o input atual NÃO tem palavras
-    // conhecidas próprias (query genérica como "me conta mais"). Se o input já tem tema
-    // próprio, o contexto anterior NÃO é adicionado — isso preserva a diversidade de
-    // respostas para queries focadas (e evita regressão no Suite 5).
-    let topico: std::collections::HashSet<String> = if topico_input.is_empty() {
-        contexto_extra.iter()
-            .filter(|t| grafo.contains_key(t.as_str()) || valencias.contains_key(t.as_str()))
-            .cloned()
-            .collect()
-    } else {
-        topico_input
+    // Contexto multi-turno: sempre mescla palavras do input atual com palavras dos turnos
+    // anteriores. O contexto anterior enriquece o tópico sem substituir o input — garante
+    // que Selene mantenha coerência temática entre turnos consecutivos.
+    let topico: std::collections::HashSet<String> = {
+        let mut t = topico_input;
+        t.extend(
+            contexto_extra.iter()
+                .filter(|w| grafo.contains_key(w.as_str()) || valencias.contains_key(w.as_str()))
+                .cloned()
+        );
+        t
     };
 
     // 1. Palavra-âncora: token do input com MAIS conexões no grafo
@@ -135,9 +135,21 @@ fn gerar_resposta_emergente(
         None => return String::new(), // vocabulário existe mas nada compatível com o input
     };
 
-    let mut cadeia: Vec<String> = prefixo;
-    let mut atual = inicio;
+    // Inicializa cadeia com o prefixo. Para coerência gramatical, o walk CONTINUA
+    // a partir da última palavra do template — não de uma âncora desconectada.
+    // Palavras do prefixo (exceto a última) são pré-visitadas para não reaparecerem.
     let mut visitados: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let prefixo_last: Option<String> = prefixo.last().cloned();
+    let mut cadeia: Vec<String> = if prefixo.len() > 1 {
+        for w in &prefixo[..prefixo.len() - 1] {
+            visitados.insert(w.clone());
+        }
+        prefixo[..prefixo.len() - 1].to_vec()
+    } else {
+        Vec::new() // a última palavra (ou única) entra pelo loop
+    };
+    // Walk começa da última palavra do prefixo se disponível, senão da âncora semântica
+    let mut atual = prefixo_last.unwrap_or(inicio);
 
     // Coerência sintática: pré-computa quais (word_a, word_b) → word_c aparecem nas frases_padrao.
     // Durante o walk, damos bonus de score quando a próxima palavra segue um trigrama conhecido.
@@ -230,32 +242,13 @@ fn gerar_resposta_emergente(
                     caminho_out.push(atual.clone()); // registra aresta atual→prox
                     atual = entry.0.clone();
                 }
-                None => {
-                    if let Some((w, _)) = valencias.iter()
-                        .filter(|(w, _)| !visitados.contains(*w))
-                        .min_by(|(_, v1), (_, v2)| {
-                            (*v1 - emocao).abs().partial_cmp(&(*v2 - emocao).abs())
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                    {
-                        atual = w.clone();
-                    } else {
-                        break;
-                    }
-                }
+                // Sem vizinhos disponíveis: para o walk aqui.
+                // Não pula para palavra aleatória — evita deriva semântica.
+                None => break,
             }
         } else {
-            if let Some((w, _)) = valencias.iter()
-                .filter(|(w, _)| !visitados.contains(*w))
-                .min_by(|(_, v1), (_, v2)| {
-                    (*v1 - emocao).abs().partial_cmp(&(*v2 - emocao).abs())
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-            {
-                atual = w.clone();
-            } else {
-                break;
-            }
+            // Palavra sem arestas no grafo: encerra o walk.
+            break;
         }
     }
 
@@ -558,7 +551,8 @@ pub async fn handle_connection(
 
     // Buffer de contexto de conversa multi-turno (local por cliente).
     // Acumula palavras-chave das últimas respostas para manter coerência temática.
-    let mut conversa_ctx: Vec<String> = Vec::with_capacity(30);
+    // 150 palavras ≈ ~10-15 turnos de conversa retidos como contexto ativo.
+    let mut conversa_ctx: Vec<String> = Vec::with_capacity(150);
 
     // ── SONO NOTURNO (00:00 – 05:00) ─────────────────────────────────────────
     // Canal para enviar eventos de sono ao WebSocket sem mover ws_tx para a task.
@@ -824,7 +818,14 @@ pub async fn handle_connection(
                                             &state.palavra_valencias,
                                             &state.grafo_associacoes,
                                             &state.frases_padrao,
-                                            &conversa_ctx,
+                                            // Contexto = histórico da conversa + contexto neural em tempo real.
+                                            // O neural_context traz o que o cérebro está "pensando agora"
+                                            // (chunks temporais + goals do frontal) como sementes de tópico.
+                                            &{
+                                                let mut ctx = conversa_ctx.clone();
+                                                ctx.extend(state.neural_context.iter().cloned());
+                                                ctx
+                                            },
                                             &mut caminho_local,
                                             &state.emocao_palavras,
                                         );
@@ -945,8 +946,8 @@ pub async fn handle_connection(
 
                                         // Atualiza buffer de conversa multi-turno (contexto local por cliente)
                                         conversa_ctx.extend(reply_words);
-                                        if conversa_ctx.len() > 30 {
-                                            conversa_ctx.drain(0..conversa_ctx.len() - 20);
+                                        if conversa_ctx.len() > 150 {
+                                            conversa_ctx.drain(0..conversa_ctx.len() - 120);
                                         }
 
                                         // Persiste traços e pensamentos (fire-and-forget)

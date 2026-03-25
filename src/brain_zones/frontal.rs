@@ -302,6 +302,20 @@ impl FrontalLobe {
         self.wm_slots.iter().filter(|s| s.ativo).count()
     }
 
+    /// Retorna os padrões de ativação média dos slots de WM ativos.
+    /// Cada slot ativo contribui com sua saliência e padrão normalizado.
+    /// Usado pelo neural_context para expor o que o frontal está "pensando".
+    /// Retorna Vec de (saliência, padrão_resumo) para os slots mais salientes.
+    pub fn wm_snapshots(&self) -> Vec<(f32, f32)> {
+        self.wm_slots.iter()
+            .filter(|s| s.ativo)
+            .map(|s| {
+                let media = s.padrao.iter().sum::<f32>() / s.padrao.len().max(1) as f32;
+                (s.saliencia, media)
+            })
+            .collect()
+    }
+
     pub fn estatisticas(&self) -> FrontalStats {
         FrontalStats {
             executive:  self.executive_layer.estatisticas(),

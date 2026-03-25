@@ -1,9 +1,0 @@
-========================================
-🧠 SELENE BRAIN CRASH REPORT
-========================================
-Data/Hora: Instant { t: 118611.1723309s }
-Erro: internal error: entered unreachable code: TC/RZ garantem ParametrosHH
-Local: src\synaptic_core.rs:612
-
-Possível causa: Verifique se o arquivo NVME ou o Banco de Dados está acessível.
-========================================

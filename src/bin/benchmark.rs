@@ -65,9 +65,11 @@ fn bench_chunk_detection(n: usize) -> (u64, Duration) {
 
     for tick in 0u64.. {
         let t_ms = tick as f32 * dt * 1000.0;
-        // Injeta sinal forte nos neurônios do padrão
+        // Injeta sinal forte nos neurônios do padrão.
+        // RS neurons precisam de I > 3.5 para disparar de forma confiável
+        // com dt=0.005s. Input 2.0 ficava no ponto de equilíbrio sem disparar.
         let mut input = vec![0.0f32; n];
-        for &idx in &padrao { input[idx] = 2.0; }
+        for &idx in &padrao { input[idx] = 8.0; }
         let spikes_raw = camada.update(&input, dt, t_ms);
         let novos = engine.registrar_spikes(&spikes_raw, &camada, 0.5, t_ms);
         if !novos.is_empty() {
@@ -91,7 +93,7 @@ fn bench_rpe_convergence(n: usize) -> (f32, f32) {
     for tick in 0u64..10_000 {
         let t_ms = tick as f32 * dt * 1000.0;
         let mut input = vec![0.0f32; n];
-        for &idx in &padrao { input[idx] = 2.0; }
+        for &idx in &padrao { input[idx] = 8.0; }
         let spikes_raw = camada.update(&input, dt, t_ms);
         engine.registrar_spikes(&spikes_raw, &camada, 0.5, t_ms);
     }

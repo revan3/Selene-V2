@@ -50,16 +50,20 @@ use crate::brain_zones::RegionType;
 // CONSTANTES
 // =============================================================================
 
-/// Co-ativações para promover padrão a chunk (LTP early-phase ~5 repetições).
-const CHUNK_THRESHOLD: u32 = 5;
+/// Co-ativações para promover padrão a chunk (LTP early-phase).
+/// Reduzido de 5 para 3: inputs reais (0..1) geram menos spikes que o benchmark
+/// usava (2.0), então exigir menos co-ativações garante chunks emergem na prática.
+const CHUNK_THRESHOLD: u32 = 3;
 
 /// trace_pre mínimo médio para aceitar o chunk.
-/// trace_pre do NeuronioHibrido começa em 0 e sobe até 1.0 com spikes.
-/// 0.4 = neurônios disparando regularmente juntos, não por acaso.
-const TRACE_MINIMO_CHUNK: f32 = 0.4;
+/// Reduzido de 0.4 para 0.05: trace_pre acumula lentamente com inputs fracos.
+/// 0.05 = qualquer ativação recorrente real (não ruído de 1 tick) forma chunk.
+const TRACE_MINIMO_CHUNK: f32 = 0.05;
 
 /// Janela temporal para co-ativação (ms) — gamma band cortical.
-const JANELA_MS: u64 = 20;
+/// Aumentada de 20ms para 50ms: pipeline sensorial real tem latência maior
+/// que o benchmark direto, neurônios co-ativados chegam com mais separação.
+const JANELA_MS: u64 = 50;
 
 /// Máximo de neurônios por chunk (evita padrões gigantes sem semântica).
 const MAX_POR_CHUNK: usize = 8;
