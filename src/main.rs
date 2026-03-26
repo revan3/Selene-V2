@@ -784,6 +784,10 @@ async fn async_main() {
             if let Ok(mut bs) = brain_state.try_lock() {
                 bs.ultimo_rpe = rl_rpe;
             }
+            // DepthStack: atualiza atenção de abstração com base no RPE.
+            // RPE positivo → camadas mais abstratas (D2) ganham mais atenção.
+            // RPE negativo → sistema ancora no substrato bruto (D0).
+            temporal.apply_rpe(rl_rpe);
             rl_save_counter += 1;
             // Salva Q-table a cada ~60s (12000 ticks @ 200Hz)
             if rl_save_counter >= 12000 {
@@ -812,6 +816,15 @@ async fn async_main() {
         prev_frontal_rates[..a_len].copy_from_slice(&action[..a_len]);
         let l_len = (n_neurons / 2).min(cochlea_input.len());
         prev_limbic_rates[..l_len].copy_from_slice(&cochlea_input[..l_len]);
+        // Hippo rates: subsamplea temporal (proxy do output do hipocampo quando não rodou este tick)
+        // Quando hippocampus.memorize_with_connections() rodou, hippo_out está disponível localmente
+        // mas é scoped ao if-block acima. Aqui usamos temporal D1 como proxy inter-tick.
+        {
+            let h_len = prev_hippo_rates.len();
+            let d1 = &temporal.depth_stack.d1;
+            let src_len = d1.len().min(h_len);
+            prev_hippo_rates[..src_len].copy_from_slice(&d1[..src_len]);
+        }
 
         // ── FASE 1d: Onda dominante → profundidade da caminhada no grafo ──────
         // Derivado do estado neurológico atual — a onda modula quantos passos
@@ -1055,6 +1068,13 @@ async fn async_main() {
             );
             println!("   🔤 {} | Freq: {}Hz | Atividade: {:.3}",
                 chunk_stats, freq_hz, atividade_recente
+            );
+            let abs_level = temporal.depth_stack.abstraction_level();
+            let abs_str = if abs_level > 0.6 { "D2-abstrato" } else if abs_level > 0.35 { "D1-médio" } else { "D0-bruto" };
+            let hebb_ativos: usize = temporal.hebbian_traces.iter().filter(|&&t| t > 0.3).count();
+            println!("   🌀 DepthStack: {abs_str} ({abs_level:.2}) | Hebb ativos: {hebb_ativos} | Galaxy: {}/{}",
+                brain_conn.hippo_frontal.peso_medio.abs() > 0.05,
+                brain_conn.parietal_hippo.peso_medio.abs() > 0.05,
             );
             println!("   🎯 RL: {} | Cerebelo LTD: {:.3}",
                 rl, cerebelo.ltd_factor.iter().sum::<f32>() / cerebelo.ltd_factor.len().max(1) as f32

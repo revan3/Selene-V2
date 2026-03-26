@@ -12,6 +12,7 @@ pub mod hippocampus;
 pub mod cerebellum;
 pub mod corpus_callosum;
 pub mod mirror_neurons;
+pub mod depth_stack;
 
 // Re-exportações
 pub use frontal::FrontalLobe;

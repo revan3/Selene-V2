@@ -248,6 +248,16 @@ pub struct BrainConnections {
     pub frontal_limbic:     InterLobeProjection,
     // Parietal → Frontal (onde → o quê fazer)
     pub parietal_frontal:   InterLobeProjection,
+    // NOVA: Hippocampus → Frontal (pattern completion → WM gate / goal setting).
+    // O hipocampo completa padrões episódicos e os envia ao frontal para influenciar
+    // a working memory e a seleção de goals — memória de longo prazo alimenta decisão.
+    // Biologicamente: subículo CA1 → PFC via fibras de projeção direta.
+    pub hippo_frontal:      InterLobeProjection,
+    // NOVA: Parietal → Hippocampus (spatial context → episodic encoding).
+    // Onde algo aconteceu importa para a memória episódica. O mapa espacial parietal
+    // enriquece a codificação hipocampal com contexto de "onde" — como células de lugar.
+    // Biologicamente: córtex parietal posterior → córtex entorrinal → CA1/CA3.
+    pub parietal_hippo:     InterLobeProjection,
 }
 
 impl BrainConnections {
@@ -259,16 +269,19 @@ impl BrainConnections {
         // a camada de lobe tem N neurônios, então K=sqrt(N) é razoável.
         let k = ((n as f32).sqrt() as usize).max(4).min(64);
 
+        let k_half = k / 2; // projeções novas com menos conexões (n/2 destino)
         Self {
             v1_temporal:      InterLobeProjection::new(n, n, k, true,  "v1→temporal"),
             v1_parietal:      InterLobeProjection::new(n, n, k, true,  "v1→parietal"),
             temporal_frontal: InterLobeProjection::new(n, n, k, true,  "temporal→frontal"),
-            frontal_temporal: InterLobeProjection::new(n, n, k, false, "frontal→temporal"),  // inibitório (top-down suppression)
-            temporal_hippo:   InterLobeProjection::new(n, n, k, true,  "temporal→hippo"),
-            hippo_temporal:   InterLobeProjection::new(n, n, k, true,  "hippo→temporal"),
-            limbic_frontal:   InterLobeProjection::new(n, n, k, true,  "limbic→frontal"),
-            frontal_limbic:   InterLobeProjection::new(n, n, k, false, "frontal→limbic"),
+            frontal_temporal: InterLobeProjection::new(n, n, k, false, "frontal→temporal"),
+            temporal_hippo:   InterLobeProjection::new(n, n / 2, k_half, true, "temporal→hippo"),
+            hippo_temporal:   InterLobeProjection::new(n / 2, n, k_half, true, "hippo→temporal"),
+            limbic_frontal:   InterLobeProjection::new(n / 2, n, k_half, true, "limbic→frontal"),
+            frontal_limbic:   InterLobeProjection::new(n, n / 2, k_half, false,"frontal→limbic"),
             parietal_frontal: InterLobeProjection::new(n, n, k, true,  "parietal→frontal"),
+            hippo_frontal:    InterLobeProjection::new(n / 2, n, k_half, true, "hippo→frontal"),
+            parietal_hippo:   InterLobeProjection::new(n, n / 2, k_half, true, "parietal→hippo"),
         }
     }
 
@@ -287,22 +300,28 @@ impl BrainConnections {
         hippo_rates:    &[f32],
     ) -> InterLobeCurrents {
         InterLobeCurrents {
-            // Temporal recebe V1 (bottom-up) + hippo (recall) + frontal (top-down supressão)
+            // Temporal: V1 (bottom-up) + hippo (recall episódico) + frontal (top-down supressão)
             para_temporal: add_vecs(
                 &add_vecs(&self.v1_temporal.project(v1_rates), &self.hippo_temporal.project(hippo_rates)),
                 &self.frontal_temporal.project(frontal_rates),
             ),
-            // Parietal recebe V1 (onde)
+            // Parietal: V1 (onde o objeto está)
             para_parietal: self.v1_parietal.project(v1_rates),
-            // Frontal recebe temporal (o quê) + limbic (emoção) + parietal (onde)
+            // Frontal: temporal (o quê) + limbic (emoção) + parietal (onde) + hippo (memória episódica)
             para_frontal: add_vecs(
-                &add_vecs(&self.temporal_frontal.project(temporal_rates), &self.limbic_frontal.project(limbic_rates)),
-                &self.parietal_frontal.project(parietal_rates),
+                &add_vecs(
+                    &add_vecs(&self.temporal_frontal.project(temporal_rates), &self.limbic_frontal.project(limbic_rates)),
+                    &self.parietal_frontal.project(parietal_rates),
+                ),
+                &self.hippo_frontal.project(hippo_rates),
             ),
-            // Limbic recebe frontal (regulação top-down)
+            // Limbic: frontal (regulação top-down)
             para_limbic: self.frontal_limbic.project(frontal_rates),
-            // Hippo recebe temporal (codificação episódica)
-            para_hippo:  self.temporal_hippo.project(temporal_rates),
+            // Hippo: temporal (codificação episódica) + parietal (contexto espacial)
+            para_hippo: add_vecs(
+                &self.temporal_hippo.project(temporal_rates),
+                &self.parietal_hippo.project(parietal_rates),
+            ),
         }
     }
 
@@ -326,6 +345,8 @@ impl BrainConnections {
         self.limbic_frontal.stdp_update(limbic_rates, frontal_rates, dt_ms);
         self.frontal_limbic.stdp_update(frontal_rates, limbic_rates, dt_ms);
         self.parietal_frontal.stdp_update(parietal_rates, frontal_rates, dt_ms);
+        self.hippo_frontal.stdp_update(hippo_rates, frontal_rates, dt_ms);
+        self.parietal_hippo.stdp_update(parietal_rates, hippo_rates, dt_ms);
     }
 
     /// Neuromodulação de todas as projeções.
@@ -339,6 +360,8 @@ impl BrainConnections {
         self.limbic_frontal.modular(dopamina, cortisol);
         self.frontal_limbic.modular(dopamina, cortisol);
         self.parietal_frontal.modular(dopamina, cortisol);
+        self.hippo_frontal.modular(dopamina, cortisol);
+        self.parietal_hippo.modular(dopamina, cortisol);
     }
 }
 

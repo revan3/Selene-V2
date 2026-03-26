@@ -65,6 +65,7 @@
 
 use serde::{Deserialize, Serialize};
 use half::f16;
+use rayon::prelude::*;
 use crate::config::Config;
 use crate::compressor::salient::{SalientPoint, SalientCompressor};
 
@@ -969,8 +970,10 @@ impl CamadaHibrida {
             }
         }
 
-        // Atualiza neurônios com input externo + lateral
-        let spikes: Vec<bool> = self.neuronios.iter_mut().enumerate().map(|(i, n_)| {
+        // Atualiza neurônios com input externo + lateral — paralelo via rayon.
+        // Cada neurônio é independente neste passo: lê apenas lateral_current[i] (read-only)
+        // e atualiza sua própria estrutura (v, u, traces). Sem write-sharing.
+        let spikes: Vec<bool> = self.neuronios.par_iter_mut().enumerate().map(|(i, n_)| {
             let ext = inputs.get(i).copied().unwrap_or(0.0);
             let lat = lateral_current.get(i).copied().unwrap_or(0.0);
             n_.update(ext + lat, dt, t_ms, esc)
