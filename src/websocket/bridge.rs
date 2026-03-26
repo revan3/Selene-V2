@@ -116,6 +116,11 @@ pub struct BrainState {
     /// Último caminho percorrido no grafo durante um walk de resposta.
     /// Usado pelo evento `feedback` para reforçar/penalizar arestas específicas.
     pub ultimo_caminho_walk: Vec<String>,
+    /// Último RPE (Reward Prediction Error) calculado pelo módulo RL.
+    /// Propagado do loop neural (main.rs) para o grafo semântico (server.rs).
+    /// > 0 = situação melhor que previsto → reforça arestas usadas (LTP).
+    /// < 0 = situação pior que previsto → enfraquece arestas usadas (LTD).
+    pub ultimo_rpe: f32,
     /// Instante da última atividade de chat (para detecção de inatividade/sono).
     pub ultima_atividade: Instant,
     /// Contador de exposições por palavra auto-aprendida do contexto de chat.
@@ -144,6 +149,10 @@ pub struct BrainState {
     /// e frontal.goal_queue. Consultado pela linguagem como semente de tópico adicional.
     /// Máximo 20 entradas — janela deslizante dos últimos ~100ms de atividade.
     pub neural_context: VecDeque<String>,
+    /// Score de ressonância dos neurônios espelho (0.0–1.0).
+    /// Atualizado pelo loop neural quando Selene "observa" palavras com padrão motor conhecido.
+    /// Alta ressonância → Selene compreende a ação descrita encarnadamente → viés empático.
+    pub mirror_resonance: f32,
     /// Córtex occipital — processa frames visuais da webcam/screen share do browser.
     /// Aplica detecção de movimento (flicker_buffer), contraste e orientação (V1→V2)
     /// antes de gerar o spike pattern que vai para spike_vocab.
@@ -240,8 +249,25 @@ impl BrainState {
                             }
                         }
                     }
+                    // Bootstrap do grafo: se o arquivo não tinha associações mas tem frases,
+                    // extrai bigrams e trigrams para dar conectividade inicial ao graph walk.
+                    // Sem isso o walk encerra no 1º passo e Selene repete sempre a mesma frase.
                     let n_assoc: usize = grafo_associacoes.values().map(|v| v.len()).sum();
-                    if n_assoc > 0 || !frases_padrao.is_empty() {
+                    if n_assoc == 0 && !frases_padrao.is_empty() {
+                        for frase in &frases_padrao {
+                            for w in frase.windows(2) {
+                                let entry = grafo_associacoes.entry(w[0].clone()).or_default();
+                                if let Some(p) = entry.iter_mut().find(|(wd, _)| wd == &w[1]) {
+                                    p.1 = (p.1 + 0.05).min(1.0);
+                                } else if entry.len() < 50 {
+                                    entry.push((w[1].clone(), 0.10));
+                                }
+                            }
+                        }
+                        let n_boot: usize = grafo_associacoes.values().map(|v| v.len()).sum();
+                        println!("🗣️  Linguagem restaurada: {} frases padrão. Grafo bootstrapped: {} associações.",
+                            frases_padrao.len(), n_boot);
+                    } else if n_assoc > 0 || !frases_padrao.is_empty() {
                         println!("🗣️  Linguagem restaurada: {} associações, {} frases padrão.",
                             n_assoc, frases_padrao.len());
                     }
@@ -315,6 +341,8 @@ impl BrainState {
             reply_count: 0,
             aresta_contagem: HashMap::new(),
             ultimo_caminho_walk: Vec::new(),
+            ultimo_rpe: 0.0,
+            mirror_resonance: 0.0,
             ultima_atividade: Instant::now(),
             auto_learn_contagem: HashMap::new(),
             dormindo: false,

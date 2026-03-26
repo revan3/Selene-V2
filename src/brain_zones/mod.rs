@@ -11,6 +11,7 @@ pub mod limbic;
 pub mod hippocampus;
 pub mod cerebellum;
 pub mod corpus_callosum;
+pub mod mirror_neurons;
 
 // Re-exportações
 pub use frontal::FrontalLobe;

@@ -55,6 +55,7 @@ use brain_zones::{
     hippocampus::HippocampusV2 as Hippocampus,
     corpus_callosum::CorpusCallosum,
     cerebellum::Cerebellum,
+    mirror_neurons::MirrorNeurons,
 };
 // Q-Learning TD-lambda
 use learning::rl::ReinforcementLearning;
@@ -319,6 +320,10 @@ async fn async_main() {
     let mut interoception = Interoception::new();
     let mut basal_ganglia = BasalGanglia::new(&config);
     let mut brainstem = Brainstem::new();
+    // Fix 6: Neurônios espelho — ressonância motora com input do usuário.
+    // Pré-configurados com padrões de emoções e ações básicas; aprendem com uso.
+    let mut mirror = MirrorNeurons::new();
+    println!("🪞 Mirror neurons: {} padrões pré-configurados.", mirror.n_padroes());
 
     // --- 10. DISPARO DOS SENTIDOS (desativados por padrão) ---
     println!("📷 Inicializando sensores (DESATIVADOS — ative via interface)...");
@@ -440,15 +445,45 @@ async fn async_main() {
             frontal.inhibitory_layer.modular_neuro(da, ser, cor);
             limbic.amygdala.modular_neuro(da, ser, cor);
             limbic.nucleus_accumbens.modular_neuro(da, ser, cor);
-            hippocampus.ca1_encoding.modular_neuro(da, ser, cor);
-            hippocampus.ca3_recurrent.modular_neuro(da, ser, cor);
+            // Fix 7a: ACh modula hipocampo — alta ACh = codificação mais nítida.
+            // Biologicamente: projeções colinérgicas do núcleo basal → CA1/CA3.
+            // Efeito: ACh alta reduz cortisol efetivo no hipocampo (neurônios mais sensíveis).
+            let cor_hippo = (cor * (1.0 - neuro.acetylcholine * 0.3)).clamp(0.0, 1.0);
+            hippocampus.ca1_encoding.modular_neuro(da, ser * neuro.acetylcholine.clamp(0.5, 1.2), cor_hippo);
+            hippocampus.ca3_recurrent.modular_neuro(da, ser, cor_hippo);
             parietal.integration_layer.modular_neuro(da, ser, cor);
             cerebelo.purkinje_layer.modular_neuro(da, ser, cor);
             cerebelo.granular_layer.modular_neuro(da, ser, cor);
             // Propaga serotonina para working memory do frontal (afeta decay WM)
             frontal.set_serotonin(neuro.serotonin);
+            frontal.set_dopamine(neuro.dopamine);
             // Neuromodulação das projeções inter-lobe: dopamina aumenta plasticidade
             brain_conn.modular_all(da, cor);
+
+            // Fix 7b: Parietal → Tálamo (atenção espacial).
+            // O lóbulo parietal sabe "onde olhar" — passa esse sinal ao tálamo para
+            // filtrar inputs em favor da região espacialmente saliente.
+            // Biologicamente: PPC → pulvinar → tálamo sensorial.
+            let parietal_salience = parietal.spatial_map.iter()
+                .map(|&v| v.abs()).sum::<f32>() / parietal.spatial_map.len().max(1) as f32;
+            thalamus.adapt_filter(parietal_salience * 0.05 - 0.01); // abre filtro onde há saliência
+
+            // Fix 7c: Frontal → inibição preditiva no temporal.
+            // Quando frontal tem WM carregada (alta dopamina_level), suprime inputs
+            // já previstos — só o INESPERADO passa. Isso implementa predictive coding.
+            // Biologicamente: projeções descendentes do PFC → camadas supragranulares do temporal.
+            let wm_snaps = frontal.wm_snapshots();
+            if !wm_snaps.is_empty() {
+                let wm_certeza: f32 = wm_snaps.iter().map(|(sal, _)| sal).sum::<f32>()
+                    / wm_snaps.len() as f32;
+                // Alta certeza WM → temporal suprime entradas previstas levemente
+                let inibicao_preditiva = (wm_certeza * neuro.dopamine * 0.15).clamp(0.0, 0.25);
+                temporal.recognition_layer.modular_neuro(
+                    da * (1.0 - inibicao_preditiva),
+                    ser,
+                    cor + inibicao_preditiva * 0.5,
+                );
+            }
         }
 
         // B2. Metacognição ativa — retroalimenta o sistema com base no estado observado
@@ -519,14 +554,27 @@ async fn async_main() {
         );
 
         let stability_factor = neuro.serotonin;
+        // Fix B: alertness do brainstem modula TODOS os inputs sensoriais.
+        // Biologicamente: formação reticular ascendente (ARAS) controla o "volume" global
+        // do processamento cortical. Cansaço (adenosina alta) → alertness baixo → inputs atenuados.
+        // Mantemos mínimo de 0.3 para não zerar completamente (o cérebro nunca desliga totalmente).
+        let alertness_gain = brainstem.stats().alertness.max(0.3);
+
+        // Fix 4: input tônico espontâneo (disparo basal biológico).
+        // Neurônios corticais nunca ficam completamente silenciosos — ruído de fundo
+        // mantém excitabilidade mínima mesmo sem câmera/microfone ativos.
+        // Amplitude: 0.04 (abaixo do limiar de spike ~0.1, mas acima de zero).
+        let tonico: f32 = 0.04 * ((step.wrapping_mul(1664525).wrapping_add(1013904223)) as f32 / u32::MAX as f32);
+
         let hybrid_visual: Vec<f32> = retina_attended.iter().enumerate()
             .map(|(i, &v)| {
-                let base = (v * 0.7) + (mental_imagery_visual.get(i).unwrap_or(&0.0) * 0.3);
+                let base = (v * 0.7) + (mental_imagery_visual.get(i).unwrap_or(&0.0) * 0.3) + tonico;
                 // Top-down suppression atenua visual quando frontal está focado internamente
                 let suppressed = base * (1.0 - suppression_mean.clamp(0.0, 0.5));
                 // Adiciona corrente inter-lobe (feedback de hipocampo e frontal)
                 let inter = inter_lobe_currents.para_temporal.get(i).copied().unwrap_or(0.0) * 0.1;
-                (suppressed + inter).clamp(0.0, 1.0) * stability_factor
+                // Alertness do brainstem: cansaço atenua processamento visual
+                (suppressed + inter).clamp(0.0, 1.0) * stability_factor * alertness_gain
             })
             .collect();
 
@@ -603,8 +651,12 @@ async fn async_main() {
             }
         }
 
+        // Fix B (cont.): alertness também atenua processamento auditivo/límbico
         let safe_len = 10.min(cochlea_input.len());
-        let (emotion, arousal) = limbic.evaluate(&cochlea_input[0..safe_len], 0.0, dt, current_time, &config);
+        let cochlea_alertado: Vec<f32> = cochlea_input[0..safe_len].iter()
+            .map(|&v| v * alertness_gain)
+            .collect();
+        let (emotion, arousal) = limbic.evaluate(&cochlea_alertado, 0.0, dt, current_time, &config);
 
         // ── FASE 1a: Emoção (Plutchik) → viés do vocabulário de fala ──────────
         // EmotionalState deriva joy/fear/sadness dos neurotransmissores atuais.
@@ -692,23 +744,46 @@ async fn async_main() {
             );
         }
 
-        // F2. CEREBELO
+        // F2. CEREBELO — corrige o output do frontal
+        // climbing_error = discrepância entre o que o frontal decidiu e o que o temporal reconheceu.
+        // O cerebelo aprende a compensar esse erro ao longo do tempo (LTD cerebelar).
+        // Output Purkinje é inibitório (-1.0 ou 0.0): suprime componentes do action com erro alto.
         let climbing_error: Vec<f32> = action.iter().zip(recognized.iter())
             .map(|(a, r)| (a - r).clamp(-1.0, 1.0))
             .collect();
-        let _cerebelo_out = cerebelo.compute_motor_output(
+        let cerebelo_out = cerebelo.compute_motor_output(
             &recognized, &climbing_error, dt, current_time, &config
         );
+        // Aplica correção cerebelar ao action: expande n_purkinje → n_neurons via interpolação
+        // e escala para correção suave (±0.05). Biologicamente: cerebelo → núcleos cerebelares
+        // → tálamo → córtex motor (frontal), refinando timing e amplitude do comando motor.
+        let action: Vec<f32> = {
+            let n = action.len();
+            let n_cerb = cerebelo_out.len();
+            action.iter().enumerate().map(|(i, &a)| {
+                let cerb_idx = (i * n_cerb / n).min(n_cerb.saturating_sub(1));
+                let correcao = cerebelo_out.get(cerb_idx).copied().unwrap_or(0.0) * 0.05;
+                (a + correcao).clamp(0.0, 1.0)
+            }).collect()
+        };
 
         // F3. RL com persistência periódica
         {
             let action_scalar = action.iter().sum::<f32>() / action.len().max(1) as f32;
             let rl_rpe = rl.update(&recognized, neuro.dopamine, action_scalar, &config);
-            neuro.dopamine = (neuro.dopamine + rl_rpe * 0.04).clamp(0.0, 2.0);
+            // Fix 5: floor em 0.3 previne espiral dopaminérgica.
+            // RPE negativo contínuo deprimia dopamina → reward sempre negativo → ciclo vicioso.
+            // Baseline biológica: neurônios dopaminérgicos da SNpc nunca param completamente.
+            neuro.dopamine = (neuro.dopamine + rl_rpe * 0.04).clamp(0.3, 2.0);
             // Fix 7: Thalamus aprende a filtrar com base no erro do RL.
             // RPE positivo (recompensa inesperada) → abre o filtro (mais sensível).
             // RPE negativo (punição) → fecha o filtro (filtra ruído para focar).
             thalamus.adapt_filter(rl_rpe * 0.1);
+            // Fix 1: Propaga RPE ao BrainState para LTD/LTP no grafo semântico (server.rs).
+            // O grafo de palavras aprende quais associações produzem bons/maus resultados.
+            if let Ok(mut bs) = brain_state.try_lock() {
+                bs.ultimo_rpe = rl_rpe;
+            }
             rl_save_counter += 1;
             // Salva Q-table a cada ~60s (12000 ticks @ 200Hz)
             if rl_save_counter >= 12000 {
@@ -769,6 +844,29 @@ async fn async_main() {
                 .clamp(0.3, 0.9);
             frontal.planejar(habit_action, prioridade, "habito_basal");
             log::debug!("🔄 Hábito → frontal goal (prioridade={:.2})", prioridade);
+        }
+
+        // Fix 6: Mirror neurons — decaimento por tick + aprendizado da ação atual.
+        // O output motor do frontal (action) ensina: "quando executo 'action', é assim que parece."
+        // Esse template é depois ativado quando Selene OBSERVA palavras similares no input do usuário.
+        {
+            mirror.decay();
+            // A cada 50 ticks: aprende do output motor + observa neural_context + propaga ressonância
+            if step % 50 == 0 {
+                if let Ok(mut bs) = brain_state.try_lock() {
+                    let ctx_words: Vec<String> = bs.neural_context.iter().cloned().collect();
+                    for palavra in ctx_words.iter().take(3) {
+                        mirror.learn_from_action(palavra, &action);
+                    }
+                    // Observa e propaga ressonância
+                    let ressonancia = mirror.observe(&ctx_words);
+                    bs.mirror_resonance = ressonancia;
+                    if mirror.is_resonating() {
+                        let empatia = mirror.empatia_bias(bs.emocao_bias);
+                        bs.emocao_bias = (bs.emocao_bias + empatia).clamp(-1.0, 1.0);
+                    }
+                }
+            }
         }
 
         // G1. Propaga RPE (sinal dopaminérgico) para reforçar/enfraquecer chunks recentes
@@ -847,6 +945,38 @@ async fn async_main() {
                 }
             }
         }
+        // Fix C: Interoception → ego → linguagem.
+        // Executa a cada ~1000 ticks (~5s @ 200Hz) para não saturar o neural_context.
+        // Palavras corporais têm baixa prioridade: só entram se houver espaço livre (≤10 slots).
+        if step % 1000 == 0 {
+            let (descricao_corpo, valencia_corpo) = interoception.influenciar_ego();
+            // Propaga o pensamento ao ego (via NarrativeVoice)
+            ego.narrative_voice.pensamentos_recentes.push_back(descricao_corpo.clone());
+            if ego.narrative_voice.pensamentos_recentes.len() > 8 {
+                ego.narrative_voice.pensamentos_recentes.pop_front();
+            }
+            if let Ok(mut bs) = brain_state.try_lock() {
+                // Só adiciona palavras corporais se o contexto não estiver saturado por
+                // palavras da conversa (≤ 10 slots ocupados = há espaço para cor corporal)
+                if bs.neural_context.len() <= 10 {
+                    for palavra in descricao_corpo.split_whitespace() {
+                        let p = palavra.to_lowercase()
+                            .trim_matches(|c: char| !c.is_alphabetic())
+                            .to_string();
+                        if p.len() > 2 && !bs.neural_context.contains(&p) {
+                            bs.neural_context.push_back(p);
+                        }
+                    }
+                    while bs.neural_context.len() > 20 {
+                        bs.neural_context.pop_front();
+                    }
+                }
+                // Valência corporal modula emocao_bias: desconforto → bias negativo
+                let bias_corporal = (0.5 - valencia_corpo) * 0.15; // range ±0.075
+                bs.emocao_bias = (bs.emocao_bias + bias_corporal).clamp(-1.0, 1.0);
+            }
+        }
+
         // Fix 6: Propaga estado da WM + goal do frontal ao neural_context.
         // O que o frontal está "segurando" na working memory e planejando
         // agora influencia o tema da linguagem. Executa a cada 200 ticks (~1s)
@@ -910,8 +1040,14 @@ async fn async_main() {
                 neuro.serotonin, neuro.dopamine, neuro.cortisol,
                 plutchik.dominante(), n_passos_walk,
             );
-            println!("   🧬 Neurônios: {} ativos | Hábitos: {} | Alerta: {:.2} | RAM: {:.1}GB",
-                swap_guard.ram_count(), basal_ganglia.stats().num_habitos,
+            // ram_count() = neurônios em cache quente (RAM swap) — não é "0 disparando".
+            // O contador real de spikes é derivado da atividade recente do temporal.
+            let spikes_vivos = temporal.recognition_layer.neuronios.iter()
+                .filter(|n| n.last_spike_ms > 0.0
+                    && n.last_spike_ms >= (current_time * 1000.0) - 500.0)
+                .count();
+            println!("   🧬 Neurônios disparando: {} | RAM cache: {} | Hábitos: {} | Alerta: {:.2} | RAM: {:.1}GB",
+                spikes_vivos, swap_guard.ram_count(), basal_ganglia.stats().num_habitos,
                 brainstem.stats().alertness, sensor.lock().await.get_ram_usage_gb(),
             );
             println!("   🧠 META: {} | Vocab: {} palavras",
@@ -923,6 +1059,28 @@ async fn async_main() {
             println!("   🎯 RL: {} | Cerebelo LTD: {:.3}",
                 rl, cerebelo.ltd_factor.iter().sum::<f32>() / cerebelo.ltd_factor.len().max(1) as f32
             );
+        }
+
+        // Fix 3: Export automático do modelo de linguagem a cada 5000 ticks (~25s).
+        // Garante que o grafo e vocabulário aprendidos em RAM não se percam ao fechar.
+        // Sem isso, reiniciar a Selene perde todas as associações construídas na sessão.
+        if step % 5000 == 0 && step > 0 {
+            if let Ok(bs) = brain_state.try_lock() {
+                let n_assoc: usize = bs.grafo_associacoes.values().map(|v| v.len()).sum();
+                if n_assoc > 0 {
+                    let json = crate::storage::exportar_linguagem(
+                        &bs.palavra_valencias,
+                        &bs.grafo_associacoes,
+                        &bs.frases_padrao,
+                    );
+                    if let Err(e) = std::fs::write("selene_linguagem.json", json) {
+                        log::warn!("[AUTO-EXPORT] Falha ao salvar linguagem: {}", e);
+                    } else {
+                        println!("💾 [AUTO-EXPORT] Linguagem salva: {} palavras, {} associações",
+                            bs.palavra_valencias.len(), n_assoc);
+                    }
+                }
+            }
         }
 
         // L. Decaimento e Framerate Adaptivo

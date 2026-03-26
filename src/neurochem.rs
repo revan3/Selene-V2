@@ -11,6 +11,11 @@ pub struct NeuroChem {
     pub dopamine: f32,
     pub cortisol: f32,
     pub noradrenaline: f32,
+    /// Acetilcolina (ACh) — neuromodulador de atenção e codificação de memória.
+    /// Alta ACh = foco atencional aguçado, hipocampo mais receptivo, memória de trabalho estável.
+    /// Produzida pelo núcleo basal de Meynert; degrada com fadiga (adenosina alta).
+    /// Análogo biológico: inibidores de colinesterase melhoram memória em Alzheimer.
+    pub acetylcholine: f32,
     last_temp: f32,
 }
 
@@ -67,6 +72,7 @@ impl NeuroChem {
             dopamine: 1.0,
             cortisol: 0.0,
             noradrenaline: 0.5,
+            acetylcholine: 0.7, // baseline saudável de ACh
             last_temp: 0.0,
         }
     }
@@ -111,5 +117,13 @@ impl NeuroChem {
             ModoOperacao::Ultra => (temp / 75.0).clamp(0.9, 1.4),
             ModoOperacao::Insano => (temp / 65.0).clamp(1.0, 1.6),
         };
+
+        // Acetilcolina — modulada por fadiga (adenosina inibe ACh no tálamo/hipocampo)
+        // e por noradrenalina (arousal alto libera mais ACh no córtex).
+        // Alta RAM (processamento intenso) → mais demanda colinérgica → degrada levemente.
+        let adenosina_proxy = (jitter / 5.0).clamp(0.0, 1.0); // jitter alto ≈ sistema estressado
+        let target_ach = (0.8 - adenosina_proxy * 0.4 + self.noradrenaline * 0.2)
+            .clamp(0.2, 1.2);
+        self.acetylcholine += (target_ach - self.acetylcholine) * decay_rate;
     }
 }

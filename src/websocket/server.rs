@@ -781,8 +781,12 @@ pub async fn handle_connection(
                                             (best_val, best_word)
                                         };
 
-                                        // Mistura emoção atual com valência da palavra (α=0.4)
-                                        let emocao_resposta = (emocao * 0.6 + valence * 0.4)
+                                        // Mistura emoção atual com valência da palavra (α=0.4).
+                                        // Fix 6: ressonância mirror adiciona empatia encarnada —
+                                        // quando Selene "sente" o que o usuário descreve, isso
+                                        // colore levemente a resposta com o mesmo tom emocional.
+                                        let empatia_mirror = state.mirror_resonance * valence * 0.15;
+                                        let emocao_resposta = (emocao * 0.6 + valence * 0.4 + empatia_mirror)
                                             .clamp(-1.0, 1.0);
 
                                         // ── TRAÇOS → COMPORTAMENTO ───────────────────────
@@ -836,6 +840,40 @@ pub async fn handle_connection(
                                             let par = (caminho[i].clone(), caminho[i+1].clone());
                                             *state.aresta_contagem.entry(par).or_insert(0) += 1;
                                         }
+
+                                        // Fix 1: LTD/LTP no grafo via RPE (desaprender associações erradas).
+                                        // RPE > +0.25: resposta melhor que esperado → reforça arestas (LTP).
+                                        // RPE < -0.25: resposta pior que esperado → enfraquece arestas (LTD).
+                                        // Magnitude pequena (0.02) para não destruir o grafo num único turno.
+                                        let rpe = state.ultimo_rpe;
+                                        if rpe.abs() > 0.25 {
+                                            let delta_rpe = rpe.signum() * 0.02;
+                                            let caminho_rpe = state.ultimo_caminho_walk.clone();
+                                            for i in 0..caminho_rpe.len().saturating_sub(1) {
+                                                let (a, b) = (&caminho_rpe[i], &caminho_rpe[i+1]);
+                                                if let Some(vizinhos) = state.grafo_associacoes.get_mut(a) {
+                                                    for (w, peso) in vizinhos.iter_mut() {
+                                                        if w == b {
+                                                            *peso = (*peso + delta_rpe).clamp(0.01, 1.0);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Decaimento temporal: arestas não usadas recentemente perdem peso.
+                                        // Evita que associações erradas do passado persistam para sempre.
+                                        // Roda a cada ~500 respostas para não ser caro.
+                                        if state.reply_count % 500 == 0 {
+                                            for vizinhos in state.grafo_associacoes.values_mut() {
+                                                for (_, peso) in vizinhos.iter_mut() {
+                                                    *peso = (*peso * 0.995).max(0.01);
+                                                }
+                                                // Remove arestas completamente esquecidas (peso ≤ 0.01)
+                                                vizinhos.retain(|(_, p)| *p > 0.01);
+                                            }
+                                        }
+
                                         state.ultima_atividade = std::time::Instant::now();
 
                                         // Auto-learn progressivo: cada menção de palavra desconhecida
@@ -931,8 +969,15 @@ pub async fn handle_connection(
                                         let tracos_snapshot = state.ego.tracos.clone();
                                         let pensamentos_snapshot: Vec<String> =
                                             state.ego.pensamentos_recentes.iter().cloned().collect();
-                                        // Palavras da resposta para o buffer de conversa multi-turno
-                                        let reply_words: Vec<String> = reply
+                                        // ── LIBERA O LOCK ANTES DE FAZER I/O ────────────
+                                        drop(state);
+
+                                        // Atualiza buffer de conversa multi-turno com as palavras
+                                        // do INPUT DO USUÁRIO — NÃO as da resposta da Selene.
+                                        // Adicionar palavras do próprio reply criava loop de auto-reforço:
+                                        // Selene dizia "sinto que sou amada" → "amada" virava contexto
+                                        // → próxima resposta também dizia "amada" → loop infinito.
+                                        let input_words: Vec<String> = mensagem
                                             .split_whitespace()
                                             .filter(|w| w.len() > 2)
                                             .map(|w| w.to_lowercase()
@@ -940,12 +985,7 @@ pub async fn handle_connection(
                                                 .to_string())
                                             .filter(|w| !w.is_empty())
                                             .collect();
-
-                                        // ── LIBERA O LOCK ANTES DE FAZER I/O ────────────
-                                        drop(state);
-
-                                        // Atualiza buffer de conversa multi-turno (contexto local por cliente)
-                                        conversa_ctx.extend(reply_words);
+                                        conversa_ctx.extend(input_words);
                                         if conversa_ctx.len() > 150 {
                                             conversa_ctx.drain(0..conversa_ctx.len() - 120);
                                         }

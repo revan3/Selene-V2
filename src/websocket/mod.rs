@@ -48,8 +48,12 @@ pub async fn start_websocket_server(brain_state: Arc<Mutex<BrainState>>) {
     // Serve selene_mobile_ui.html em /mobile
     let mobile = warp::path("mobile").and(warp::fs::file("selene_mobile_ui.html"));
 
+    // PWA: manifest.json e service worker (necessários para instalação no celular)
+    let manifest = warp::path("manifest.json").and(warp::fs::file("selene_manifest.json"));
+    let sw      = warp::path("sw.js").and(warp::fs::file("selene_sw.js"));
+
     // Combina as rotas
-    let routes = index.or(mobile).or(ws_route);
+    let routes = index.or(mobile).or(manifest).or(sw).or(ws_route);
 
     // Descobre o IP local para exibir no console
     let local_ip = local_ip_address();

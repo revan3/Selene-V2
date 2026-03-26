@@ -265,6 +265,7 @@ impl EstadoHH {
     /// Estado de equilíbrio em potencial de repouso −65 mV.
     /// Valores analíticos: x₀ = α_x(-65) / (α_x(-65) + β_x(-65)).
     /// q_ih ≈ 0.01 (canal HCN quase fechado em repouso, abre só em hiperpolarização).
+    #[allow(clippy::approx_constant)] // n=0.318 é constante biofísica HH (gate K⁺), não 1/π
     pub fn repouso() -> Self {
         Self { m: 0.053, h: 0.596, n: 0.318,
                q_ih: 0.01,
