@@ -29,6 +29,7 @@ mod meta;
 use std::sync::mpsc::{channel, Sender, Receiver};
 use std::{thread, panic};
 use std::sync::Arc;
+use rayon::prelude::*;
 use std::time::{Duration, Instant};
 use std::path::Path;
 use std::fs::File;
@@ -578,9 +579,23 @@ async fn async_main() {
             })
             .collect();
 
-        // F. Processamento neural
-        let vision_features = occipital.visual_sweep(&hybrid_visual, dt, Some(&parietal.spatial_map), current_time, &config);
-        
+        // ── PRÉ-WAVE: cochlea_alertado disponível antes do paralelo ──────────
+        // Movido para cima para que Wave 1 possa usar limbic em paralelo com occipital.
+        let safe_len = 10.min(cochlea_input.len());
+        let cochlea_alertado: Vec<f32> = cochlea_input[0..safe_len].iter()
+            .map(|&v| v * alertness_gain)
+            .collect();
+
+        // ── WAVE 1 [paralelo]: occipital + limbic ─────────────────────────────
+        // Nenhuma dependência entre eles: occipital lê hybrid_visual e
+        // parietal.spatial_map (somente leitura do tick anterior); limbic lê
+        // cochlea_alertado. Rayon rouba uma closure para outro core.
+        let (vision_features, (emotion, arousal)) = rayon::join(
+            || occipital.visual_sweep(&hybrid_visual, dt, Some(&parietal.spatial_map), current_time, &config),
+            || limbic.evaluate(&cochlea_alertado, 0.0, dt, current_time, &config),
+        );
+
+        // Reconstrói vision_full a partir do output do occipital (sequencial — rápido)
         let chunk_size = n_neurons / vision_features.len().max(1);
         let mut vision_full = vec![0.0f32; n_neurons];
         for (i, &feature) in vision_features.iter().enumerate() {
@@ -589,8 +604,19 @@ async fn async_main() {
             for j in start..end { vision_full[j] = feature / 100.0; }
         }
 
-        let spatial_focus = parietal.integrate(&vision_full, &vec![0.0f32; n_neurons], dt, current_time, &config);
-        let recognized = temporal.process(&vision_full, &spatial_focus, dt, current_time, &config);
+        // ── WAVE 2 [paralelo]: parietal + temporal ────────────────────────────
+        // Temporal usa prev_parietal_rates (output do tick anterior) em vez do output
+        // atual do parietal. Isso é biologicamente correto — latência axonal parietal→
+        // temporal é ~5–20ms, ou seja, ~1 tick a 200Hz. Habilita paralelo real.
+        let (new_parietal_rates, recognized) = rayon::join(
+            || parietal.integrate(&vision_full, &vec![0.0f32; n_neurons], dt, current_time, &config),
+            || temporal.process(&vision_full, &prev_parietal_rates, dt, current_time, &config),
+        );
+        // Atualiza prev_parietal_rates para o próximo tick
+        {
+            let p_len = prev_parietal_rates.len().min(new_parietal_rates.len());
+            prev_parietal_rates[..p_len].copy_from_slice(&new_parietal_rates[..p_len]);
+        }
 
         // F1. CHUNKING — detecta padrões STDP emergentes na camada temporal
         {
@@ -651,12 +677,7 @@ async fn async_main() {
             }
         }
 
-        // Fix B (cont.): alertness também atenua processamento auditivo/límbico
-        let safe_len = 10.min(cochlea_input.len());
-        let cochlea_alertado: Vec<f32> = cochlea_input[0..safe_len].iter()
-            .map(|&v| v * alertness_gain)
-            .collect();
-        let (emotion, arousal) = limbic.evaluate(&cochlea_alertado, 0.0, dt, current_time, &config);
+        // emotion e arousal já calculados em Wave 1 acima (limbic paralelo com occipital).
 
         // ── FASE 1a: Emoção (Plutchik) → viés do vocabulário de fala ──────────
         // EmotionalState deriva joy/fear/sadness dos neurotransmissores atuais.
