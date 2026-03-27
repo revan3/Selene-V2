@@ -63,6 +63,7 @@ use learning::rl::ReinforcementLearning;
 // Sinapses inter-lobe e atenção seletiva
 use learning::inter_lobe::BrainConnections;
 use learning::attention::AttentionGate;
+use learning::lobe_router::{LobeRouter, LobeId};
 
 // Imports dos novos módulos
 use compressor::salient::SalientCompressor;
@@ -313,6 +314,10 @@ async fn async_main() {
     let mut brain_conn = BrainConnections::new(n_neurons);
     // Gate de atenção seletiva (bottom-up saliência + top-down frontal)
     let mut attention = AttentionGate::new(n_neurons);
+    // Roteador dinâmico de lóbulos — decide quais constelações ativar por tick.
+    // Especialização emerge via competitive Hebbian learning nas chaves de cada lóbulo.
+    let mut lobe_router = LobeRouter::new();
+    println!("🗺️  LobeRouter online: 6 constelações, embedding 16d, homeostase ativa.");
 
     // --- 9. INSTANCIAÇÃO DOS NOVOS MÓDULOS ---
     println!("🌱 Inicializando módulos avançados...");
@@ -579,23 +584,44 @@ async fn async_main() {
             })
             .collect();
 
-        // ── PRÉ-WAVE: cochlea_alertado disponível antes do paralelo ──────────
-        // Movido para cima para que Wave 1 possa usar limbic em paralelo com occipital.
+        // ── PRÉ-WAVE: cochlea_alertado + query de roteamento ─────────────────
         let safe_len = 10.min(cochlea_input.len());
         let cochlea_alertado: Vec<f32> = cochlea_input[0..safe_len].iter()
             .map(|&v| v * alertness_gain)
             .collect();
 
+        // Constrói query de roteamento com o estado atual do sistema.
+        // O router usa isso para decidir quais constelações ativar neste tick.
+        let abstraction_level = temporal.depth_stack.abstraction_level();
+        let route_query = LobeRouter::build_query(
+            &hybrid_visual,
+            &cochlea_alertado,
+            neuro.dopamine, neuro.serotonin, neuro.cortisol, neuro.noradrenaline,
+            0.0, // emotion ainda não calculada — será 0.0 no primeiro sub-tick
+            atividade_recente, // arousal proxy
+            atividade_recente,
+            abstraction_level,
+            step,
+        );
+        let routing = lobe_router.route(route_query);
+
         // ── WAVE 1 [paralelo]: occipital + limbic ─────────────────────────────
-        // Nenhuma dependência entre eles: occipital lê hybrid_visual e
-        // parietal.spatial_map (somente leitura do tick anterior); limbic lê
-        // cochlea_alertado. Rayon rouba uma closure para outro core.
+        // Limbic: se gate baixíssimo (< SKIP), usa emoção neutra (0.0, 0.1).
+        // Na prática o gate_minimo do limbic é 0.20 então nunca vai skippar.
         let (vision_features, (emotion, arousal)) = rayon::join(
             || occipital.visual_sweep(&hybrid_visual, dt, Some(&parietal.spatial_map), current_time, &config),
-            || limbic.evaluate(&cochlea_alertado, 0.0, dt, current_time, &config),
+            || {
+                if routing.deve_skipar(LobeId::Limbic) {
+                    (0.0f32, 0.1f32) // gate baixo: emoção neutra
+                } else {
+                    let (e, a) = limbic.evaluate(&cochlea_alertado, 0.0, dt, current_time, &config);
+                    // Escala output pelo gate: gate alto = influência total
+                    (e * routing.limbic, a * routing.limbic)
+                }
+            },
         );
 
-        // Reconstrói vision_full a partir do output do occipital (sequencial — rápido)
+        // Reconstrói vision_full (sequencial — rápido, só indexação)
         let chunk_size = n_neurons / vision_features.len().max(1);
         let mut vision_full = vec![0.0f32; n_neurons];
         for (i, &feature) in vision_features.iter().enumerate() {
@@ -605,14 +631,33 @@ async fn async_main() {
         }
 
         // ── WAVE 2 [paralelo]: parietal + temporal ────────────────────────────
-        // Temporal usa prev_parietal_rates (output do tick anterior) em vez do output
-        // atual do parietal. Isso é biologicamente correto — latência axonal parietal→
-        // temporal é ~5–20ms, ou seja, ~1 tick a 200Hz. Habilita paralelo real.
+        // Skip adaptativo: lóbulos com gate baixo reutilizam output anterior.
+        // Temporal usa prev_parietal_rates (1-tick latência) — paralelo + biológico.
+        let zero_n = vec![0.0f32; n_neurons];
         let (new_parietal_rates, recognized) = rayon::join(
-            || parietal.integrate(&vision_full, &vec![0.0f32; n_neurons], dt, current_time, &config),
-            || temporal.process(&vision_full, &prev_parietal_rates, dt, current_time, &config),
+            || {
+                if routing.deve_skipar(LobeId::Parietal) {
+                    prev_parietal_rates.clone() // economiza CPU, usa output anterior
+                } else {
+                    parietal.integrate(&vision_full, &zero_n, dt, current_time, &config)
+                }
+            },
+            || {
+                if routing.deve_skipar(LobeId::Temporal) {
+                    prev_temporal_rates.clone()
+                } else {
+                    let out = temporal.process(&vision_full, &prev_parietal_rates, dt, current_time, &config);
+                    // Robustez: normaliza output se norma explodir
+                    let max_v = out.iter().copied().fold(0.0f32, f32::max);
+                    if max_v > 2.0 {
+                        out.iter().map(|&v| v / max_v).collect()
+                    } else {
+                        out
+                    }
+                }
+            },
         );
-        // Atualiza prev_parietal_rates para o próximo tick
+        // Atualiza prev_parietal_rates com output real deste tick
         {
             let p_len = prev_parietal_rates.len().min(new_parietal_rates.len());
             prev_parietal_rates[..p_len].copy_from_slice(&new_parietal_rates[..p_len]);
@@ -809,6 +854,9 @@ async fn async_main() {
             // RPE positivo → camadas mais abstratas (D2) ganham mais atenção.
             // RPE negativo → sistema ancora no substrato bruto (D0).
             temporal.apply_rpe(rl_rpe);
+            // LobeRouter: especialização competitiva — vencedor aproxima embedding do query,
+            // perdedores afastam. O RPE amplifica ou atenua a magnitude do update.
+            lobe_router.update_specialization(rl_rpe);
             rl_save_counter += 1;
             // Salva Q-table a cada ~60s (12000 ticks @ 200Hz)
             if rl_save_counter >= 12000 {
@@ -1100,6 +1148,22 @@ async fn async_main() {
             println!("   🎯 RL: {} | Cerebelo LTD: {:.3}",
                 rl, cerebelo.ltd_factor.iter().sum::<f32>() / cerebelo.ltd_factor.len().max(1) as f32
             );
+            // LobeRouter: gate scores e especialização emergente por lóbulo
+            {
+                use learning::lobe_router::LobeId;
+                let ids = LobeId::ALL;
+                let gates: Vec<String> = ids.iter().map(|id| {
+                    format!("{}:{:.2}", id.nome(), lobe_router.gate(*id))
+                }).collect();
+                println!("   🛰️  Router gates: {} | skips:{}/{}", gates.join(" | "),
+                    6 - ids.iter().filter(|id| lobe_router.gate(**id) >= 0.08).count(), 6);
+                let specs = lobe_router.especialidade_dominante();
+                let spec_str: Vec<String> = specs.iter()
+                    .map(|(nome, dim)| format!("{}→{}", nome, dim))
+                    .collect();
+                println!("   🧭 Especializ: {} | updates:{}", spec_str.join(" | "),
+                    lobe_router.n_especialization_updates);
+            }
         }
 
         // Fix 3: Export automático do modelo de linguagem a cada 5000 ticks (~25s).
