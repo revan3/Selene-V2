@@ -116,6 +116,7 @@ pub struct BrainState {
     /// Último caminho percorrido no grafo durante um walk de resposta.
     /// Usado pelo evento `feedback` para reforçar/penalizar arestas específicas.
     pub ultimo_caminho_walk: Vec<String>,
+    pub ultimos_prefixos: std::collections::VecDeque<Vec<String>>,
     /// Último RPE (Reward Prediction Error) calculado pelo módulo RL.
     /// Propagado do loop neural (main.rs) para o grafo semântico (server.rs).
     /// > 0 = situação melhor que previsto → reforça arestas usadas (LTP).
@@ -341,6 +342,7 @@ impl BrainState {
             reply_count: 0,
             aresta_contagem: HashMap::new(),
             ultimo_caminho_walk: Vec::new(),
+            ultimos_prefixos: std::collections::VecDeque::with_capacity(6),
             ultimo_rpe: 0.0,
             mirror_resonance: 0.0,
             ultima_atividade: Instant::now(),

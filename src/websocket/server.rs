@@ -32,9 +32,11 @@ fn gerar_resposta_emergente(
     valencias: &HashMap<String, f32>,
     grafo: &HashMap<String, Vec<(String, f32)>>,
     frases_padrao: &[Vec<String>],
+    evitar: &[Vec<String>],           // prefixos usados recentemente → cooldown de frase
     contexto_extra: &[String],        // palavras de turnos anteriores → expande o tópico
     caminho_out: &mut Vec<String>,    // registra o caminho percorrido → usado pelo feedback
     emocao_palavras: &HashMap<String, f32>, // valência emocional amigdaliana por palavra
+    prefixo_usado_out: &mut Vec<String>,   // prefixo escolhido → registrado no cooldown
 ) -> String {
     // Alvo emocional efetivo: mistura o estado atual com o viés de Plutchik.
     // + perturbação determinística derivada do diversity_seed: ±0.10 por resposta.
@@ -108,11 +110,25 @@ fn gerar_resposta_emergente(
                 .filter(|(_, c)| *c == max_overlap)
                 .map(|(i, _)| *i)
                 .collect();
+            // Filtra cooldown: evita repetir o mesmo prefixo consecutivamente
+            let candidatos: Vec<usize> = {
+                let sem_cooldown: Vec<usize> = candidatos.iter().copied()
+                    .filter(|&i| {
+                        let frase = &frases_padrao[i];
+                        !evitar.iter().any(|ev| {
+                            frase.len() >= 2 && ev.len() >= 2 && frase[0] == ev[0] && frase[1] == ev[1]
+                        })
+                    })
+                    .collect();
+                if sem_cooldown.is_empty() { candidatos } else { sem_cooldown }
+            };
             candidatos[(step as usize).wrapping_mul(2654435761) % candidatos.len()]
         } else {
             (step as usize).wrapping_mul(2654435761) % frases_padrao.len()
         };
-        frases_padrao[idx].clone()
+        let prefixo_sel = frases_padrao[idx].clone();
+        *prefixo_usado_out = prefixo_sel.clone();
+        prefixo_sel
     } else {
         Vec::new()
     };
@@ -290,7 +306,18 @@ fn gerar_resposta_emergente(
         let pos = (cadeia.len() as f32 * 0.60) as usize;
         let pos = pos.max(4); // nunca antes da 4ª palavra
         let mut c = cadeia.clone();
-        if !c.get(pos).map(|w| ["e","mas","porque","então","quando","ou","se"].contains(&w.as_str())).unwrap_or(false) {
+        // Não inserir se a palavra ANTES é preposição/artigo — evita "filha de E rodrigo"
+        let prep_antes = &["de","em","para","com","por","a","ao","na","no","da","do","das","dos",
+                           "num","numa","pelo","pela","sobre","entre","até","sem","sob","ante"];
+        let word_before_is_prep = pos > 0 && c.get(pos - 1)
+            .map(|w| prep_antes.contains(&w.as_str()))
+            .unwrap_or(false);
+        // Não inserir se a posição já tem um conectivo
+        let word_at_is_conn = c.get(pos)
+            .map(|w| ["e","mas","porque","então","quando","ou","se","que","pois","porém"]
+                .contains(&w.as_str()))
+            .unwrap_or(false);
+        if !word_before_is_prep && !word_at_is_conn {
             c.insert(pos, conectivo.to_string());
         }
         c
@@ -815,6 +842,7 @@ pub async fn handle_connection(
                                         let diversity_seed = step ^ state.reply_count.wrapping_mul(6364136223846793005);
                                         // caminho_local evita conflito de borrow entre &state.* e &mut state.*
                                         let mut caminho_local: Vec<String> = Vec::new();
+                                        let mut prefixo_buf: Vec<String> = Vec::new();
                                         let reply = gerar_resposta_emergente(
                                             &mensagem, diversity_seed, emocao_resposta,
                                             emocao_bias, n_passos,
@@ -822,6 +850,7 @@ pub async fn handle_connection(
                                             &state.palavra_valencias,
                                             &state.grafo_associacoes,
                                             &state.frases_padrao,
+                                            &state.ultimos_prefixos.iter().cloned().collect::<Vec<_>>(),
                                             // Contexto = histórico da conversa + contexto neural em tempo real.
                                             // O neural_context traz o que o cérebro está "pensando agora"
                                             // (chunks temporais + goals do frontal) como sementes de tópico.
@@ -832,7 +861,10 @@ pub async fn handle_connection(
                                             },
                                             &mut caminho_local,
                                             &state.emocao_palavras,
+                                            &mut prefixo_buf,
                                         );
+                                        state.ultimos_prefixos.push_back(prefixo_buf);
+                                        if state.ultimos_prefixos.len() > 5 { state.ultimos_prefixos.pop_front(); }
                                         state.ultimo_caminho_walk = caminho_local.clone();
                                         // Atualiza contagem de arestas usadas (para consolidação noturna)
                                         let caminho = caminho_local;
@@ -1719,6 +1751,7 @@ pub async fn handle_connection(
                                 state.reply_count = state.reply_count.wrapping_add(1);
                                 let diversity_seed = step ^ state.reply_count.wrapping_mul(6364136223846793005);
                                 let mut caminho_q: Vec<String> = Vec::new();
+                                let mut prefixo_buf: Vec<String> = Vec::new();
                                 let reply = gerar_resposta_emergente(
                                     &text, diversity_seed, emocao_resp,
                                     emocao_bias, n_passos,
@@ -1726,10 +1759,14 @@ pub async fn handle_connection(
                                     &state.palavra_valencias,
                                     &state.grafo_associacoes,
                                     &state.frases_padrao,
+                                    &state.ultimos_prefixos.iter().cloned().collect::<Vec<_>>(),
                                     &conversa_ctx,
                                     &mut caminho_q,
                                     &state.emocao_palavras,
+                                    &mut prefixo_buf,
                                 );
+                                state.ultimos_prefixos.push_back(prefixo_buf);
+                                if state.ultimos_prefixos.len() > 5 { state.ultimos_prefixos.pop_front(); }
                                 state.ultimo_caminho_walk = caminho_q.clone();
                                 for i in 0..caminho_q.len().saturating_sub(1) {
                                     let par = (caminho_q[i].clone(), caminho_q[i+1].clone());

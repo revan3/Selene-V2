@@ -213,6 +213,16 @@ impl TemporalLobe {
         self.depth_stack.update_attention(rpe);
     }
 
+    /// Número total de conexões Hebbianas acumuladas (telemetria/teste).
+    pub fn n_hebbian_connections(&self) -> usize {
+        self.hebbian_weights.iter().map(|v| v.len()).sum()
+    }
+
+    /// Máximo de conexões Hebbianas por neurônio (deve ser <= K=8).
+    pub fn max_hebbian_per_neuron(&self) -> usize {
+        self.hebbian_weights.iter().map(|v| v.len()).max().unwrap_or(0)
+    }
+
     pub fn set_novelty_sensitivity(&mut self, level: f32) {
         self.novelty_detection = level.clamp(0.1, 5.0);
     }
