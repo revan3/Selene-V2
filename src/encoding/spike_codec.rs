@@ -154,6 +154,43 @@ pub fn intersect(a: &SpikePattern, b: &SpikePattern) -> SpikePattern {
     out
 }
 
+// ── Conversores perceptuais ────────────────────────────────────────────────────
+
+/// Converte vetor de features visuais (taxas 0–100 de disparo V2) em SpikePattern.
+/// Cada feature controla um u64 do padrão: taxa 100% → todos os 64 bits ligados.
+pub fn features_to_spike_pattern(features: &[f32]) -> SpikePattern {
+    let mut pattern: SpikePattern = [0u64; 8];
+    for (fi, &rate) in features.iter().take(8).enumerate() {
+        let n_bits = ((rate / 100.0) * 64.0).round() as u32;
+        pattern[fi] = if n_bits >= 64 { u64::MAX } else { (1u64 << n_bits).saturating_sub(1) };
+    }
+    pattern
+}
+
+/// Converte 32 bandas de frequência (0.0–1.0) em SpikePattern de 512 bits.
+/// 32 bandas × 16 neurônios/banda = 512 neurônios totais.
+pub fn bands_to_spike_pattern(bands: &[f32]) -> SpikePattern {
+    let mut pattern: SpikePattern = [0u64; 8];
+    let neurons_per_band = N_NEURONS / 32; // 16
+    for (b, &energy) in bands.iter().take(32).enumerate() {
+        let n_fire = ((energy.clamp(0.0, 1.0) * neurons_per_band as f32).round() as usize)
+            .min(neurons_per_band);
+        let base = b * neurons_per_band;
+        for j in 0..n_fire {
+            let neuron  = base + j;
+            let word_ix = neuron >> 6;
+            let bit_ix  = neuron & 63;
+            if word_ix < 8 { pattern[word_ix] |= 1u64 << bit_ix; }
+        }
+    }
+    pattern
+}
+
+/// Retorna true se o padrão tem pelo menos um bit ativo (sinal não-nulo).
+pub fn is_active(p: &SpikePattern) -> bool {
+    p.iter().any(|&w| w != 0)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

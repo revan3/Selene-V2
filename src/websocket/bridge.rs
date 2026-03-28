@@ -11,6 +11,25 @@ use crate::sensors::SensorFlags;
 use crate::encoding::spike_codec::SpikePattern;
 use crate::encoding::helix_store::HelixStore;
 use crate::brain_zones::occipital::OccipitalLobe;
+use crate::learning::hypothesis::HypothesisEngine;
+use crate::sensors::audio::WordAccumulator;
+
+/// Evento episódico rico — registra um momento de experiência com contexto perceptual completo.
+/// Substitui o antigo `(String, String, f32)` do historico_episodico, adicionando:
+///   - Padrão visual (SpikePattern do OccipitalLobe no momento do evento)
+///   - Padrão auditivo (SpikePattern das bandas FFT)
+///   - Estado corporal [DA, 5HT, NA, ACh, cortisol] — o "humor" no momento
+/// Usado pelo N3/REM para replay contextualizado e pela camada de grounding semântico.
+#[derive(Debug, Clone)]
+pub struct EventoEpisodico {
+    pub palavras:      Vec<String>,   // ≤8 palavras ativas no contexto
+    pub padrao_visual: SpikePattern,  // o que estava sendo visto
+    pub padrao_audio:  SpikePattern,  // o que estava sendo ouvido
+    pub estado_corpo:  [f32; 5],      // [DA, 5HT, NA, ACh, cortisol]
+    pub emocao:        f32,
+    pub arousal:       f32,
+    pub tempo_ms:      f64,
+}
 
 /// Ondas cerebrais simuladas a partir da atividade neural agregada.
 /// Baseadas nas bandas EEG biológicas — derivadas do estado atual do sistema.
@@ -140,10 +159,22 @@ pub struct BrainState {
     /// Negativo = palavra associada a experiências negativas (medo/tristeza).
     /// Usado no graph-walk para priorizar palavras emocionalmente congruentes.
     pub emocao_palavras: HashMap<String, f32>,
-    /// Histórico episódico para replay durante N3/REM: (palavra_a, palavra_b, emocao).
-    /// Pares de palavras co-ocorridas com valência emocional forte.
-    /// Durante a fase REM, essas associações são re-fortalecidas no grafo.
-    pub historico_episodico: VecDeque<(String, String, f32)>,
+    /// Histórico episódico rico — eventos com contexto perceptual completo.
+    /// Substitui o antigo tuple (String, String, f32): agora inclui padrão visual,
+    /// auditivo e estado corporal para grounding semântico real.
+    pub historico_episodico: VecDeque<EventoEpisodico>,
+    /// Grounding semântico por palavra: 0.0 = só linguístico, 1.0 = totalmente grounded.
+    /// Aumenta quando a palavra é co-ativada com percepções reais (visual/auditivo/interoceptivo).
+    /// Decresce lentamente por decaimento temporal. Usado como peso extra na seleção de âncora.
+    pub grounding: std::collections::HashMap<String, f32>,
+    /// Último padrão visual computado (SpikePattern do occipital).
+    /// Atualizado a cada tick pelo loop neural. Lido pelo chat handler para binding.
+    pub ultimo_padrao_visual: SpikePattern,
+    /// Último padrão auditivo computado (SpikePattern das bandas FFT).
+    pub ultimo_padrao_audio: SpikePattern,
+    /// Último estado corporal [DA, 5HT, NA, ACh, cortisol].
+    /// Snapshot dos neurotransmissores no tick atual — parte do contexto episódico.
+    pub ultimo_estado_corpo: [f32; 5],
     /// Contexto neural em tempo real: palavras/símbolos que o cérebro neural está
     /// processando agora (chunks temporais emergentes + goal atual do frontal).
     /// Preenchido pelo loop neural (main.rs) a cada tick com novos_chunks.simbolo
@@ -154,6 +185,14 @@ pub struct BrainState {
     /// Atualizado pelo loop neural quando Selene "observa" palavras com padrão motor conhecido.
     /// Alta ressonância → Selene compreende a ação descrita encarnadamente → viés empático.
     pub mirror_resonance: f32,
+    /// Motor de hipóteses — formula predições sobre o próximo input, testa e aprende com os erros.
+    /// Gera RPE que propaga para grounding e grafo. Monitora padrões da própria resposta como
+    /// radar para futura capacidade de autoprogramação.
+    pub hypothesis_engine: HypothesisEngine,
+    /// Acumulador temporal de palavras para o pipeline WebSocket (audio_raw).
+    /// Integra frames de 46ms vindos do cliente até detectar fronteira de palavra.
+    /// Mesma lógica do acumulador interno do audio.rs, mas para áudio externo.
+    pub audio_acumulador: WordAccumulator,
     /// Córtex occipital — processa frames visuais da webcam/screen share do browser.
     /// Aplica detecção de movimento (flicker_buffer), contraste e orientação (V1→V2)
     /// antes de gerar o spike pattern que vai para spike_vocab.
@@ -351,11 +390,103 @@ impl BrainState {
             fase_sono: String::new(),
             emocao_palavras: HashMap::new(),
             historico_episodico: VecDeque::with_capacity(500),
+            grounding: std::collections::HashMap::new(),
+            ultimo_padrao_visual: [0u64; 8],
+            ultimo_padrao_audio: [0u64; 8],
+            ultimo_estado_corpo: [0.5, 0.5, 0.5, 0.5, 0.0],
             neural_context: VecDeque::with_capacity(20),
             // 512 neurônios = 70% V1 (358) + 30% V2 (154) — coincide com 32×16 pixels do browser
             occipital: OccipitalLobe::new(512, 0.2, cfg),
             visual_time: 0.0,
+            hypothesis_engine: HypothesisEngine::new(),
+            audio_acumulador: WordAccumulator::new(),
         }
+    }
+
+    // ── Grounding semântico ────────────────────────────────────────────────────
+
+    /// Vincula palavras ao contexto perceptual atual, aumentando grounding scores.
+    /// Chamado pelo loop neural (a cada 100 ticks) e pelo chat handler.
+    ///
+    /// Regras de delta por modalidade:
+    ///   visual ativo  → +0.25  (percepção mais rica = grounding mais forte)
+    ///   audio ativo   → +0.15
+    ///   interoceptivo → +0.08  (sempre ativo — corpo sempre influencia)
+    ///
+    /// Registra também um EventoEpisodico rico para replay N3/REM.
+    pub fn grounding_bind(
+        &mut self,
+        palavras: &[String],
+        padrao_visual: SpikePattern,
+        padrao_audio:  SpikePattern,
+        emocao:  f32,
+        arousal: f32,
+        tempo_ms: f64,
+    ) {
+        use crate::encoding::spike_codec::is_active;
+        let visual_ativo = is_active(&padrao_visual);
+        let audio_ativo  = is_active(&padrao_audio);
+
+        for palavra in palavras {
+            if palavra.len() < 2 { continue; }
+            let g = self.grounding.entry(palavra.clone()).or_insert(0.0);
+            if visual_ativo { *g = (*g + 0.25).min(1.0); }
+            if audio_ativo  { *g = (*g + 0.15).min(1.0); }
+            *g = (*g + 0.08).min(1.0); // interoceptivo — sempre contribui
+        }
+
+        if palavras.is_empty() { return; }
+
+        // Registra evento episódico rico para replay N3/REM
+        let evento = EventoEpisodico {
+            palavras:      palavras.to_vec(),
+            padrao_visual,
+            padrao_audio,
+            estado_corpo:  self.ultimo_estado_corpo,
+            emocao,
+            arousal,
+            tempo_ms,
+        };
+        self.historico_episodico.push_back(evento);
+
+        // Compressão: quando cheio, remove a entrada com menor |emocao| nas primeiras 100
+        if self.historico_episodico.len() > 500 {
+            if let Some(min_pos) = self.historico_episodico.iter().take(100)
+                .enumerate()
+                .min_by(|a, b| a.1.emocao.abs().partial_cmp(&b.1.emocao.abs())
+                    .unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(i, _)| i)
+            {
+                self.historico_episodico.remove(min_pos);
+            }
+        }
+    }
+
+    /// Propaga RPE ao grounding das palavras no neural_context.
+    /// RPE > 0 (predição correta) → grounding aumenta.
+    /// RPE < 0 (predição errada) → grounding diminui levemente.
+    pub fn grounding_rpe(&mut self, rpe: f32) {
+        if rpe.abs() < 0.05 { return; }
+        let palavras: Vec<String> = self.neural_context.iter().cloned().take(8).collect();
+        for w in palavras {
+            let g = self.grounding.entry(w).or_insert(0.0);
+            if rpe > 0.0 {
+                *g = (*g + rpe * 0.05).min(1.0);
+            } else {
+                *g = (*g + rpe * 0.02).max(0.0);
+            }
+        }
+    }
+
+    /// Decaimento global de grounding. Chamar a cada ~1000 ticks.
+    /// Palavras sem reforço perceptual recente perdem grounding lentamente.
+    /// 0.999^1000 ≈ 0.37 — leva ~5000 ticks (~25s) para cair à metade.
+    pub fn grounding_decay(&mut self) {
+        for g in self.grounding.values_mut() {
+            *g *= 0.999;
+        }
+        // Remove palavras com grounding irrisório (< 0.001) para não crescer sem limite
+        self.grounding.retain(|_, g| *g >= 0.001);
     }
 }
 

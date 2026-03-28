@@ -59,6 +59,22 @@ path = "src/bin/benchmark.rs"
 name = "learning_test"
 path = "src/bin/learning_test.rs"
 
+[[bin]]
+name = "test_neuron_v3"
+path = "src/bin/test_neuron_v3.rs"
+
+[[bin]]
+name = "stability_test"
+path = "src/bin/stability_test.rs"
+
+[[bin]]
+name = "system_test"
+path = "src/bin/system_test.rs"
+
+[[bin]]
+name = "intensive_benchmark"
+path = "src/bin/intensive_benchmark.rs"
+
 [profile.release]
 opt-level = 2
 lto = "thin"

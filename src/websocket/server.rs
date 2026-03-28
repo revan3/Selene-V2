@@ -13,11 +13,29 @@ use crate::websocket::bridge::NeuralStatus;
 use serde_json::Value;
 
 use crate::websocket::bridge::BrainState;
-use crate::encoding::spike_codec::{encode as spike_encode, decode_top_n as spike_top_n};
+use crate::encoding::spike_codec::{
+    encode as spike_encode, decode_top_n as spike_top_n,
+    features_to_spike_pattern, bands_to_spike_pattern, similarity as spike_similarity,
+};
 use crate::encoding::phoneme::sentence_to_formants;
 
 use std::collections::HashMap;
 use chrono::Timelike;
+
+/// Palavras funcionais que não carregam semântica — excluídas de âncoras, tópico de prefixo e
+/// contexto de conversa, para evitar o loop de respostas fixas ("meu nome é selene").
+const STOP_WORDS: &[&str] = &[
+    "eu","tu","ele","ela","nós","vós","eles","elas",
+    "meu","minha","meus","minhas","seu","sua","seus","suas",
+    "que","qual","quem","onde","como","quando","porque","pois","porém",
+    "de","da","do","em","na","no","para","com","por","ao","às","aos",
+    "um","uma","os","as","uns","umas",
+    "me","te","se","nos","vos","lhe","lhes",
+    "é","são","foi","era","ser","estar","ter","há",
+    "sim","não","já","ainda","muito","mais","menos","bem","mal",
+    "isso","este","esta","estes","estas","esse","essa","esses","essas",
+    "aqui","ali","lá","então","também","só","até",
+];
 
 /// Gera resposta emergente a partir do vocabulário e grafo de associações reais da Selene.
 /// Não usa templates fixos — a resposta é construída navegando o que ela aprendeu.
@@ -32,11 +50,12 @@ fn gerar_resposta_emergente(
     valencias: &HashMap<String, f32>,
     grafo: &HashMap<String, Vec<(String, f32)>>,
     frases_padrao: &[Vec<String>],
-    evitar: &[Vec<String>],           // prefixos usados recentemente → cooldown de frase
-    contexto_extra: &[String],        // palavras de turnos anteriores → expande o tópico
-    caminho_out: &mut Vec<String>,    // registra o caminho percorrido → usado pelo feedback
-    emocao_palavras: &HashMap<String, f32>, // valência emocional amigdaliana por palavra
-    prefixo_usado_out: &mut Vec<String>,   // prefixo escolhido → registrado no cooldown
+    evitar: &[Vec<String>],                     // prefixos usados recentemente → cooldown de frase
+    contexto_extra: &[String],                  // palavras de turnos anteriores → expande o tópico
+    caminho_out: &mut Vec<String>,              // registra o caminho percorrido → usado pelo feedback
+    emocao_palavras: &HashMap<String, f32>,     // valência emocional amigdaliana por palavra
+    prefixo_usado_out: &mut Vec<String>,        // prefixo escolhido → registrado no cooldown
+    grounding: &HashMap<String, f32>,           // grounding semântico por palavra (0=linguístico, 1=grounded)
 ) -> String {
     // Alvo emocional efetivo: mistura o estado atual com o viés de Plutchik.
     // + perturbação determinística derivada do diversity_seed: ±0.10 por resposta.
@@ -45,6 +64,7 @@ fn gerar_resposta_emergente(
     let perturbacao = ((step.wrapping_mul(7) % 9) as f32 - 4.0) * 0.025; // -0.10 … +0.10
     let emocao = (emocao + emocao_bias * 0.35 + perturbacao).clamp(-1.0, 1.0);
     let m = pergunta.to_lowercase();
+
     let tokens: Vec<&str> = m
         .split(|c: char| !c.is_alphanumeric() && c != 'ã' && c != 'é' && c != 'ê'
             && c != 'â' && c != 'ô' && c != 'ú' && c != 'í' && c != 'ó' && c != 'á'
@@ -71,11 +91,21 @@ fn gerar_resposta_emergente(
         t
     };
 
-    // 1. Palavra-âncora: token do input com MAIS conexões no grafo
-    //    (mais rico semanticamente). Fallback: maior |valência|.
+    // 1. Palavra-âncora: token do input com maior score combinado.
+    //    Score = conexões no grafo + 3 × grounding (palavras grounded têm prioridade —
+    //    ancorar em palavras com experiência perceptual real produz respostas mais "encarnadas").
+    //    Fallback: maior |valência| emocional.
     let ancora: Option<String> = tokens.iter()
-        .filter(|t| grafo.contains_key(**t))
-        .max_by_key(|t| grafo.get(**t).map(|v| v.len()).unwrap_or(0))
+        .filter(|t| grafo.contains_key(**t) && !STOP_WORDS.contains(t) && t.len() >= 3)
+        .max_by(|a, b| {
+            let conn_a = grafo.get(**a).map(|v| v.len()).unwrap_or(0) as f32;
+            let conn_b = grafo.get(**b).map(|v| v.len()).unwrap_or(0) as f32;
+            let g_a = grounding.get(**a).copied().unwrap_or(0.0);
+            let g_b = grounding.get(**b).copied().unwrap_or(0.0);
+            let score_a = conn_a + g_a * 3.0;
+            let score_b = conn_b + g_b * 3.0;
+            score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
+        })
         .map(|t| t.to_string())
         .or_else(|| {
             tokens.iter()
@@ -95,11 +125,24 @@ fn gerar_resposta_emergente(
     //    com o input. Entre candidatas com mesmo score, rotaciona via step
     //    para garantir diversidade mesmo quando a mesma palavra comum (ex: "voce")
     //    aparece em muitos inputs diferentes.
+    //
+    //    IMPORTANTE: usa topico_prefixo (sem stop-words e sem as próprias palavras
+    //    das frases_padrao) para o scoring. Isso evita que "selene" no input do usuário
+    //    acione sempre "meu nome é selene" (auto-referência) e que stop-words como
+    //    "que" façam frases com "que" ganharem sempre.
+    let palavras_em_frases: std::collections::HashSet<&str> = frases_padrao.iter()
+        .flat_map(|f| f.iter().map(|w| w.as_str()))
+        .collect();
+    let topico_prefixo: std::collections::HashSet<&str> = topico.iter()
+        .map(|w| w.as_str())
+        .filter(|w| !palavras_em_frases.contains(w) && !STOP_WORDS.contains(w))
+        .collect();
+
     let prefixo: Vec<String> = if !frases_padrao.is_empty() {
-        // Pontua todas as frases pelo overlap com o topico
+        // Pontua todas as frases pelo overlap com o topico_prefixo (sem auto-referências)
         let scored: Vec<(usize, usize)> = frases_padrao.iter()
             .enumerate()
-            .map(|(i, frase)| (i, frase.iter().filter(|w| topico.contains(*w)).count()))
+            .map(|(i, frase)| (i, frase.iter().filter(|w| topico_prefixo.contains(w.as_str())).count()))
             .collect();
 
         let max_overlap = scored.iter().map(|(_, c)| *c).max().unwrap_or(0);
@@ -110,13 +153,14 @@ fn gerar_resposta_emergente(
                 .filter(|(_, c)| *c == max_overlap)
                 .map(|(i, _)| *i)
                 .collect();
-            // Filtra cooldown: evita repetir o mesmo prefixo consecutivamente
+            // Filtra cooldown: evita repetir o mesmo prefixo (compara 3 primeiras palavras)
             let candidatos: Vec<usize> = {
                 let sem_cooldown: Vec<usize> = candidatos.iter().copied()
                     .filter(|&i| {
                         let frase = &frases_padrao[i];
                         !evitar.iter().any(|ev| {
-                            frase.len() >= 2 && ev.len() >= 2 && frase[0] == ev[0] && frase[1] == ev[1]
+                            let n = frase.len().min(ev.len()).min(3);
+                            n >= 2 && frase[..n] == ev[..n]
                         })
                     })
                     .collect();
@@ -242,6 +286,11 @@ fn gerar_resposta_emergente(
                     // Peso sináptico do grafo: arestas mais fortes são levemente preferidas
                     s1 -= (a.1 - 0.5) * 0.05;
                     s2 -= (b.1 - 0.5) * 0.05;
+                    // Grounding: palavras com experiência perceptual real são preferidas.
+                    // Uma palavra grounded (0.8) ganha bonus de -0.12 no score (menor = preferida).
+                    // Isso faz o walk "ancorar na realidade" ao invés de derivar no espaço linguístico.
+                    s1 -= grounding.get(a.0.as_str()).copied().unwrap_or(0.0) * 0.15;
+                    s2 -= grounding.get(b.0.as_str()).copied().unwrap_or(0.0) * 0.15;
                     // Coerência sintática trigrama: se (prev, atual) → next existe nos padrões,
                     // dá um bonus à palavra que continua o padrão aprendido.
                     if let Some(prev) = cadeia.iter().rev().nth(1) {
@@ -355,37 +404,13 @@ fn detectar_lacunas(
     candidatos.into_iter().take(max_lacunas).map(|(w, _)| w).collect()
 }
 
-/// Converte 32 bandas de frequência (0.0–1.0) em SpikePattern de 512 bits.
-/// 32 bandas × 16 neurônios/banda = 512 neurônios totais (N_NEURONS).
-/// Energia da banda determina quantos neurônios disparam naquele grupo:
-///   banda silenciosa (0.0) → 0 neurônios
-///   banda máxima    (1.0) → 16 neurônios (todos do grupo)
-/// Resultado: padrão auditivo esparso comparável por Jaccard com outros padrões.
-fn bands_to_spike_pattern(bands: &[f32]) -> crate::encoding::spike_codec::SpikePattern {
-    let mut pattern: crate::encoding::spike_codec::SpikePattern = [0u64; 8];
-    let neurons_per_band = crate::encoding::spike_codec::N_NEURONS / 32; // 16
-    for (b, &energy) in bands.iter().take(32).enumerate() {
-        let n_fire = ((energy.clamp(0.0, 1.0) * neurons_per_band as f32).round() as usize)
-            .min(neurons_per_band);
-        let base = b * neurons_per_band;
-        for j in 0..n_fire {
-            let neuron  = base + j;
-            let word_ix = neuron >> 6;
-            let bit_ix  = neuron & 63;
-            if word_ix < 8 { pattern[word_ix] |= 1u64 << bit_ix; }
-        }
-    }
-    pattern
-}
-
 /// Converte 512 pixels de luminância (0.0–1.0) em SpikePattern de 512 bits.
 /// Divide o frame em 32 regiões espaciais; a luminância média de cada região
 /// determina quantos neurônios disparam naquele grupo (0 a 16).
-/// Resultado: assinatura visual esparsa comparável por Jaccard com outros padrões.
 fn pixels_to_spike_pattern(pixels: &[f32]) -> crate::encoding::spike_codec::SpikePattern {
     let mut pattern: crate::encoding::spike_codec::SpikePattern = [0u64; 8];
     let n_regions: usize = 32;
-    let neurons_per_region = crate::encoding::spike_codec::N_NEURONS / n_regions; // 16
+    let neurons_per_region = crate::encoding::spike_codec::N_NEURONS / n_regions;
     let chunk = (pixels.len() / n_regions).max(1);
     for r in 0..n_regions {
         let start = r * chunk;
@@ -406,20 +431,8 @@ fn pixels_to_spike_pattern(pixels: &[f32]) -> crate::encoding::spike_codec::Spik
     pattern
 }
 
-/// Converte as taxas de disparo do córtex V2 (OccipitalLobe::visual_sweep) em SpikePattern.
-///
-/// visual_sweep() retorna até 8 valores de 0..100 (% de neurônios V2 disparando por chunk).
-/// Cada valor controla um u64 do pattern: taxa 100% → todos os 64 bits ligados.
-/// Resultado: representação esparsa das características visuais processadas (bordas,
-/// contraste, movimento) — muito mais rico que luminância bruta.
-fn features_to_spike_pattern(features: &[f32]) -> crate::encoding::spike_codec::SpikePattern {
-    let mut pattern: crate::encoding::spike_codec::SpikePattern = [0u64; 8];
-    for (fi, &rate) in features.iter().take(8).enumerate() {
-        let n_bits = ((rate / 100.0) * 64.0).round() as u32;
-        pattern[fi] = if n_bits >= 64 { u64::MAX } else { (1u64 << n_bits).saturating_sub(1) };
-    }
-    pattern
-}
+// Nota: features_to_spike_pattern e bands_to_spike_pattern foram movidas para
+// encoding::spike_codec (pub) e são importadas no topo deste arquivo.
 
 /// Gera uma pergunta autônoma a partir de uma lacuna no grafo.
 /// A pergunta é simples e direta, refletindo genuína curiosidade sobre o conceito.
@@ -485,38 +498,52 @@ fn fase_n2_podar(state: &mut crate::websocket::bridge::BrainState) {
 /// Liga pares de palavras que compartilham um vizinho em comum mas não estão
 /// diretamente conectadas — o equivalente a "sonhar" e formar novas ideias.
 fn fase_n3_rem(state: &mut crate::websocket::bridge::BrainState) {
+    use crate::encoding::spike_codec::is_active;
     let palavras: Vec<String> = state.grafo_associacoes.keys().cloned().collect();
     if palavras.len() < 3 { return; }
     let mut novas = 0usize;
     let mut replay = 0usize;
 
-    // ── Parte 1: Replay hipocampal — re-fortalece memórias episódicas ─────────
-    // Durante N3/REM, o hipocampo replica sequências de palavras co-ocorridas
-    // com emoção forte. Isso consolida memórias episódicas em semânticas.
+    // ── Parte 1: Replay hipocampal rico — usa EventoEpisodico completo ────────
+    // Durante N3/REM, o hipocampo replica eventos com contexto perceptual real.
+    // Eventos com percepção visual/auditiva real recebem bônus extra de consolidação.
     // Biologicamente: replay de "place cell" sequences durante NREM sharp-wave ripples.
-    let episodios: Vec<(String, String, f32)> = state.historico_episodico
+    let episodios: Vec<crate::websocket::bridge::EventoEpisodico> = state.historico_episodico
         .iter()
-        .filter(|(_, _, em)| em.abs() > 0.35) // só episódios emocionalmente salientes
+        .filter(|ev| ev.emocao.abs() > 0.35) // só episódios emocionalmente salientes
         .cloned()
         .collect();
 
-    for (wa, wb, emocao_ep) in &episodios {
-        // Reforça a aresta wa→wb proporcionalmente à intensidade emocional do episódio
-        let bonus = emocao_ep.abs() * 0.06; // pequeno reforço por replay
-        if let Some(vizinhos) = state.grafo_associacoes.get_mut(wa) {
-            if let Some(aresta) = vizinhos.iter_mut().find(|(w, _)| w == wb) {
-                aresta.1 = (aresta.1 + bonus).min(0.98); // não ultrapassa bigram sequencial
-                replay += 1;
-            } else {
-                // Cria a aresta se não existe (nova associação por replay)
-                vizinhos.push((wb.clone(), (0.35 + bonus).min(0.65)));
-                replay += 1;
-                novas += 1;
+    for ev in &episodios {
+        let bonus = ev.emocao.abs() * 0.06;
+        // Reforça todos os pares consecutivos de palavras do evento
+        for i in 0..ev.palavras.len().saturating_sub(1) {
+            let wa = &ev.palavras[i];
+            let wb = &ev.palavras[i + 1];
+            if let Some(vizinhos) = state.grafo_associacoes.get_mut(wa) {
+                if let Some(aresta) = vizinhos.iter_mut().find(|(w, _)| w == wb) {
+                    aresta.1 = (aresta.1 + bonus).min(0.98);
+                    replay += 1;
+                } else {
+                    vizinhos.push((wb.clone(), (0.35 + bonus).min(0.65)));
+                    replay += 1;
+                    novas += 1;
+                }
             }
+            // Atualiza peso emocional
+            let entry = state.emocao_palavras.entry(wa.clone()).or_insert(0.0);
+            *entry = (*entry * 0.90 + ev.emocao * 0.10).clamp(-1.0, 1.0);
         }
-        // Também atualiza peso emocional acumulado
-        let entry = state.emocao_palavras.entry(wa.clone()).or_insert(0.0);
-        *entry = (*entry * 0.90 + emocao_ep * 0.10).clamp(-1.0, 1.0);
+        // Bônus de grounding via replay: percepção real durante o evento
+        // faz com que as palavras ganhem grounding extra ao serem re-experienciadas.
+        let visual_ativo = is_active(&ev.padrao_visual);
+        let audio_ativo  = is_active(&ev.padrao_audio);
+        for w in &ev.palavras {
+            let g = state.grounding.entry(w.clone()).or_insert(0.0);
+            if visual_ativo { *g = (*g + bonus * 0.4).min(1.0); }
+            if audio_ativo  { *g = (*g + bonus * 0.25).min(1.0); }
+            *g = (*g + bonus * 0.15).min(1.0); // interoceptivo
+        }
     }
 
     // ── Parte 2: Fechamento transitivo criativo ───────────────────────────────
@@ -783,6 +810,27 @@ pub async fn handle_connection(
                                         println!("💬 [CHAT] Lock adquirido. Gerando resposta...");
                                         let (dopa, sero, _nor) = state.neurotransmissores;
                                         let (step, alerta, emocao) = state.atividade;
+
+                                        // ── HIPÓTESES: testa predições do turno anterior ──
+                                        // Confronta o que Selene previu com o que o usuário realmente disse.
+                                        // RPE positivo = previsão correta → reforça grounding das palavras previstas.
+                                        // RPE negativo = previsão errada → enfraquece associações equivocadas.
+                                        {
+                                            let input_tokens_hip: Vec<String> = mensagem
+                                                .to_lowercase()
+                                                .split(|c: char| !c.is_alphabetic()
+                                                    && !"áéíóúâêôãõçàü".contains(c))
+                                                .filter(|w| w.len() >= 3
+                                                    && !STOP_WORDS.contains(w))
+                                                .map(|w| w.to_string())
+                                                .collect();
+                                            let val_clone = state.palavra_valencias.clone();
+                                            let rpe_hip = state.hypothesis_engine
+                                                .testar(&input_tokens_hip, &val_clone);
+                                            if rpe_hip.abs() > 0.05 {
+                                                state.grounding_rpe(rpe_hip);
+                                            }
+                                        }
                                         println!("💬 [CHAT] Estado: step={} emocao={:.2} dopa={:.2} vocab={} grafo={} frases={}",
                                             step, emocao, dopa,
                                             state.palavra_valencias.len(),
@@ -862,6 +910,7 @@ pub async fn handle_connection(
                                             &mut caminho_local,
                                             &state.emocao_palavras,
                                             &mut prefixo_buf,
+                                            &state.grounding,
                                         );
                                         state.ultimos_prefixos.push_back(prefixo_buf);
                                         if state.ultimos_prefixos.len() > 5 { state.ultimos_prefixos.pop_front(); }
@@ -934,6 +983,44 @@ pub async fn handle_connection(
                                         }
                                         println!("💬 [CHAT] Reply gerado: «{}»", reply);
 
+                                        // ── HIPÓTESES: formula predições + observa próprio comportamento ──
+                                        // 1. Formula hipóteses sobre o que o próximo input provavelmente conterá,
+                                        //    baseado no contexto atual e no grafo de associações.
+                                        // 2. Observa o próprio padrão de resposta — quando o mesmo padrão
+                                        //    se repete 3× gera uma hipótese ComportamentalPropria,
+                                        //    que é o radar inicial para futura autoprogramação.
+                                        {
+                                            let ctx_hip: Vec<String> = {
+                                                let mut c = conversa_ctx.clone();
+                                                c.extend(state.neural_context.iter().cloned());
+                                                c
+                                            };
+                                            let grafo_ref = &state.grafo_associacoes.clone();
+                                            let val_ref   = &state.palavra_valencias.clone();
+                                            state.hypothesis_engine.formular(
+                                                &ctx_hip, grafo_ref, val_ref,
+                                                emocao_resposta, STOP_WORDS,
+                                            );
+                                            // Registra última resposta para teste no próximo turno
+                                            state.hypothesis_engine.ultimo_reply = reply.clone();
+                                            // Observa padrão comportamental próprio
+                                            let chave_hip = conversa_ctx.iter().rev()
+                                                .find(|w| !STOP_WORDS.contains(&w.as_str())
+                                                    && w.len() >= 3)
+                                                .cloned()
+                                                .unwrap_or_default();
+                                            let reply_resumido: String = reply
+                                                .split_whitespace().take(4)
+                                                .collect::<Vec<_>>().join(" ");
+                                            state.hypothesis_engine.observar_comportamento(
+                                                &chave_hip, &reply_resumido,
+                                            );
+                                            // Log de diagnóstico (a cada 10 replies)
+                                            if state.reply_count % 10 == 0 {
+                                                println!("🧠 [HIP] {}", state.hypothesis_engine.resumo());
+                                            }
+                                        }
+
                                         // Registra evento real no ego — o que foi perguntado e respondido
                                         let pensamento = if let Some(ref pw) = palavra_chave {
                                             format!("Perguntado: «{}» | palavra-chave: «{}» (val={:+.2})", mensagem, pw, valence)
@@ -995,6 +1082,27 @@ pub async fn handle_connection(
                                             }
                                         }
 
+                                        // ── GROUNDING BINDING via chat ──────────────────
+                                        // Vincula palavras do input ao contexto perceptual atual
+                                        // ANTES de liberar o lock (precisamos de &mut state).
+                                        // O usuário nomeia coisas enquanto Selene as percebe —
+                                        // essa co-ativação é o mecanismo de grounding semântico.
+                                        {
+                                            let palavras_ground: Vec<String> = msg_lower
+                                                .split_whitespace()
+                                                .filter(|w| w.len() > 2)
+                                                .map(|w| w.trim_matches(|c: char| !c.is_alphabetic()).to_string())
+                                                .filter(|w| !w.is_empty())
+                                                .take(8)
+                                                .collect();
+                                            let vpad = state.ultimo_padrao_visual;
+                                            let apad = state.ultimo_padrao_audio;
+                                            state.grounding_bind(
+                                                &palavras_ground, vpad, apad,
+                                                emocao_resposta, alerta, 0.0,
+                                            );
+                                        }
+
                                         // Coleta neurotransmissores para voz ANTES de liberar o lock
                                         let (dop2, ser2, nor2) = state.neurotransmissores;
                                         // Snapshots para persistência (clonados antes de liberar o lock)
@@ -1015,12 +1123,22 @@ pub async fn handle_connection(
                                             .map(|w| w.to_lowercase()
                                                 .trim_matches(|c: char| !c.is_alphabetic())
                                                 .to_string())
-                                            .filter(|w| !w.is_empty())
+                                            .filter(|w| !w.is_empty()
+                                                && !STOP_WORDS.contains(&w.as_str()))
                                             .collect();
-                                        conversa_ctx.extend(input_words);
+                                        // Deduplicação: move palavras já no ctx para o fim
+                                        // (reforça recência sem acumular duplicatas que
+                                        // fixariam a âncora do walk e gerariam loop de resposta)
+                                        for w in &input_words {
+                                            if let Some(pos) = conversa_ctx.iter().position(|x| x == w) {
+                                                conversa_ctx.remove(pos);
+                                            }
+                                            conversa_ctx.push(w.clone());
+                                        }
                                         if conversa_ctx.len() > 150 {
                                             conversa_ctx.drain(0..conversa_ctx.len() - 120);
                                         }
+
 
                                         // Persiste traços e pensamentos (fire-and-forget)
                                         if emocao_resposta.abs() > 0.4 {
@@ -1135,28 +1253,19 @@ pub async fn handle_connection(
                                                 if !vizinhos.iter().any(|(w, _)| w == &w2) {
                                                     vizinhos.push((w2.clone(), 0.60));
                                                 }
-                                                // Histórico episódico para replay N3/REM
-                                                if emocao_atual.abs() > 0.25 {
-                                                    state.historico_episodico.push_back(
-                                                        (w1.clone(), w2.clone(), emocao_atual)
+                                                // Grounding binding auditivo — audio_learn é um evento
+                                                // rico: o usuário fala enquanto Selene ouve as bandas FFT.
+                                                // É o caso mais puro de grounding: som → palavra → percepção.
+                                                if emocao_atual.abs() > 0.10 || true {
+                                                    // Sempre registra o binding auditivo (baixo custo)
+                                                    let vpad = state.ultimo_padrao_visual;
+                                                    let palavras_par = vec![w1.clone(), w2.clone()];
+                                                    state.grounding_bind(
+                                                        &palavras_par,
+                                                        vpad, audio_pat,
+                                                        emocao_atual, 0.5,
+                                                        0.0, // tempo_ms não disponível aqui
                                                     );
-                                                    // Compressão: quando cheio, mescla entradas menos salientes
-                                                    // ao invés de descartar — preserva memórias antigas mais intensas
-                                                    if state.historico_episodico.len() > 500 {
-                                                        // Remove a entrada com MENOR valência absoluta (menos saliente)
-                                                        // entre as primeiras 100 (mais antigas), não a mais recente
-                                                        if let Some(min_pos) = state.historico_episodico
-                                                            .iter()
-                                                            .take(100)
-                                                            .enumerate()
-                                                            .min_by(|a, b| a.1.2.abs().partial_cmp(&b.1.2.abs()).unwrap())
-                                                            .map(|(i, _)| i)
-                                                        {
-                                                            state.historico_episodico.remove(min_pos);
-                                                        } else {
-                                                            state.historico_episodico.pop_front();
-                                                        }
-                                                    }
                                                 }
                                             }
                                         }
@@ -1184,6 +1293,97 @@ pub async fn handle_connection(
                                             "event": "audio_learn_ack",
                                             "palavras": n,
                                         }).to_string();
+                                        let _ = ws_tx.send(Message::text(ack)).await;
+                                    }
+                                }
+
+                                // ── AUDIO_RAW: reconhecimento auditivo sem STT ──────────────────────────
+                                // Recebe apenas as bandas FFT (sem transcript).
+                                // Selene busca no spike_vocab["audio:*"] o padrão mais similar
+                                // e injeta a palavra reconhecida em neural_context — a mesma fila
+                                // que o loop neural alimenta com chunks temporais e goals frontais.
+                                // A resposta é gerada naturalmente na próxima interação de chat.
+                                //
+                                // Protocolo do cliente:
+                                //   {"event":"audio_raw","bands":[f32×32],"energia":f32}
+                                //
+                                // Resposta:
+                                //   {"event":"audio_raw_ack","palavra":"força","confianca":0.72}
+                                //   {"event":"audio_raw_ack","palavra":null,"confianca":0.0}
+                                Some("audio_raw") => {
+                                    let bands: Vec<f32> = json["bands"].as_array()
+                                        .map(|a| a.iter()
+                                            .filter_map(|v| v.as_f64().map(|f| f as f32))
+                                            .collect())
+                                        .unwrap_or_default();
+                                    let energia: f32 = json["energia"].as_f64()
+                                        .unwrap_or(0.0) as f32;
+
+                                    // Todo frame passa pelo acumulador — ele integra frames
+                                    // de 46ms e só emite quando detecta fronteira de palavra
+                                    // (~300-500ms de fala, análogo ao córtex auditivo secundário)
+                                    if bands.len() >= 16 {
+                                        let mut state = brain.lock().await;
+
+                                        let palavra_completa = state.audio_acumulador
+                                            .processar(&bands, energia, 0.0);
+
+                                        let (melhor_palavra, melhor_sim) = if let Some(ref bandas_palavra) = palavra_completa {
+                                            // Palavra completa: padrão médio de N frames >> qualidade
+                                            let audio_pat = bands_to_spike_pattern(bandas_palavra);
+                                            let mut melhor: Option<String> = None;
+                                            let mut sim_max: f32 = 0.0;
+
+                                            for (chave, pat_ref) in &state.spike_vocab {
+                                                if let Some(palavra) = chave.strip_prefix("audio:") {
+                                                    let sim = spike_similarity(&audio_pat, pat_ref);
+                                                    if sim > sim_max {
+                                                        sim_max = sim;
+                                                        melhor = Some(palavra.to_string());
+                                                    }
+                                                }
+                                            }
+
+                                            const LIMIAR: f32 = 0.55;
+                                            if sim_max >= LIMIAR {
+                                                if let Some(ref palavra) = melhor {
+                                                    println!("🎙️ [AUDIO_RAW] «{}» (sim={:.2})",
+                                                        palavra, sim_max);
+
+                                                    if state.neural_context.len() >= 20 {
+                                                        state.neural_context.pop_front();
+                                                    }
+                                                    state.neural_context.push_back(palavra.clone());
+
+                                                    let vpad = state.ultimo_padrao_visual;
+                                                    let emocao = state.emocao_bias;
+                                                    state.grounding_bind(
+                                                        &[palavra.clone()],
+                                                        vpad, audio_pat,
+                                                        emocao, sim_max,
+                                                        0.0,
+                                                    );
+
+                                                    if emocao.abs() > 0.15 {
+                                                        let entry = state.emocao_palavras
+                                                            .entry(palavra.clone()).or_insert(0.0);
+                                                        *entry = (*entry * 0.85 + emocao * 0.15)
+                                                            .clamp(-1.0, 1.0);
+                                                    }
+                                                }
+                                            }
+                                            (melhor, sim_max)
+                                        } else {
+                                            (None, 0.0) // ainda acumulando frames
+                                        };
+
+                                        let ack = serde_json::json!({
+                                            "event": "audio_raw_ack",
+                                            "palavra": melhor_palavra,
+                                            "confianca": melhor_sim,
+                                            "acumulando": palavra_completa.is_none(),
+                                        }).to_string();
+                                        drop(state);
                                         let _ = ws_tx.send(Message::text(ack)).await;
                                     }
                                 }
@@ -1764,6 +1964,7 @@ pub async fn handle_connection(
                                     &mut caminho_q,
                                     &state.emocao_palavras,
                                     &mut prefixo_buf,
+                                    &state.grounding,
                                 );
                                 state.ultimos_prefixos.push_back(prefixo_buf);
                                 if state.ultimos_prefixos.len() > 5 { state.ultimos_prefixos.pop_front(); }

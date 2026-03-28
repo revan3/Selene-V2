@@ -441,25 +441,34 @@ async fn async_main() {
         // B. Bioquímica
         neuro.update(&mut *sensor.lock().await, &config);
 
+        // B0. Atualiza buffer perceptual no BrainState — snapshot do estado atual
+        // para que o chat handler possa fazer grounding binding contextualizado.
+        if let Ok(mut bs) = brain_state.try_lock() {
+            bs.ultimo_estado_corpo = [
+                neuro.dopamine, neuro.serotonin, neuro.noradrenaline,
+                neuro.acetylcholine, neuro.cortisol,
+            ];
+        }
+
         // B1. Neuromodulação global — propaga dopamina/serotonina/cortisol para TODOS os lobos.
         if step % 5 == 0 {
-            let (da, ser, cor) = (neuro.dopamine, neuro.serotonin, neuro.cortisol);
-            occipital.v1_primary_layer.modular_neuro(da, ser, cor);
-            occipital.v2_feature_layer.modular_neuro(da, ser, cor);
-            temporal.recognition_layer.modular_neuro(da, ser, cor);
-            frontal.executive_layer.modular_neuro(da, ser, cor);
-            frontal.inhibitory_layer.modular_neuro(da, ser, cor);
-            limbic.amygdala.modular_neuro(da, ser, cor);
-            limbic.nucleus_accumbens.modular_neuro(da, ser, cor);
+            let (da, ser, cor, ach) = (neuro.dopamine, neuro.serotonin, neuro.cortisol, neuro.acetylcholine);
+            occipital.v1_primary_layer.modular_neuro_v3(da, ser, cor, ach);
+            occipital.v2_feature_layer.modular_neuro_v3(da, ser, cor, ach);
+            temporal.recognition_layer.modular_neuro_v3(da, ser, cor, ach);
+            frontal.executive_layer.modular_neuro_v3(da, ser, cor, ach);
+            frontal.inhibitory_layer.modular_neuro_v3(da, ser, cor, ach);
+            limbic.amygdala.modular_neuro_v3(da, ser, cor, ach);
+            limbic.nucleus_accumbens.modular_neuro_v3(da, ser, cor, ach);
             // Fix 7a: ACh modula hipocampo — alta ACh = codificação mais nítida.
             // Biologicamente: projeções colinérgicas do núcleo basal → CA1/CA3.
             // Efeito: ACh alta reduz cortisol efetivo no hipocampo (neurônios mais sensíveis).
             let cor_hippo = (cor * (1.0 - neuro.acetylcholine * 0.3)).clamp(0.0, 1.0);
             hippocampus.ca1_encoding.modular_neuro(da, ser * neuro.acetylcholine.clamp(0.5, 1.2), cor_hippo);
             hippocampus.ca3_recurrent.modular_neuro(da, ser, cor_hippo);
-            parietal.integration_layer.modular_neuro(da, ser, cor);
-            cerebelo.purkinje_layer.modular_neuro(da, ser, cor);
-            cerebelo.granular_layer.modular_neuro(da, ser, cor);
+            parietal.integration_layer.modular_neuro_v3(da, ser, cor, ach);
+            cerebelo.purkinje_layer.modular_neuro_v3(da, ser, cor, ach);
+            cerebelo.granular_layer.modular_neuro_v3(da, ser, cor, ach);
             // Propaga serotonina para working memory do frontal (afeta decay WM)
             frontal.set_serotonin(neuro.serotonin);
             frontal.set_dopamine(neuro.dopamine);
@@ -484,10 +493,11 @@ async fn async_main() {
                     / wm_snaps.len() as f32;
                 // Alta certeza WM → temporal suprime entradas previstas levemente
                 let inibicao_preditiva = (wm_certeza * neuro.dopamine * 0.15).clamp(0.0, 0.25);
-                temporal.recognition_layer.modular_neuro(
+                temporal.recognition_layer.modular_neuro_v3(
                     da * (1.0 - inibicao_preditiva),
                     ser,
                     cor + inibicao_preditiva * 0.5,
+                    ach,
                 );
             }
         }
@@ -519,6 +529,40 @@ async fn async_main() {
         // C. Filtragem sensorial
         let raw_retina = rx_vision.try_recv().unwrap_or_else(|_| vec![0.0f32; n_neurons]);
         let audio_signal = rx_audio.try_recv().ok();
+
+        // ── Reconhecimento auditivo via microfone (córtex auditivo secundário) ──
+        // Quando o acumulador interno do audio.rs detecta fim de palavra,
+        // AudioSignal.palavra_completa fica Some(bandas_medias).
+        // Aqui fazemos a busca no spike_vocab e injetamos em neural_context —
+        // mesmo mecanismo do WebSocket audio_raw, mas para microfone físico.
+        if let Some(ref sig) = audio_signal {
+            if let Some(ref bandas_palavra) = sig.palavra_completa {
+                use crate::encoding::spike_codec::{bands_to_spike_pattern, similarity as spike_sim};
+                let audio_pat = bands_to_spike_pattern(bandas_palavra);
+                if let Ok(mut bs) = brain_state.try_lock() {
+                    let mut melhor: Option<String> = None;
+                    let mut sim_max: f32 = 0.0;
+                    for (chave, pat_ref) in &bs.spike_vocab {
+                        if let Some(palavra) = chave.strip_prefix("audio:") {
+                            let s = spike_sim(&audio_pat, pat_ref);
+                            if s > sim_max { sim_max = s; melhor = Some(palavra.to_string()); }
+                        }
+                    }
+                    if sim_max >= 0.55 {
+                        if let Some(ref palavra) = melhor {
+                            println!("🎙️ [MIC] Reconheceu «{}» (sim={:.2})", palavra, sim_max);
+                            if bs.neural_context.len() >= 20 { bs.neural_context.pop_front(); }
+                            bs.neural_context.push_back(palavra.clone());
+                            let vpad = bs.ultimo_padrao_visual;
+                            let apad = audio_pat;
+                            let emocao = bs.emocao_bias;
+                            bs.grounding_bind(&[palavra.clone()], vpad, apad, emocao, sim_max, 0.0);
+                        }
+                    }
+                }
+            }
+        }
+
         let raw_cochlea: Vec<f32> = match audio_signal {
             Some(sig) => {
                 let mut v = sig.bandas.clone();
@@ -583,6 +627,25 @@ async fn async_main() {
                 (suppressed + inter).clamp(0.0, 1.0) * stability_factor * alertness_gain
             })
             .collect();
+
+        // B_percept: Atualiza padrões sensoriais no BrainState para grounding.
+        // Features visuais e bandas auditivas são convertidas em SpikePattern
+        // e ficam disponíveis para o chat handler vincular palavras a percepções.
+        if step % 10 == 0 {
+            use crate::encoding::spike_codec::{features_to_spike_pattern, bands_to_spike_pattern};
+            // Nota: vision_features ainda não calculado aqui; usamos prev_v1_rates
+            // como proxy (rates do tick anterior — 1-tick de latência, biologicamente plausível).
+            let vpad = features_to_spike_pattern(
+                &prev_v1_rates.iter().take(8).map(|&v| v * 100.0).collect::<Vec<_>>()
+            );
+            let apad = bands_to_spike_pattern(
+                &cochlea_input.iter().take(32).copied().collect::<Vec<_>>()
+            );
+            if let Ok(mut bs) = brain_state.try_lock() {
+                bs.ultimo_padrao_visual = vpad;
+                bs.ultimo_padrao_audio  = apad;
+            }
+        }
 
         // ── PRÉ-WAVE: cochlea_alertado + query de roteamento ─────────────────
         let safe_len = 10.min(cochlea_input.len());
@@ -957,6 +1020,41 @@ async fn async_main() {
             chunking.aplicar_rpe(rpe);
         }
 
+        // G2. Grounding semântico — vincula palavras do neural_context ao contexto perceptual.
+        // A cada 100 ticks (~0.5s): registra um EventoEpisodico com o estado perceptual atual.
+        // Isso implementa a camada de significado: palavras co-ativadas com percepções reais
+        // ganham grounding score maior e são preferidas como âncoras nas respostas.
+        if step % 100 == 0 {
+            use crate::encoding::spike_codec::{features_to_spike_pattern, bands_to_spike_pattern};
+            let vpad = features_to_spike_pattern(
+                &prev_v1_rates.iter().take(8).map(|&v| v * 100.0).collect::<Vec<_>>()
+            );
+            let apad = bands_to_spike_pattern(
+                &cochlea_input.iter().take(32).copied().collect::<Vec<_>>()
+            );
+            if let Ok(mut bs) = brain_state.try_lock() {
+                let palavras: Vec<String> = bs.neural_context.iter()
+                    .filter(|w| w.len() > 2)
+                    .cloned()
+                    .take(8)
+                    .collect();
+                if !palavras.is_empty() {
+                    let tms = current_time * 1000.0;
+                    bs.grounding_bind(&palavras, vpad, apad, emotion, atividade_recente, tms as f64);
+                }
+                // Propaga RPE ao grounding (predições corretas solidificam o grounding)
+                let rpe_atual = bs.ultimo_rpe;
+                bs.grounding_rpe(rpe_atual);
+            }
+        }
+
+        // Decaimento global de grounding a cada 1000 ticks (~5s)
+        if step % 1000 == 0 {
+            if let Ok(mut bs) = brain_state.try_lock() {
+                bs.grounding_decay();
+            }
+        }
+
         // H. Comunicação entre hemisférios — dados reais de spikes
         // Hemisfério esquerdo (temporal/linguagem) → direito (parietal/espacial)
         // Hemisfério direito (parietal/visual) → esquerdo (frontal/execução)
@@ -1087,14 +1185,18 @@ async fn async_main() {
             let wm_ativo = wm_snap.iter().any(|(sal, med)| *sal > 0.5 && *med > 0.3);
             if wm_ativo {
                 if let Ok(mut bs) = brain_state.try_lock() {
-                    // Marca que o frontal tem foco ativo — reforça palavras já no contexto
-                    // (aumenta a saliência das que já estão, em vez de adicionar ruído novo)
+                    // WM ativo: move palavras já no contexto com conexões no grafo para o
+                    // final da fila (aumenta saliência temporal sem duplicar).
                     let boost: Vec<String> = bs.neural_context.iter()
                         .filter(|w| bs.grafo_associacoes.contains_key(w.as_str()))
                         .cloned()
                         .collect();
-                    for w in boost {
-                        bs.neural_context.push_back(w);
+                    for w in &boost {
+                        // Remove a ocorrência existente e reinsere no final (sem duplicar)
+                        if let Some(pos) = bs.neural_context.iter().position(|x| x == w) {
+                            bs.neural_context.remove(pos);
+                            bs.neural_context.push_back(w.clone());
+                        }
                     }
                     while bs.neural_context.len() > 20 {
                         bs.neural_context.pop_front();

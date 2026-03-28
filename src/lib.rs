@@ -22,6 +22,7 @@ pub mod interoception;
 pub mod basal_ganglia;
 pub mod brainstem;
 pub mod learning;
+pub mod meta;
 
 // Re-exportações
 pub use sleep_manager::SleepManagerV2 as SleepManager;
