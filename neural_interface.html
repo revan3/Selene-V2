@@ -410,32 +410,7 @@ header::after {
 .ico-send:disabled { opacity: 0.3; background: var(--border); color: var(--muted); cursor: not-allowed; }
 @keyframes rec-pulse { from{box-shadow:0 0 4px rgba(255,61,92,0.3)} to{box-shadow:0 0 14px rgba(255,61,92,0.7)} }
 
-/* ══════════════════════════════════════════
-   PENSAMENTOS NAO DITOS (bottom-right)
-══════════════════════════════════════════ */
-.pensamentos-panel {
-  background: var(--surface);
-  display: flex; flex-direction: column;
-  overflow: hidden;
-  border-left: 1px solid var(--border);
-}
-#pensamentos-stream {
-  flex: 1; overflow-y: auto; padding: 8px 10px;
-  scrollbar-width: thin; scrollbar-color: var(--border) transparent;
-}
-#pensamentos-stream::-webkit-scrollbar { width: 3px; }
-#pensamentos-stream::-webkit-scrollbar-thumb { background: var(--border); }
-.pens-item {
-  padding: 5px 0; border-bottom: 1px solid rgba(26,45,64,0.4);
-  animation: msg-in 0.2s ease both;
-}
-.pens-ts  { font-family: var(--mono); font-size: 8px; color: rgba(74,112,144,0.6); margin-bottom: 2px; }
-.pens-txt { font-family: var(--sans); font-size: 11.5px; color: rgba(140,175,200,0.6);
-  font-style: italic; line-height: 1.45; }
-.pens-empty {
-  font-family: var(--mono); font-size: 10px; color: rgba(74,112,144,0.35);
-  text-align: center; padding-top: 30px; letter-spacing: 0.08em;
-}
+/* pensamentos-panel removido — pensamentos visíveis via ego.pensamentos no painel de métricas */
 
 /* Connect modal */
 #conn-modal {
@@ -701,13 +676,6 @@ header::after {
     </div>
   </div>
 
-  <!-- PENSAMENTOS NAO DITOS -->
-  <div class="pensamentos-panel">
-    <div class="panel-label">PENSAMENTOS NAO DITOS</div>
-    <div id="pensamentos-stream">
-      <div class="pens-empty">AGUARDANDO PROCESSAMENTO INTERNO...</div>
-    </div>
-  </div>
 
 </div><!-- /main-grid -->
 </div><!-- /app -->
@@ -778,8 +746,10 @@ header::after {
     .on('zoom', e => gMain.attr('transform', e.transform)));
 
   function fit() {
-    W = panel.clientWidth  || 300;
-    H = panel.clientHeight || 200;
+    // Usa o tamanho real do elemento SVG (position:absolute preenche o panel menos o label)
+    const rect = svgEl.getBoundingClientRect();
+    W = (rect.width  > 10 ? rect.width  : panel.clientWidth)  || 400;
+    H = (rect.height > 10 ? rect.height : panel.clientHeight - 28) || 220;
     S.attr('width', W).attr('height', H);
     S.select('#gbg').attr('width', W).attr('height', H);
     S.select('#gempty').attr('x', W/2).attr('y', H/2);
@@ -789,9 +759,9 @@ header::after {
   }
 
   // Fit imediato + com delay (garante que o grid CSS já calculou)
-  fit();
-  setTimeout(fit, 100);
-  setTimeout(fit, 500);
+  setTimeout(fit, 50);
+  setTimeout(fit, 200);
+  setTimeout(fit, 600);
   window.addEventListener('resize', fit);
   new ResizeObserver(fit).observe(panel);
 
@@ -802,7 +772,19 @@ header::after {
   }
 
   window.updateMentalGraph = function(data) {
+    // Garante dimensões corretas antes de posicionar os nós
+    fit();
+
     S.select('#gempty').remove();
+
+    if (!data.nodes || data.nodes.length === 0) {
+      S.append('text').attr('id','gempty')
+        .attr('fill','#2a3f5a').attr('font-size','11px')
+        .attr('font-family','monospace').attr('text-anchor','middle')
+        .attr('x', W/2).attr('y', H/2)
+        .text('Selene ainda aprendendo palavras...');
+      return;
+    }
 
     // Preserva posições
     const pos = {};
@@ -1070,12 +1052,11 @@ function updateTelemetry(s) {
   const tracos = s.ego?.tracos ?? [];
   if (tracos.length) updateTracos(tracos);
 
-  // Pensamentos — apenas novos
+  // Pensamentos do ego (introspection) — exibidos no console de debug
   const pens = s.ego?.pensamentos ?? [];
   pens.forEach(p => {
     if (p && !state.pensamentosVisto.has(p)) {
       state.pensamentosVisto.add(p);
-      appendPensamento(p);
       if (state.pensamentosVisto.size > 300) {
         const first = state.pensamentosVisto.values().next().value;
         state.pensamentosVisto.delete(first);

@@ -52,8 +52,12 @@ pub async fn start_websocket_server(brain_state: Arc<Mutex<BrainState>>) {
     let manifest = warp::path("manifest.json").and(warp::fs::file("selene_manifest.json"));
     let sw      = warp::path("sw.js").and(warp::fs::file("selene_sw.js"));
 
+    // Serve arquivos estáticos do diretório de trabalho (d3.v7.min.js, etc.)
+    // Deve ser o último da cadeia — só alcançado se nenhuma outra rota bater.
+    let static_dir = warp::fs::dir(".");
+
     // Combina as rotas
-    let routes = index.or(mobile).or(manifest).or(sw).or(ws_route);
+    let routes = index.or(mobile).or(manifest).or(sw).or(ws_route).or(static_dir);
 
     // Descobre o IP local para exibir no console
     let local_ip = local_ip_address();
