@@ -353,6 +353,12 @@ async fn async_main() {
         websocket::start_websocket_server(state_for_server).await;
     });
 
+    // ── Eternal Hole: ciclos de pensamento interno autônomo ───────────────
+    // Consciente (50Hz): caminha a partir do neural_context atual → enriquece respostas.
+    // Inconsciente (10Hz): deriva livre pelo grafo → cria associações transitivas.
+    // Ambos usam try_lock — não bloqueiam o loop neural nem o chat handler.
+    crate::learning::pensamento::iniciar_ciclos_pensamento(Arc::clone(&brain_state));
+
     println!("\n✨ --- SELENE BRAIN 2.0: BIO-HARDWARE SYSTEM ONLINE --- ✨\n");
 
     // --- 12. ESTADO INICIAL ---

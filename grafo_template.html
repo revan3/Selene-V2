@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Grafo Mental da Selene</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#0a0a1a; color:#e0e0ff; font-family:"Segoe UI",sans-serif; overflow:hidden; }
+#canvas { width:100vw; height:100vh; }
+#ui { position:fixed; top:16px; left:16px; z-index:10; display:flex; flex-direction:column; gap:6px; }
+#title { font-size:18px; font-weight:bold; color:#a78bfa; text-shadow:0 0 12px #7c3aed; }
+#subtitle { font-size:12px; color:#6b7280; }
+#stats { font-size:12px; color:#4ade80; }
+#legend {
+  position:fixed; bottom:16px; left:16px; z-index:10;
+  display:flex; flex-direction:column; gap:4px;
+  background:rgba(10,10,26,0.85); padding:10px 14px; border-radius:8px; border:1px solid #1f1f3a;
+}
+.leg-item { display:flex; align-items:center; gap:8px; font-size:12px; }
+.leg-dot { width:12px; height:12px; border-radius:50%; }
+#search { position:fixed; top:16px; right:16px; z-index:10; display:flex; gap:6px; }
+#search input {
+  background:#1a1a2e; border:1px solid #3730a3; border-radius:6px;
+  padding:6px 12px; color:#e0e0ff; font-size:13px; width:200px; outline:none;
+}
+#search input:focus { border-color:#7c3aed; }
+#search button {
+  background:#3730a3; border:none; border-radius:6px;
+  padding:6px 12px; color:#e0e0ff; cursor:pointer; font-size:13px;
+}
+#filter-panel {
+  position:fixed; top:95px; left:16px; z-index:10;
+  background:rgba(10,10,26,0.85); border:1px solid #1f1f3a;
+  border-radius:8px; padding:10px 14px;
+}
+#filter-panel label { font-size:12px; color:#94a3b8; }
+#filter-panel input[type=range] { width:140px; accent-color:#7c3aed; display:block; margin-top:4px; }
+#filter-val { color:#a78bfa; }
+#controls {
+  position:fixed; bottom:16px; right:16px; z-index:10;
+  display:flex; flex-direction:column; gap:6px; align-items:flex-end;
+}
+.ctrl-btn {
+  background:rgba(55,48,163,0.6); border:1px solid #3730a3;
+  border-radius:6px; padding:6px 12px; color:#e0e0ff; cursor:pointer; font-size:12px;
+}
+.ctrl-btn:hover { background:rgba(67,56,202,0.8); }
+#tooltip {
+  position:fixed; pointer-events:none; z-index:20;
+  background:rgba(10,10,26,0.95); border:1px solid #7c3aed;
+  border-radius:8px; padding:10px 14px; font-size:13px;
+  display:none; max-width:260px; box-shadow:0 0 20px #7c3aed44;
+}
+#tooltip .word { font-size:16px; font-weight:bold; color:#a78bfa; margin-bottom:4px; }
+</style>
+</head>
+<body>
+
+<div id="ui">
+  <div id="title">&#x1F9E0; Grafo Mental &mdash; Selene</div>
+  <div id="subtitle">Associacoes aprendidas autonomamente</div>
+  <div id="stats">Carregando...</div>
+</div>
+
+<div id="legend">
+  <div style="font-size:11px;color:#6b7280;margin-bottom:4px">LEGENDA</div>
+  <div class="leg-item"><div class="leg-dot" style="background:#f59e0b;box-shadow:0 0 6px #f59e0b"></div> Personagens / Manhwa</div>
+  <div class="leg-item"><div class="leg-dot" style="background:#a78bfa;box-shadow:0 0 6px #7c3aed"></div> Vocabulario central</div>
+  <div class="leg-item"><div class="leg-dot" style="background:#38bdf8"></div> Associacoes</div>
+</div>
+
+<div id="search">
+  <input type="text" id="search-input" placeholder="Buscar palavra..." />
+  <button onclick="buscar()">Buscar</button>
+</div>
+
+<div id="filter-panel">
+  <label>Peso minimo das arestas: <span id="filter-val">0.50</span></label>
+  <input type="range" id="filter-range" min="45" max="90" value="50" step="1" oninput="filtrarArestas(this.value)">
+</div>
+
+<div id="controls">
+  <button class="ctrl-btn" onclick="resetView()">Resetar vista</button>
+  <button class="ctrl-btn" onclick="toggleLabels()">Labels ON/OFF</button>
+  <button id="btn-pause" class="ctrl-btn" onclick="pausePlay()">Pausar</button>
+</div>
+
+<div id="tooltip"></div>
+<svg id="canvas"></svg>
+
+<script>
+__D3_CODE__
+</script>
+<script>
+const GRAPH = __GRAPH_DATA__;
+
+const W = window.innerWidth, H = window.innerHeight;
+const svg = d3.select('#canvas').attr('width', W).attr('height', H);
+const defs = svg.append('defs');
+
+const grad = defs.append('radialGradient').attr('id','bg').attr('cx','50%').attr('cy','50%');
+grad.append('stop').attr('offset','0%').attr('stop-color','#0d0d2b');
+grad.append('stop').attr('offset','100%').attr('stop-color','#050510');
+svg.append('rect').attr('width',W).attr('height',H).attr('fill','url(#bg)');
+
+const glow = defs.append('filter').attr('id','glow');
+glow.append('feGaussianBlur').attr('stdDeviation','3').attr('result','blur');
+const fm = glow.append('feMerge');
+fm.append('feMergeNode').attr('in','blur');
+fm.append('feMergeNode').attr('in','SourceGraphic');
+
+const g = svg.append('g');
+svg.call(d3.zoom().scaleExtent([0.05,10]).on('zoom', e => g.attr('transform', e.transform)));
+
+const colorMap = { manhwa:'#f59e0b', core:'#a78bfa', assoc:'#38bdf8' };
+let showLabels = true, simPaused = false;
+let allLinks = GRAPH.links;
+let currentLinks = allLinks.filter(l => l.weight >= 0.50);
+
+document.getElementById('stats').textContent =
+  GRAPH.nodes.length + ' palavras  |  ' + allLinks.length + ' associacoes';
+
+const sim = d3.forceSimulation(GRAPH.nodes)
+  .force('link', d3.forceLink(currentLinks).id(d => d.id)
+    .distance(d => 90 - d.weight * 50).strength(d => d.weight * 0.5))
+  .force('charge', d3.forceManyBody().strength(-100))
+  .force('center', d3.forceCenter(W/2, H/2))
+  .force('collision', d3.forceCollide().radius(d => nodeR(d) + 3));
+
+function nodeR(d) {
+  if (d.group === 'manhwa') return 10 + d.weight * 400;
+  if (d.group === 'core')   return 6  + d.weight * 300;
+  return 3 + d.weight * 150;
+}
+
+const linkG = g.append('g');
+let linkSel = linkG.selectAll('line').data(currentLinks).enter().append('line')
+  .attr('stroke', d => 'rgba(99,102,241,' + (d.weight * 0.55) + ')')
+  .attr('stroke-width', d => d.weight * 1.8);
+
+const nodeG = g.append('g');
+let nodeSel = nodeG.selectAll('circle').data(GRAPH.nodes).enter().append('circle')
+  .attr('r', nodeR)
+  .attr('fill', d => colorMap[d.group] || '#38bdf8')
+  .attr('opacity', 0.85)
+  .attr('filter', d => d.group !== 'assoc' ? 'url(#glow)' : null)
+  .call(d3.drag()
+    .on('start', (e,d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+    .on('drag',  (e,d) => { d.fx = e.x; d.fy = e.y; })
+    .on('end',   (e,d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }))
+  .on('mouseover', showTip)
+  .on('mousemove', moveTip)
+  .on('mouseout', hideTip)
+  .on('click', highlight);
+
+const labelG = g.append('g');
+let labelSel = labelG.selectAll('text').data(GRAPH.nodes).enter().append('text')
+  .text(d => d.id)
+  .attr('font-size', d => d.group === 'manhwa' ? 13 : (d.group === 'core' ? 11 : 8))
+  .attr('fill', d => colorMap[d.group])
+  .attr('text-anchor', 'middle')
+  .attr('dy', d => -(nodeR(d) + 3))
+  .attr('pointer-events', 'none')
+  .attr('opacity', d => d.group === 'assoc' ? 0.55 : 1);
+
+sim.on('tick', () => {
+  linkSel.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+         .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+  nodeSel.attr('cx', d => d.x).attr('cy', d => d.y);
+  labelSel.attr('x', d => d.x).attr('y', d => d.y);
+});
+
+function showTip(e, d) {
+  const links = allLinks.filter(l => {
+    const s = typeof l.source === 'object' ? l.source.id : l.source;
+    const t = typeof l.target === 'object' ? l.target.id : l.target;
+    return s === d.id || t === d.id;
+  });
+  const nb = links.map(l => {
+    const s = typeof l.source === 'object' ? l.source.id : l.source;
+    const t = typeof l.target === 'object' ? l.target.id : l.target;
+    return { word: s === d.id ? t : s, w: l.weight };
+  }).sort((a,b) => b.w - a.w).slice(0, 8);
+
+  const gl = { manhwa:'Personagem/Manhwa', core:'Vocabulario central', assoc:'Associacao' };
+  document.getElementById('tooltip').innerHTML =
+    '<div class="word">' + d.id + '</div>' +
+    '<div style="color:#6b7280;font-size:11px;margin-bottom:5px">' + (gl[d.group]||'') + ' | peso=' + d.weight + '</div>' +
+    '<div style="color:#94a3b8;font-size:12px">Associa com:<br>' +
+    nb.map(n => '<span style="color:#4ade80">' + n.word + '</span> (' + n.w + ')').join('<br>') + '</div>';
+  document.getElementById('tooltip').style.display = 'block';
+  moveTip(e);
+}
+function moveTip(e) {
+  const tt = document.getElementById('tooltip');
+  let x = e.clientX + 14, y = e.clientY - 14;
+  if (x + 270 > W) x = e.clientX - 270;
+  tt.style.left = x + 'px'; tt.style.top = y + 'px';
+}
+function hideTip() { document.getElementById('tooltip').style.display = 'none'; }
+
+function highlight(e, d) {
+  if (!d) return;
+  const conn = new Set([d.id]);
+  allLinks.forEach(l => {
+    const s = typeof l.source === 'object' ? l.source.id : l.source;
+    const t = typeof l.target === 'object' ? l.target.id : l.target;
+    if (s === d.id) conn.add(t);
+    if (t === d.id) conn.add(s);
+  });
+  nodeSel.attr('opacity', n => conn.has(n.id) ? 1 : 0.08);
+  labelSel.attr('opacity', n => conn.has(n.id) ? 1 : 0.04);
+  linkSel.attr('opacity', l => {
+    const s = typeof l.source === 'object' ? l.source.id : l.source;
+    const t = typeof l.target === 'object' ? l.target.id : l.target;
+    return (s === d.id || t === d.id) ? 1 : 0.03;
+  });
+}
+
+function buscar() {
+  const q = document.getElementById('search-input').value.trim().toLowerCase();
+  if (!q) return;
+  const found = GRAPH.nodes.find(n => n.id.toLowerCase() === q || n.id.toLowerCase().includes(q));
+  if (!found) { alert('Palavra nao encontrada: ' + q); return; }
+  highlight(null, found);
+  const scale = 2.5;
+  svg.transition().duration(700).call(
+    d3.zoom().scaleExtent([0.05,10]).on('zoom', ev => g.attr('transform', ev.transform)).transform,
+    d3.zoomIdentity.translate(W/2 - found.x * scale, H/2 - found.y * scale).scale(scale)
+  );
+}
+document.getElementById('search-input').addEventListener('keydown', e => { if (e.key === 'Enter') buscar(); });
+
+function filtrarArestas(v) {
+  const thr = v / 100;
+  document.getElementById('filter-val').textContent = thr.toFixed(2);
+  currentLinks = allLinks.filter(l => l.weight >= thr);
+  const update = linkG.selectAll('line').data(currentLinks);
+  update.exit().remove();
+  const enter = update.enter().append('line')
+    .attr('stroke', d => 'rgba(99,102,241,' + (d.weight * 0.55) + ')')
+    .attr('stroke-width', d => d.weight * 1.8);
+  linkSel = enter.merge(update);
+  sim.force('link').links(currentLinks);
+  sim.alpha(0.3).restart();
+}
+
+function resetView() {
+  nodeSel.attr('opacity', 0.85);
+  labelSel.attr('opacity', d => d.group === 'assoc' ? 0.55 : 1);
+  linkSel.attr('opacity', 0.8);
+  svg.transition().duration(600).call(
+    d3.zoom().scaleExtent([0.05,10]).on('zoom', ev => g.attr('transform', ev.transform)).transform,
+    d3.zoomIdentity
+  );
+}
+
+function toggleLabels() {
+  showLabels = !showLabels;
+  labelSel.style('display', showLabels ? null : 'none');
+}
+
+function pausePlay() {
+  simPaused = !simPaused;
+  simPaused ? sim.stop() : sim.alpha(0.3).restart();
+  document.getElementById('btn-pause').textContent = simPaused ? 'Retomar' : 'Pausar';
+}
+</script>
+</body>
+</html>

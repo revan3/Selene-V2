@@ -200,6 +200,18 @@ pub struct BrainState {
     /// Tempo visual acumulado (segundos) — passado para visual_sweep como current_time.
     /// Permite que o OccipitalLobe calcule variações temporais entre frames.
     pub visual_time: f32,
+
+    // ── Eternal Hole — pensamento interno autônomo ─────────────────────────
+    /// Fila de pensamentos conscientes (ciclo 50Hz, focado no neural_context atual).
+    /// Alimentada pelo ciclo consciente do Eternal Hole.
+    /// Consultada no chat handler para enriquecer o contexto da resposta.
+    pub pensamento_consciente: VecDeque<String>,
+    /// Fila de pensamentos inconscientes (ciclo 10Hz, deriva livre pelo grafo).
+    /// Alimentada pelo ciclo inconsciente. Pode emergir espontaneamente (1/7 replies).
+    pub pensamento_inconsciente: VecDeque<String>,
+    /// Contador de passos dos ciclos de pensamento — semente determinística para
+    /// os walks internos. Compartilhado pelos dois ciclos (serializado pelo lock).
+    pub pensamento_step: u64,
 }
 
 pub struct EgoVoiceState {
@@ -400,6 +412,9 @@ impl BrainState {
             visual_time: 0.0,
             hypothesis_engine: HypothesisEngine::new(),
             audio_acumulador: WordAccumulator::new(),
+            pensamento_consciente: VecDeque::with_capacity(10),
+            pensamento_inconsciente: VecDeque::with_capacity(20),
+            pensamento_step: 0,
         }
     }
 

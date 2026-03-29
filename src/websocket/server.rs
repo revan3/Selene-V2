@@ -747,6 +747,47 @@ pub async fn handle_connection(
                                     let _ = ws_tx.send(Message::text(pong)).await;
                                 }
 
+                                // Envia snapshot do grafo mental para visualização
+                                Some("vocab_request") => {
+                                    let state = brain.lock().await;
+                                    // Top 120 palavras por peso absoluto de valência
+                                    let mut palavras: Vec<(&String, f32)> = state.palavra_valencias
+                                        .iter().map(|(k, v)| (k, v.abs())).collect();
+                                    palavras.sort_by(|a, b| b.1.partial_cmp(&a.1)
+                                        .unwrap_or(std::cmp::Ordering::Equal));
+                                    let top: std::collections::HashSet<&str> = palavras.iter()
+                                        .take(120).map(|(k, _)| k.as_str()).collect();
+
+                                    let nodes: Vec<serde_json::Value> = top.iter().map(|&w| {
+                                        let weight = state.palavra_valencias.get(w)
+                                            .map(|v| v.abs()).unwrap_or(0.005);
+                                        serde_json::json!({"id": w, "weight": weight})
+                                    }).collect();
+
+                                    let mut links: Vec<serde_json::Value> = vec![];
+                                    for (word, neighbors) in &state.grafo_associacoes {
+                                        if !top.contains(word.as_str()) { continue; }
+                                        for (neighbor, weight) in neighbors {
+                                            if *weight >= 0.45 {
+                                                links.push(serde_json::json!({
+                                                    "source": word,
+                                                    "target": neighbor,
+                                                    "weight": weight
+                                                }));
+                                            }
+                                        }
+                                    }
+
+                                    let snapshot = serde_json::json!({
+                                        "event": "vocab_snapshot",
+                                        "nodes": nodes,
+                                        "links": links,
+                                        "total_palavras": state.palavra_valencias.len(),
+                                        "total_assoc": state.grafo_associacoes.len(),
+                                    });
+                                    let _ = ws_tx.send(Message::text(snapshot.to_string())).await;
+                                }
+
                                 Some("shutdown") => {
                                     println!("🛑 [SISTEMA] Shutdown solicitado pela interface neural.");
                                     brain.lock().await.shutdown_requested = true;
@@ -899,12 +940,28 @@ pub async fn handle_connection(
                                             &state.grafo_associacoes,
                                             &state.frases_padrao,
                                             &state.ultimos_prefixos.iter().cloned().collect::<Vec<_>>(),
-                                            // Contexto = histórico da conversa + contexto neural em tempo real.
-                                            // O neural_context traz o que o cérebro está "pensando agora"
-                                            // (chunks temporais + goals do frontal) como sementes de tópico.
+                                            // Contexto = histórico da conversa + neural_context +
+                                            // pensamentos conscientes do Eternal Hole (últimos 5) +
+                                            // emergência inconsciente ocasional (1/7 replies).
                                             &{
                                                 let mut ctx = conversa_ctx.clone();
+                                                // O que o cérebro processa agora (chunks + frontal goals)
                                                 ctx.extend(state.neural_context.iter().cloned());
+                                                // Eternal Hole consciente: palavras que Selene
+                                                // "pensou" nos últimos ciclos de 50Hz
+                                                ctx.extend(
+                                                    state.pensamento_consciente
+                                                        .iter()
+                                                        .cloned()
+                                                        .take(5)
+                                                );
+                                                // Emergência inconsciente: uma vez a cada 7 respostas
+                                                // um pensamento derivado pode tingir a resposta
+                                                if state.pensamento_step % 7 == 0 {
+                                                    if let Some(w) = state.pensamento_inconsciente.front() {
+                                                        ctx.push(w.clone());
+                                                    }
+                                                }
                                                 ctx
                                             },
                                             &mut caminho_local,
