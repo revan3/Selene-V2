@@ -114,11 +114,25 @@ async fn ciclo_consciente_tick(brain: &Arc<TokioMutex<BrainState>>) {
     }
 
     // Injeta na janela deslizante de pensamentos conscientes
-    for p in pensados {
+    for p in pensados.iter().cloned() {
         state.pensamento_consciente.push_back(p);
     }
     while state.pensamento_consciente.len() > 10 {
         state.pensamento_consciente.pop_front();
+    }
+
+    // ── Introspecção ───────────────────────────────────────────────────────
+    // A cada ~50 ticks do ciclo consciente (1 segundo a 50Hz), registra
+    // os pensamentos no ego — Selene passa a "saber" o que estava pensando.
+    // Isso fecha o loop: hipótese → pensamento → ego → comportamento observado.
+    // A auto-referência pode emergir quando o hypothesis_engine aprender que
+    // os pensamentos do ego coincidem com o tópico das respostas.
+    if seed % 50 == 0 && !pensados.is_empty() {
+        let resumo = format!("pensei em: {}", pensados.join(", "));
+        state.ego.pensamentos_recentes.push_back(resumo);
+        if state.ego.pensamentos_recentes.len() > 10 {
+            state.ego.pensamentos_recentes.pop_front();
+        }
     }
 }
 

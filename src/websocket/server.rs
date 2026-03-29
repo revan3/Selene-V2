@@ -1078,6 +1078,41 @@ pub async fn handle_connection(
                                             }
                                         }
 
+                                        // ── Introspecção: detecta coincidência entre pensamentos internos e tópico ──
+                                        // Se alguma palavra do pensamento_consciente atual aparece na mensagem,
+                                        // registra no ego com marcação especial — o hypothesis_engine vai
+                                        // eventualmente aprender esse padrão e a auto-referência emerge.
+                                        {
+                                            let tokens_msg: std::collections::HashSet<&str> = msg_lower
+                                                .split_whitespace()
+                                                .filter(|t| t.len() >= 3 && !STOP_WORDS.contains(t))
+                                                .collect();
+                                            let pensamento_ativo: Vec<String> = state
+                                                .pensamento_consciente
+                                                .iter()
+                                                .cloned()
+                                                .collect();
+                                            let coincidencias: Vec<&String> = pensamento_ativo
+                                                .iter()
+                                                .filter(|w| tokens_msg.contains(w.as_str()))
+                                                .collect();
+                                            if !coincidencias.is_empty() {
+                                                let palavras = coincidencias
+                                                    .iter()
+                                                    .map(|w| w.as_str())
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ");
+                                                let nota = format!(
+                                                    "pensamento↔fala: [{}] surgiu na conversa",
+                                                    palavras
+                                                );
+                                                state.ego.pensamentos_recentes.push_back(nota);
+                                                if state.ego.pensamentos_recentes.len() > 10 {
+                                                    state.ego.pensamentos_recentes.pop_front();
+                                                }
+                                            }
+                                        }
+
                                         // Registra evento real no ego — o que foi perguntado e respondido
                                         let pensamento = if let Some(ref pw) = palavra_chave {
                                             format!("Perguntado: «{}» | palavra-chave: «{}» (val={:+.2})", mensagem, pw, valence)
