@@ -6,7 +6,7 @@ target/
 *.so
 *.dylib
 
-# ── VSCode Local History (arquivos de histórico do editor) ──
+# ── VSCode Local History ──────────────────────────────────
 .history-files/
 .history/
 
@@ -15,8 +15,17 @@ selene_memories.db/
 *.db/
 *.db
 
+# ── Dados neurais binários ────────────────────────────────
+*.hlx
+*.bin
+selene_qtable.bin
+selene_spikes.hlx
+
+# ── Backups automáticos (limpar_db.py) ───────────────────
+*.bak_*.json
+
 # ── Logs e crash reports ─────────────────────────────────
-selene_debug.log
+*.log
 selene_crash_report.txt
 dashboard_log.txt
 
@@ -33,11 +42,24 @@ __pycache__/
 .venv/
 venv/
 
+# ── Biblioteca de treinamento (PDFs grandes) ─────────────
+Selene_Brain_2.0/selene_kernel/livros/
+
+# ── Arquivos 3D (face.obj/mtl) ───────────────────────────
+Selene_Brain_2.0/selene_kernel/data/
+
 # ── IDE / OS ─────────────────────────────────────────────
 .vscode/settings.json
 .idea/
 Thumbs.db
 .DS_Store
 
-# ── Cargo lock (opcional manter, mas não é crítico para lib) ──
-# Cargo.lock   ← mantemos para binários
+# ── Estado de execução (gerado em runtime) ───────────────
+selene_ego.json
+selene_hippo_ltp.json
+selene_manifest.json
+selene_memoria_ego.json
+memoria_categorias.json
+
+# ── Arquivo .old (legado movido para triagem) ─────────────
+Selene_Brain_2.0/selene_kernel/.old/
