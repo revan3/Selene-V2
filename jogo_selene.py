@@ -202,18 +202,21 @@ async def jogar(ws, estado: EstadoJogo):
     await ws.send(msg)
 
     # Aguarda resposta (com timeout)
+    # O servidor envia telemetria a cada 500ms; usamos um loop largo e timeout curto
+    # por mensagem para nunca perder o chat_reply atrás de telemetria acumulada.
     resposta = ""
     try:
-        for _ in range(5):  # até 5 mensagens para encontrar chat_reply
-            raw = await asyncio.wait_for(ws.recv(), timeout=8.0)
+        for _ in range(40):  # 40 × 2s > 80s; na prática a resposta chega em < 1s
+            raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
             data = json.loads(raw)
-            if data.get("event") == "chat_reply":
+            ev = data.get("event", "")
+            if ev == "chat_reply":
                 resposta = data.get("message", "")
                 break
-            elif data.get("event") == "sem_memoria":
+            elif ev == "sem_memoria":
                 resposta = ""
                 break
-            # ignora telemetria e outros eventos
+            # telemetria, pong, sensor_ack → descarta e continua
     except asyncio.TimeoutError:
         estado.sem_resposta += 1
 
@@ -249,7 +252,12 @@ async def main():
 
     while True:
         try:
-            async with websockets.connect(WS_URL, ping_interval=20, ping_timeout=10) as ws:
+            async with websockets.connect(
+                WS_URL,
+                ping_interval=None,  # servidor envia telemetria cada 500ms, mantém TCP vivo
+                max_queue=256,       # buffer para absorver telemetria sem overflow
+                open_timeout=15,
+            ) as ws:
                 print(f"✅ Conectado! Iniciando treinamento...")
                 backoff = 1.0
 

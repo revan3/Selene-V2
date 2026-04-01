@@ -768,7 +768,7 @@ pub async fn handle_connection(
                                     for (word, neighbors) in &state.grafo_associacoes {
                                         if !top.contains(word.as_str()) { continue; }
                                         for (neighbor, weight) in neighbors {
-                                            if *weight >= 0.45 {
+                                            if *weight >= 0.08 {
                                                 links.push(serde_json::json!({
                                                     "source": word,
                                                     "target": neighbor,
@@ -2014,6 +2014,138 @@ pub async fn handle_connection(
                                             let _ = ws_tx.send(Message::text(ack)).await;
                                         }
                                         Err(e) => log::error!("[LINGUAGEM] Falha: {}", e),
+                                    }
+                                }
+
+                                // ── LEARN_AUDIO_FFT ────────────────────────────────────
+                                // Recebe um frame FFT de áudio (25ms), extrai primitiva de
+                                // onda e persiste no banco wave-first.
+                                // Nunca armazena texto — apenas parâmetros físicos.
+                                //
+                                // {"action":"learn_audio_fft",
+                                //  "fft":[[freq_hz,amp],...],
+                                //  "duracao_ms":25,
+                                //  "referencia":"ma"}   ← só para log, nunca persistido
+                                Some("learn_audio_fft") => {
+                                    if let Some(arr) = json["fft"].as_array() {
+                                        let bins: Vec<(f32, f32)> = arr.iter()
+                                            .filter_map(|v| {
+                                                let freq = v.get(0)?.as_f64()? as f32;
+                                                let amp  = v.get(1)?.as_f64()? as f32;
+                                                Some((freq, amp))
+                                            })
+                                            .collect();
+
+                                        if !bins.is_empty() {
+                                            let duracao_ms = json["duracao_ms"].as_u64().unwrap_or(25) as u32;
+                                            let ts = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap_or_default()
+                                                .as_secs_f64();
+
+                                            // 1. Extrai primitiva + atualiza ultimo_padrao_audio
+                                            let primitiva = {
+                                                let mut state = brain.lock().await;
+                                                state.ws_atividade = 1.0;
+                                                // Converte bins FFT → 32 bandas → SpikePattern
+                                                let mut bands = [0f32; 32];
+                                                for &(freq, amp) in &bins {
+                                                    let idx = ((freq / 8000.0) * 32.0) as usize;
+                                                    let idx = idx.min(31);
+                                                    if amp > bands[idx] { bands[idx] = amp; }
+                                                }
+                                                state.ultimo_padrao_audio = bands_to_spike_pattern(&bands);
+                                                crate::encoding::fft_encoder::fft_para_primitiva(
+                                                    &bins,
+                                                    &mut state.encoder_fft,
+                                                    duracao_ms,
+                                                    ts,
+                                                )
+                                            };
+
+                                            let hash = primitiva.hash.clone();
+                                            let referencia = json["referencia"].as_str().unwrap_or("?");
+
+                                            // 2. Persiste sem manter o lock durante I/O assíncrono
+                                            let db = {
+                                                let state = brain.lock().await;
+                                                state.storage.db.clone()
+                                            };
+                                            let _ = crate::storage::ondas::put_primitiva(&db, &primitiva).await;
+
+                                            log::debug!("[ONDA] hash={} ref={} onset={:?} F1={:?} F2={:?}",
+                                                &hash[..8], referencia,
+                                                primitiva.onset, primitiva.f1_hz, primitiva.f2_hz);
+
+                                            let ack = serde_json::json!({
+                                                "event": "audio_ack",
+                                                "hash":  hash,
+                                                "onset": format!("{:?}", primitiva.onset),
+                                            }).to_string();
+                                            let _ = ws_tx.send(Message::text(ack)).await;
+                                        }
+                                    }
+                                }
+
+                                // {"action":"grounding_fonetico",
+                                //  "grafema":"ba",
+                                //  "letras":["b","a"],
+                                //  "fonte":"baba_curriculum"}
+                                //
+                                // Cria a associação bidirecional:
+                                //   SpikePattern(audio recente) ↔ grafema ↔ letras individuais
+                                // Usa ultimo_padrao_audio gerado pelos frames FFT enviados antes.
+                                Some("grounding_fonetico") => {
+                                    let grafema = json["grafema"].as_str()
+                                        .unwrap_or("").to_string();
+                                    let letras: Vec<String> = json["letras"].as_array()
+                                        .map(|arr| arr.iter()
+                                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                            .collect())
+                                        .unwrap_or_default();
+
+                                    if !grafema.is_empty() {
+                                        // Lista de tokens: grafema completo + letras individuais
+                                        let mut palavras = vec![grafema.clone()];
+                                        for l in &letras {
+                                            if !palavras.contains(l) {
+                                                palavras.push(l.clone());
+                                            }
+                                        }
+
+                                        let mut state = brain.lock().await;
+                                        let apad = state.ultimo_padrao_audio;
+                                        let vpad = state.ultimo_padrao_visual;
+                                        let emocao = state.atividade.2;
+                                        let alerta = state.atividade.1;
+                                        let ts_ms = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_secs_f64() * 1000.0;
+
+                                        state.grounding_bind(
+                                            &palavras, vpad, apad,
+                                            emocao, alerta, ts_ms,
+                                        );
+
+                                        // Boost de grounding fonético — aprendizado supervisionado direto.
+                                        // A Selene sabe com certeza que aquele padrão de onda = aquelas letras.
+                                        // grounding_bind já adiciona 0.15 (audio_ativo) + 0.08 (interoceptivo).
+                                        // Adicionamos 0.12 extra para distinguir do grounding conversacional normal.
+                                        for p in &palavras {
+                                            let g = state.grounding.entry(p.clone()).or_insert(0.0);
+                                            *g = (*g + 0.12).min(1.0);
+                                        }
+
+                                        log::debug!("[FONETICO] grounding '{}' letras={:?} audio_ativo={}",
+                                            grafema, letras,
+                                            crate::encoding::spike_codec::is_active(&apad));
+
+                                        let ack = serde_json::json!({
+                                            "event": "grounding_ack",
+                                            "grafema": grafema,
+                                        }).to_string();
+                                        let _ = ws_tx.send(Message::text(ack)).await;
                                     }
                                 }
 

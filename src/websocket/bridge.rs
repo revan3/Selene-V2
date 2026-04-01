@@ -7,6 +7,8 @@ use std::time::Instant;
 use tokio::sync::Mutex as TokioMutex;
 use crate::config::Config;
 use crate::storage::swap_manager::SwapManager;
+use crate::storage::BrainStorage;
+use crate::encoding::fft_encoder::EstadoEncoder;
 use crate::sensors::SensorFlags;
 use crate::encoding::spike_codec::SpikePattern;
 use crate::encoding::helix_store::HelixStore;
@@ -212,6 +214,11 @@ pub struct BrainState {
     /// Contador de passos dos ciclos de pensamento — semente determinística para
     /// os walks internos. Compartilhado pelos dois ciclos (serializado pelo lock).
     pub pensamento_step: u64,
+    /// Banco de dados de onda — compartilhado com o pipeline áudio wave-first.
+    pub storage: Arc<BrainStorage>,
+    /// Estado incremental do encoder FFT — mantém prev_f1/prev_f2 entre frames
+    /// para calcular delta features corretamente no pipeline learn_audio_fft.
+    pub encoder_fft: EstadoEncoder,
 }
 
 pub struct EgoVoiceState {
@@ -415,6 +422,8 @@ impl BrainState {
             pensamento_consciente: VecDeque::with_capacity(10),
             pensamento_inconsciente: VecDeque::with_capacity(20),
             pensamento_step: 0,
+            storage: Arc::new(BrainStorage::dummy()),
+            encoder_fft: EstadoEncoder::default(),
         }
     }
 

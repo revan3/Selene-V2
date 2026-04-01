@@ -1,7 +1,6 @@
 // src/lib.rs
 #![allow(unused)]
 
-use pyo3::prelude::*;
 use std::time::Instant;
 
 // Módulos existentes
@@ -56,43 +55,3 @@ pub use storage::swap_manager::SwapManager;
 // Neurochem
 pub use neurochem::NeuroChem;
 
-// Estado global para o kernel Python
-static mut LAST_CHEM_STATE: Option<Vec<Vec<f64>>> = None;
-static mut LAST_TICK_DURATION: f64 = 0.0;
-
-/// Função principal do kernel Python
-#[pyfunction]
-pub fn process_brain_cycle(
-    visual_input: Vec<f64>,
-    cpu_temp: f64,
-    cpu_freq_rel: f64,
-    ram_usage: f64,
-    user_threshold: f64 
-) -> PyResult<(Vec<f64>, Vec<f64>, Vec<Vec<f64>>, f64, f64)> {
-    
-    let start_tick = Instant::now();
-    
-    // Placeholder - implementação real virá depois
-    let v_final = vec![0.0; visual_input.len()];
-    let s_fro = vec![0.0; 100];
-    let novo_fluxo = vec![vec![0.5, 0.5, 0.5]; 9];
-    
-    unsafe { 
-        LAST_TICK_DURATION = start_tick.elapsed().as_micros() as f64;
-    }
-
-    Ok((v_final, s_fro, novo_fluxo, unsafe { LAST_TICK_DURATION }, 0.0))
-}
-
-/// Função de saudação
-#[pyfunction]
-fn hello_from_rust() -> String {
-    "Olá da Selene via Rust!".to_string()
-}
-
-#[pymodule]
-fn selene_kernel(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(hello_from_rust, m)?)?;
-    m.add_function(wrap_pyfunction!(process_brain_cycle, m)?)?;
-    Ok(())
-}

@@ -9,6 +9,9 @@
 pub mod spike_codec;
 pub mod helix_store;
 pub mod phoneme;
+pub mod fonetico;
+pub mod fft_encoder;
+pub mod espectro_visual;
 
 // Convenient re-exports
 pub use spike_codec::{

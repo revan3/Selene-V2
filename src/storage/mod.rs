@@ -17,6 +17,10 @@ use std::io;
 pub mod memory_tier;
 pub mod memory_graph;
 pub mod swap_manager;
+pub mod tipos;
+pub mod spike_store;
+pub mod episodic;
+pub mod ondas;
 
 // Re-exportações
 pub use memory_graph::ConexaoSinaptica;

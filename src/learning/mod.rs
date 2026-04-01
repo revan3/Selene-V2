@@ -5,3 +5,5 @@ pub mod attention;
 pub mod lobe_router;
 pub mod hypothesis;
 pub mod pensamento;
+pub mod curriculo;
+pub mod binding;

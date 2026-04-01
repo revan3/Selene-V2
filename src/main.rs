@@ -347,6 +347,12 @@ async fn async_main() {
     println!("🌐 Iniciando interface neural integrada...");
     
     let brain_state = Arc::new(TokioMutex::new(BrainState::new(Arc::clone(&swap_manager), &config, sensor_flags)));
+    // Injeta o storage de ondas e inicializa o schema wave-first
+    {
+        let mut bs = brain_state.lock().await;
+        bs.storage = Arc::clone(&storage_db);
+    }
+    let _ = crate::storage::ondas::inicializar_schema_ondas(&storage_db.db).await;
     let state_for_server = Arc::clone(&brain_state);
 
     let _server_handle = tokio::spawn(async move {

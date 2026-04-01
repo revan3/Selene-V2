@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&family=Exo+2:wght@300;400;600&display=swap" rel="stylesheet">
 <script src="d3.v7.min.js"></script>
+<script>if (!window.d3) document.write('<scr'+'ipt src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"><\/scr'+'ipt>');</script>
 <style>
 :root {
   --bg:      #060a0f;
@@ -713,7 +714,12 @@ header::after {
 // GRAFO MENTAL — D3 force-directed
 // ════════════════════════════════════════════════
 (function() {
-  if (!window.d3) { console.error('[GRAFO] D3 não carregado'); return; }
+  if (!window.d3) {
+    const p = document.querySelector('.brain-panel');
+    if (p) p.insertAdjacentHTML('beforeend',
+      '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#ff3d5c;font-family:monospace;font-size:11px;pointer-events:none">D3 não carregado — recarregue a página</div>');
+    return;
+  }
 
   const panel  = document.querySelector('.brain-panel');
   const svgEl  = document.getElementById('brain-canvas');
@@ -782,7 +788,7 @@ header::after {
         .attr('fill','#2a3f5a').attr('font-size','11px')
         .attr('font-family','monospace').attr('text-anchor','middle')
         .attr('x', W/2).attr('y', H/2)
-        .text('Selene ainda aprendendo palavras...');
+        .text('Converse com a Selene para gerar o grafo mental');
       return;
     }
 
@@ -1353,10 +1359,13 @@ async function startCamera() {
     // Feed ao vivo no painel esquerdo
     const eyeLive = document.getElementById('eye-live');
     eyeLive.srcObject = camStream;
-    await eyeLive.play();
-    eyeLive.style.display = 'block';
-    document.getElementById('eye-off').style.display = 'none';
-    document.getElementById('eye-processed').style.display = 'block';
+    // Exibe o vídeo assim que o stream tiver dimensões reais
+    eyeLive.onloadedmetadata = () => {
+      document.getElementById('eye-off').style.display = 'none';
+      eyeLive.style.display = 'block';
+      document.getElementById('eye-processed').style.display = 'block';
+    };
+    eyeLive.play().catch(() => {});
 
     // Canvas de processamento interno (32×16)
     camVideo = eyeLive;
@@ -1409,13 +1418,35 @@ function stopCamera() {
   camVideo = null; camCanvas = null; camCtx2d = null;
 }
 
+let _camStarting = false;
 document.getElementById('btn-vid').addEventListener('click', async () => {
+  // Desligar sempre funciona, mesmo sem WebSocket
+  if (state.camOn) {
+    state.camOn = false;
+    _camStarting = false;
+    document.getElementById('btn-vid').classList.remove('cam-on');
+    stopCamera();
+    if (state.ws?.readyState === 1)
+      state.ws.send(JSON.stringify({ action: 'toggle_sensor', sensor: 'video', active: false }));
+    return;
+  }
+  // Ligar requer WebSocket e não pode estar já iniciando
+  if (_camStarting) return;
   if (!state.ws || state.ws.readyState !== 1) return;
-  state.camOn = !state.camOn;
-  document.getElementById('btn-vid').classList.toggle('cam-on', state.camOn);
-  state.ws.send(JSON.stringify({ action: 'toggle_sensor', sensor: 'video', active: state.camOn }));
-  if (state.camOn) { await startCamera(); }
-  else { stopCamera(); }
+  _camStarting = true;
+  state.camOn = true;
+  document.getElementById('btn-vid').classList.add('cam-on');
+  state.ws.send(JSON.stringify({ action: 'toggle_sensor', sensor: 'video', active: true }));
+  const ok = await startCamera();
+  _camStarting = false;
+  if (!ok) {
+    // Falhou (câmera negada ou erro) — reverte
+    state.camOn = false;
+    document.getElementById('btn-vid').classList.remove('cam-on');
+    stopCamera();
+    if (state.ws?.readyState === 1)
+      state.ws.send(JSON.stringify({ action: 'toggle_sensor', sensor: 'video', active: false }));
+  }
 });
 
 // ════════════════════════════════════════════════
