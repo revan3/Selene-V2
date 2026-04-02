@@ -91,23 +91,24 @@ for i, arg in enumerate(sys.argv[1:], 1):
 # ─── Currículo fonético do Português Brasileiro ───────────────────────────────
 #
 # Progressão pedagógica:
-#   0  Letras isoladas       — cada letra do alfabeto como som
-#   1  Sílabas com A         — ba, ca, da, fa, ga... (todas as consoantes + A)
-#   2  Sílabas com E         — be, ce, de, fe, ge...
-#   3  Sílabas com I         — bi, ci, di, fi, gi...
-#   4  Sílabas com O         — bo, co, do, fo, go...
-#   5  Sílabas com U         — bu, cu, du, fu, gu...
-#   6  Vogais puras          — a, e, i, o, u
-#   7  Vogais nasais         — ã, ẽ, ĩ, õ, ũ, an, en, in, on, un
-#   8  Sílabas CVC           — bal, par, dor, tal...
-#   9  Pares mínimos         — pato/bato, calo/galo, faca/vaca...
-#  10  Dígrafos e ditongos   — lh, nh, ch, ai, ei, oi, au, eu, ão...
-#  11  Encontros consonantais— bla, bra, cra, dra, fra, pra, tra...
-#  12  Nomes das letras      — a, bê, cê, dê, efe, gê, agá...
+#   0  Letras isoladas       — cada letra do alfabeto como som (a-z)
+#   1  Letras acentuadas     — á, â, ã, à, é, ê, í, ó, ô, õ, ú, ü, ç
+#   2  Sílabas com A         — ba, ca, da, fa, ga... (todas as consoantes + A)
+#   3  Sílabas com E         — be, ce, de, fe, ge...
+#   4  Sílabas com I         — bi, ci, di, fi, gi...
+#   5  Sílabas com O         — bo, co, do, fo, go...
+#   6  Sílabas com U         — bu, cu, du, fu, gu...
+#   7  Vogais puras          — a, e, i, o, u
+#   8  Vogais nasais         — ã, ẽ, ĩ, õ, ũ, an, en, in, on, un
+#   9  Sílabas CVC           — bal, par, dor, tal...
+#  10  Pares mínimos         — pato/bato, calo/galo, faca/vaca...
+#  11  Dígrafos e ditongos   — lh, nh, ch, ai, ei, oi, au, eu, ão...
+#  12  Encontros consonantais— bla, bra, cra, dra, fra, pra, tra...
+#  13  Nomes das letras      — a, bê, cê, dê, efe, gê, agá...
 
 CURRICULO = {
     0: {
-        "nome": "Letras isoladas (sons do alfabeto)",
+        "nome": "Letras isoladas (sons do alfabeto A-Z)",
         "descricao": "Cada letra do alfabeto pronunciada como som isolado",
         "itens": [
             ("iso_a", "a",  "pt-br"), ("iso_b", "b",  "pt-br"),
@@ -126,6 +127,47 @@ CURRICULO = {
         ],
     },
     1: {
+        "nome": "Letras acentuadas do Português",
+        "descricao": "Vogais com acento agudo, circunflexo, til, grave e cedilha",
+        "itens": [
+            # Acento agudo — eleva/abre a vogal
+            ("ac_a_agudo",  "á",  "pt-br"),
+            ("ac_e_agudo",  "é",  "pt-br"),
+            ("ac_i_agudo",  "í",  "pt-br"),
+            ("ac_o_agudo",  "ó",  "pt-br"),
+            ("ac_u_agudo",  "ú",  "pt-br"),
+            # Acento circunflexo — fecha a vogal
+            ("ac_a_circ",   "â",  "pt-br"),
+            ("ac_e_circ",   "ê",  "pt-br"),
+            ("ac_o_circ",   "ô",  "pt-br"),
+            # Til — nasaliza a vogal
+            ("ac_a_til",    "ã",  "pt-br"),
+            ("ac_o_til",    "õ",  "pt-br"),
+            # Acento grave — crase (contração)
+            ("ac_a_grave",  "à",  "pt-br"),
+            # Cedilha — altera o som de C para /s/
+            ("cedilha",     "ç",  "pt-br"),
+            # Trema (raro, ainda presente em nomes)
+            ("ac_u_trema",  "ü",  "pt-br"),
+            # Sílabas acentuadas comuns — som em contexto
+            ("sil_ca",      "cá", "pt-br"),
+            ("sil_pe",      "pé", "pt-br"),
+            ("sil_vo",      "vó", "pt-br"),
+            ("sil_fe",      "fé", "pt-br"),
+            ("sil_po",      "pô", "pt-br"),
+            ("sil_ca_circ", "câ", "pt-br"),
+            ("sil_ce",      "cê", "pt-br"),
+            ("sil_co",      "cô", "pt-br"),
+            ("sil_ca_til",  "cã", "pt-br"),
+            ("sil_co_til",  "cõ", "pt-br"),
+            ("sil_aca",     "ça", "pt-br"),
+            ("sil_ace",     "çe", "pt-br"),
+            ("sil_aci",     "çi", "pt-br"),
+            ("sil_aco",     "ço", "pt-br"),
+            ("sil_acu",     "çu", "pt-br"),
+        ],
+    },
+    2: {
         "nome": "Sílabas com A (consoante + A)",
         "descricao": "Todas as consoantes combinadas com a vogal A",
         "itens": [
@@ -140,7 +182,7 @@ CURRICULO = {
             ("za", "za", "pt-br"),
         ],
     },
-    2: {
+    3: {
         "nome": "Sílabas com E (consoante + E)",
         "descricao": "Todas as consoantes combinadas com a vogal E",
         "itens": [
@@ -155,7 +197,7 @@ CURRICULO = {
             ("ze", "ze", "pt-br"),
         ],
     },
-    3: {
+    4: {
         "nome": "Sílabas com I (consoante + I)",
         "descricao": "Todas as consoantes combinadas com a vogal I",
         "itens": [
@@ -170,7 +212,7 @@ CURRICULO = {
             ("zi", "zi", "pt-br"),
         ],
     },
-    4: {
+    5: {
         "nome": "Sílabas com O (consoante + O)",
         "descricao": "Todas as consoantes combinadas com a vogal O",
         "itens": [
@@ -185,7 +227,7 @@ CURRICULO = {
             ("zo", "zo", "pt-br"),
         ],
     },
-    5: {
+    6: {
         "nome": "Sílabas com U (consoante + U)",
         "descricao": "Todas as consoantes combinadas com a vogal U",
         "itens": [
@@ -200,7 +242,7 @@ CURRICULO = {
             ("zu", "zu", "pt-br"),
         ],
     },
-    6: {
+    7: {
         "nome": "Vogais puras",
         "descricao": "Sons vocálicos fundamentais — base de toda fonologia",
         "itens": [
@@ -211,7 +253,7 @@ CURRICULO = {
             ("u_vogal", "u", "pt-br"),
         ],
     },
-    7: {
+    8: {
         "nome": "Vogais nasais",
         "descricao": "Nasalização — característica marcante do PB",
         "itens": [
@@ -227,7 +269,7 @@ CURRICULO = {
             ("un_sil",   "un", "pt-br"),
         ],
     },
-    8: {
+    9: {
         "nome": "Sílabas CVC (consoante + vogal + consoante)",
         "descricao": "Sílabas fechadas — coda consonantal",
         "itens": [
@@ -241,7 +283,7 @@ CURRICULO = {
             ("bis", "bis", "pt-br"), ("dom", "dom", "pt-br"),
         ],
     },
-    9: {
+    10: {
         "nome": "Pares mínimos",
         "descricao": "Contraste fonêmico — distingue sons próximos",
         "itens": [
@@ -257,7 +299,7 @@ CURRICULO = {
             ("tio",   "tio",   "pt-br"), ("dio",   "dio",   "pt-br"),
         ],
     },
-    10: {
+    11: {
         "nome": "Dígrafos e ditongos",
         "descricao": "Sons compostos característicos do PB",
         "itens": [
@@ -278,7 +320,7 @@ CURRICULO = {
             ("oin",  "õe",   "pt-br"),
         ],
     },
-    11: {
+    12: {
         "nome": "Encontros consonantais",
         "descricao": "Grupos consonantais — onset complexo",
         "itens": [
@@ -297,7 +339,7 @@ CURRICULO = {
             ("gre", "gre", "pt-br"), ("tre", "tre", "pt-br"),
         ],
     },
-    12: {
+    13: {
         "nome": "Nomes das letras (alfabeto completo)",
         "descricao": "Os 26 nomes das letras como sons únicos",
         "itens": [
