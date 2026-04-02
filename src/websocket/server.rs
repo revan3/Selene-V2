@@ -2137,8 +2137,61 @@ pub async fn handle_connection(
                                             *g = (*g + 0.12).min(1.0);
                                         }
 
-                                        log::debug!("[FONETICO] grounding '{}' letras={:?} audio_ativo={}",
-                                            grafema, letras,
+                                        // ── INTEGRAÇÃO COM O GRAFO ─────────────────────────
+                                        // Sem isto, o grounding é uma ilha — a linguagem emergente
+                                        // nunca consegue usar os fonemas aprendidos nas respostas.
+                                        //
+                                        // 1. Garante que grafema e letras existem no vocabulário
+                                        state.palavra_valencias.entry(grafema.clone()).or_insert(0.5);
+                                        for letra in &letras {
+                                            if !letra.is_empty() {
+                                                state.palavra_valencias.entry(letra.clone()).or_insert(0.5);
+                                            }
+                                        }
+
+                                        // 2. Salva SpikePattern do grafema no spike_vocab
+                                        //    (usa o padrão acumulado pelos frames FFT enviados antes)
+                                        state.spike_vocab.insert(
+                                            format!("audio:{}", &grafema), apad,
+                                        );
+
+                                        // 3. Grafema ↔ cada letra (bidirecional)
+                                        //    grafema→letra peso 0.85 (síntese → componente)
+                                        //    letra→grafema peso 0.70 (componente → síntese)
+                                        for letra in &letras {
+                                            if letra.is_empty() { continue; }
+                                            {
+                                                let viz = state.grafo_associacoes
+                                                    .entry(grafema.clone()).or_default();
+                                                if !viz.iter().any(|(w, _)| w == letra) {
+                                                    viz.push((letra.clone(), 0.85));
+                                                }
+                                            }
+                                            {
+                                                let viz_inv = state.grafo_associacoes
+                                                    .entry(letra.clone()).or_default();
+                                                if !viz_inv.iter().any(|(w, _)| w == &grafema) {
+                                                    viz_inv.push((grafema.clone(), 0.70));
+                                                }
+                                            }
+                                        }
+
+                                        // 4. Bigrams sequenciais entre letras (b→a, t→r→a, etc.)
+                                        //    peso 0.90 — ordem das letras dentro do grafema
+                                        for i in 0..letras.len().saturating_sub(1) {
+                                            let l1 = &letras[i];
+                                            let l2 = &letras[i + 1];
+                                            if l1.is_empty() || l2.is_empty() { continue; }
+                                            let viz = state.grafo_associacoes
+                                                .entry(l1.clone()).or_default();
+                                            if !viz.iter().any(|(w, _)| w == l2) {
+                                                viz.push((l2.clone(), 0.90));
+                                            }
+                                        }
+
+                                        let n_nos = state.grafo_associacoes.len();
+                                        log::debug!("[FONETICO] grounding '{}' letras={:?} grafo={} nos audio_ativo={}",
+                                            grafema, letras, n_nos,
                                             crate::encoding::spike_codec::is_active(&apad));
 
                                         let ack = serde_json::json!({

@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 # pdf_para_audio_selene.py — Lê PDF em voz alta para a Selene Brain 2.0
 #
-# Extrai texto de PDF, sintetiza com espeak-ng e envia FFT para Selene.
-# NUNCA envia texto — apenas parâmetros físicos de frequência.
-#
-# Fluxo:
-#   PDF → texto (PyMuPDF) → limpeza → espeak-ng WAV → FFT frames → WebSocket
+# Modo dual (áudio + escrita):
+#   PDF → texto → espeak-ng WAV → FFT frames → WebSocket  (Selene ouve)
+#   PDF → texto → tokeniza → learn + learn_frase           (Selene lê)
 #
 # Requisitos:
 #   pip install pymupdf websockets scipy numpy
@@ -29,6 +27,8 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+
+from selene_audio_utils import DualTrainer, ESPEAK_OK
 
 try:
     import numpy as np
@@ -265,7 +265,9 @@ async def processar_pdf(caminho: str):
     async with websockets.connect(
         WS_URL, ping_interval=None, max_queue=512, open_timeout=15
     ) as ws:
-        print(f"  Conectado! Lendo PDF em voz alta para Selene...")
+        modo = "audio+escrita" if ESPEAK_OK else "escrita"
+        print(f"  Conectado! Lendo PDF ({modo}) para Selene...")
+        dt       = DualTrainer(ws, rep_audio=1, delay=0.020)
         t0       = time.time()
         enviados = 0
         acks     = 0
@@ -275,43 +277,51 @@ async def processar_pdf(caminho: str):
         for num_pag, chunk in todos_chunks:
             chunks_processados += 1
 
+            # ── Áudio: sintetiza chunk e envia frames FFT ─────────────────────
             resultado = sintetizar_espeak(chunk, LANG_TTS)
             if resultado is None:
                 erros += 1
                 if erros <= 3:
                     print(f"\n  Chunk falhou na síntese (chunk {chunks_processados})")
-                continue
+            else:
+                samples, sr = resultado
+                if sr != SAMPLE_RATE:
+                    samples = re_amostrar(samples, sr, SAMPLE_RATE)
+                    sr = SAMPLE_RATE
 
-            samples, sr = resultado
-            if sr != SAMPLE_RATE:
-                samples = re_amostrar(samples, sr, SAMPLE_RATE)
-                sr = SAMPLE_RATE
-
-            for bins in amostras_para_frames(samples, sr):
-                try:
-                    msg = json.dumps({
-                        "action":     "learn_audio_fft",
-                        "fft":        bins,
-                        "duracao_ms": FRAME_MS,
-                        "referencia": f"{nome}:p{num_pag}",
-                    })
-                    await ws.send(msg)
-                    for _ in range(3):
-                        try:
-                            raw = await asyncio.wait_for(ws.recv(), timeout=0.5)
-                            if json.loads(raw).get("event") == "audio_ack":
-                                acks += 1
+                for bins in amostras_para_frames(samples, sr):
+                    try:
+                        msg = json.dumps({
+                            "action":     "learn_audio_fft",
+                            "fft":        bins,
+                            "duracao_ms": FRAME_MS,
+                            "referencia": f"{nome}:p{num_pag}",
+                        })
+                        await ws.send(msg)
+                        for _ in range(3):
+                            try:
+                                raw = await asyncio.wait_for(ws.recv(), timeout=0.5)
+                                if json.loads(raw).get("event") == "audio_ack":
+                                    acks += 1
+                                    break
+                            except (asyncio.TimeoutError, json.JSONDecodeError):
                                 break
-                        except (asyncio.TimeoutError, json.JSONDecodeError):
-                            break
-                    enviados += 1
-                    await asyncio.sleep(PAUSA)
-                except websockets.exceptions.ConnectionClosed:
-                    raise
-                except Exception as e:
-                    erros += 1
-                    if erros <= 3:
-                        print(f"\n  Erro frame: {e}")
+                        enviados += 1
+                        await asyncio.sleep(PAUSA)
+                    except websockets.exceptions.ConnectionClosed:
+                        raise
+                    except Exception as e:
+                        erros += 1
+                        if erros <= 3:
+                            print(f"\n  Erro frame: {e}")
+
+            # ── Escrita: aprende tokens e sequência do chunk ──────────────────
+            tokens = [t for t in re.split(r'\W+', chunk.lower()) if len(t) > 1]
+            tokens = tokens[:40]   # limita para não sobrecarregar
+            if len(tokens) >= 2:
+                await dt._frase_escrita(tokens)
+                for tok in tokens[:15]:   # aprende as 15 primeiras palavras
+                    await dt._aprender_escrita(tok, valencia=0.6, contexto="PDF")
 
             # Progresso a cada 10 chunks
             if chunks_processados % 10 == 0:

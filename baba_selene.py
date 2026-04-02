@@ -317,7 +317,7 @@ def amostras_para_frames(samples: np.ndarray, sr: int):
 
 # Dígrafos do Português: sequências de letras que representam UM único fonema.
 # Tratados como unidade no grounding — não separados em letras individuais.
-DIGRافOS = {"lh", "nh", "ch", "rr", "ss", "qu", "gu", "sc", "xc"}
+DIGRAFOS = {"lh", "nh", "ch", "rr", "ss", "qu", "gu", "sc", "xc"}
 
 def decompor_grafema(texto: str) -> list[str]:
     """
@@ -335,7 +335,7 @@ def decompor_grafema(texto: str) -> list[str]:
     i = 0
     while i < len(letras):
         # Tenta dígrafo de 2 caracteres
-        if i + 1 < len(letras) and letras[i:i+2] in DIGRافOS:
+        if i + 1 < len(letras) and letras[i:i+2] in DIGRAFOS:
             unidades.append(letras[i:i+2])
             i += 2
         elif letras[i].isalpha():
@@ -380,15 +380,44 @@ def _stt_vosk(wav_path: str) -> str | None:
 
 # ─── WebSocket ────────────────────────────────────────────────────────────────
 
+async def _enviar_learn(ws, texto: str, letras: list, pausa: float = 0.020):
+    """Envia componente escrito: learn grafema, learn cada letra, learn_frase letras."""
+    await ws.send(json.dumps({
+        "action":   "learn",
+        "word":     texto,
+        "context":  "fonética",
+        "valence":  0.5,
+        "strength": 0.85,
+    }))
+    await asyncio.sleep(pausa)
+    for letra in letras:
+        await ws.send(json.dumps({
+            "action":   "learn",
+            "word":     letra,
+            "context":  "fonética",
+            "valence":  0.5,
+            "strength": 0.80,
+        }))
+        await asyncio.sleep(pausa)
+    if len(letras) >= 2:
+        await ws.send(json.dumps({
+            "action": "learn_frase",
+            "words":  letras,
+        }))
+        await asyncio.sleep(pausa)
+
+
 async def enviar_fonema(ws, fonema_id: str, texto: str, lang: str, rep: int) -> int:
     """
-    Sintetiza e envia um fonema N vezes com grounding fonético.
+    Sintetiza e envia um fonema N vezes com grounding fonético + escrita simultânea.
 
     Loop por repetição:
       1. Envia todos os frames FFT do fonema (Selene ouve o som)
          → ultimo_padrao_audio fica atualizado no Rust
       2. Envia grounding_fonetico com grafema + letras decompostas
          → Rust faz grounding_bind(audio_spike, [grafema, "b", "a", ...])
+      3. Envia learn (escrita): grafema, cada letra, learn_frase das letras
+         → grafo_associacoes recebe o grafema e as letras como nós simbólicos
 
     Após a 1ª repetição, se vosk estiver disponível, verifica o STT
     para confirmar que espeak produziu o fonema correto.
@@ -415,7 +444,7 @@ async def enviar_fonema(ws, fonema_id: str, texto: str, lang: str, rep: int) -> 
     enviados = 0
 
     for rep_idx in range(rep):
-        # 1. Envia frames FFT
+        # 1. Envia frames FFT (Selene ouve o som)
         for bins in frames:
             msg = json.dumps({
                 "action":     "learn_audio_fft",
@@ -434,9 +463,7 @@ async def enviar_fonema(ws, fonema_id: str, texto: str, lang: str, rep: int) -> 
             enviados += 1
             await asyncio.sleep(PAUSA)
 
-        # 2. Grounding fonético: conecta o padrão de onda às letras
-        #    Enviado UMA vez por repetição, após todos os frames.
-        #    O Rust usa ultimo_padrao_audio (acumulado pelos frames acima).
+        # 2. Grounding fonético: conecta padrão de onda → letras
         grounding_msg = json.dumps({
             "action":  "grounding_fonetico",
             "grafema": texto,
@@ -452,7 +479,10 @@ async def enviar_fonema(ws, fonema_id: str, texto: str, lang: str, rep: int) -> 
             except (asyncio.TimeoutError, json.JSONDecodeError):
                 break
 
-        # 3. STT opcional — só na 1ª repetição para não atrasar o treino
+        # 3. Componente escrito: ensina grafema + letras no grafo simbólico
+        await _enviar_learn(ws, texto, letras)
+
+        # 4. STT opcional — só na 1ª repetição para não atrasar o treino
         if rep_idx == 0 and _VOSK_OK:
             import tempfile, os
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
