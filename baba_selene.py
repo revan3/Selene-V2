@@ -89,86 +89,175 @@ for i, arg in enumerate(sys.argv[1:], 1):
         except: pass
 
 # ─── Currículo fonético do Português Brasileiro ───────────────────────────────
+#
+# Progressão pedagógica:
+#   0  Letras isoladas       — cada letra do alfabeto como som
+#   1  Sílabas com A         — ba, ca, da, fa, ga... (todas as consoantes + A)
+#   2  Sílabas com E         — be, ce, de, fe, ge...
+#   3  Sílabas com I         — bi, ci, di, fi, gi...
+#   4  Sílabas com O         — bo, co, do, fo, go...
+#   5  Sílabas com U         — bu, cu, du, fu, gu...
+#   6  Vogais puras          — a, e, i, o, u
+#   7  Vogais nasais         — ã, ẽ, ĩ, õ, ũ, an, en, in, on, un
+#   8  Sílabas CVC           — bal, par, dor, tal...
+#   9  Pares mínimos         — pato/bato, calo/galo, faca/vaca...
+#  10  Dígrafos e ditongos   — lh, nh, ch, ai, ei, oi, au, eu, ão...
+#  11  Encontros consonantais— bla, bra, cra, dra, fra, pra, tra...
+#  12  Nomes das letras      — a, bê, cê, dê, efe, gê, agá...
 
 CURRICULO = {
-    1: {
-        "nome": "Vogais puras",
-        "descricao": "Sons vocálicos fundamentais — base de toda fonologia",
+    0: {
+        "nome": "Letras isoladas (sons do alfabeto)",
+        "descricao": "Cada letra do alfabeto pronunciada como som isolado",
         "itens": [
-            ("a_vogal",   "a",   "pt-br"),
-            ("e_vogal",   "e",   "pt-br"),
-            ("i_vogal",   "i",   "pt-br"),
-            ("o_vogal",   "o",   "pt-br"),
-            ("u_vogal",   "u",   "pt-br"),
+            ("iso_a", "a",  "pt-br"), ("iso_b", "b",  "pt-br"),
+            ("iso_c", "c",  "pt-br"), ("iso_d", "d",  "pt-br"),
+            ("iso_e", "e",  "pt-br"), ("iso_f", "f",  "pt-br"),
+            ("iso_g", "g",  "pt-br"), ("iso_h", "h",  "pt-br"),
+            ("iso_i", "i",  "pt-br"), ("iso_j", "j",  "pt-br"),
+            ("iso_k", "k",  "pt-br"), ("iso_l", "l",  "pt-br"),
+            ("iso_m", "m",  "pt-br"), ("iso_n", "n",  "pt-br"),
+            ("iso_o", "o",  "pt-br"), ("iso_p", "p",  "pt-br"),
+            ("iso_q", "q",  "pt-br"), ("iso_r", "r",  "pt-br"),
+            ("iso_s", "s",  "pt-br"), ("iso_t", "t",  "pt-br"),
+            ("iso_u", "u",  "pt-br"), ("iso_v", "v",  "pt-br"),
+            ("iso_w", "w",  "pt-br"), ("iso_x", "x",  "pt-br"),
+            ("iso_y", "y",  "pt-br"), ("iso_z", "z",  "pt-br"),
+        ],
+    },
+    1: {
+        "nome": "Sílabas com A (consoante + A)",
+        "descricao": "Todas as consoantes combinadas com a vogal A",
+        "itens": [
+            ("ba", "ba", "pt-br"), ("ca", "ca", "pt-br"),
+            ("da", "da", "pt-br"), ("fa", "fa", "pt-br"),
+            ("ga", "ga", "pt-br"), ("ha", "ha", "pt-br"),
+            ("ja", "ja", "pt-br"), ("la", "la", "pt-br"),
+            ("ma", "ma", "pt-br"), ("na", "na", "pt-br"),
+            ("pa", "pa", "pt-br"), ("ra", "ra", "pt-br"),
+            ("sa", "sa", "pt-br"), ("ta", "ta", "pt-br"),
+            ("va", "va", "pt-br"), ("xa", "xa", "pt-br"),
+            ("za", "za", "pt-br"),
         ],
     },
     2: {
-        "nome": "Vogais nasais",
-        "descricao": "Nasalização — característica marcante do PB",
+        "nome": "Sílabas com E (consoante + E)",
+        "descricao": "Todas as consoantes combinadas com a vogal E",
         "itens": [
-            ("an_nasal",  "ã",   "pt-br"),
-            ("em_nasal",  "ẽ",   "pt-br"),
-            ("im_nasal",  "ĩ",   "pt-br"),
-            ("om_nasal",  "õ",   "pt-br"),
-            ("um_nasal",  "ũ",   "pt-br"),
-            ("an_sil",    "an",  "pt-br"),
-            ("en_sil",    "en",  "pt-br"),
-            ("in_sil",    "in",  "pt-br"),
-            ("on_sil",    "on",  "pt-br"),
-            ("un_sil",    "un",  "pt-br"),
+            ("be", "be", "pt-br"), ("ce", "ce", "pt-br"),
+            ("de", "de", "pt-br"), ("fe", "fe", "pt-br"),
+            ("ge", "ge", "pt-br"), ("he", "he", "pt-br"),
+            ("je", "je", "pt-br"), ("le", "le", "pt-br"),
+            ("me", "me", "pt-br"), ("ne", "ne", "pt-br"),
+            ("pe", "pe", "pt-br"), ("re", "re", "pt-br"),
+            ("se", "se", "pt-br"), ("te", "te", "pt-br"),
+            ("ve", "ve", "pt-br"), ("xe", "xe", "pt-br"),
+            ("ze", "ze", "pt-br"),
         ],
     },
     3: {
-        "nome": "Sílabas simples CV (consoante + vogal)",
-        "descricao": "Estrutura silábica básica do PB",
+        "nome": "Sílabas com I (consoante + I)",
+        "descricao": "Todas as consoantes combinadas com a vogal I",
         "itens": [
-            # Bilabiais
-            ("ba", "ba", "pt-br"), ("pa", "pa", "pt-br"),
-            ("ma", "ma", "pt-br"),
-            # Labiodentais
-            ("fa", "fa", "pt-br"), ("va", "va", "pt-br"),
-            # Dentais/alveolares
-            ("da", "da", "pt-br"), ("ta", "ta", "pt-br"),
-            ("na", "na", "pt-br"), ("la", "la", "pt-br"),
-            ("sa", "sa", "pt-br"), ("za", "za", "pt-br"),
-            # Palatais
-            ("xa", "xa", "pt-br"), ("ja", "ja", "pt-br"),
-            ("nha","nha","pt-br"), ("lha","lha","pt-br"),
-            # Velares
-            ("ka", "ca", "pt-br"), ("ga", "ga", "pt-br"),
-            # Vibrantes
-            ("ra", "ra", "pt-br"), ("rra","rra","pt-br"),
+            ("bi", "bi", "pt-br"), ("ci", "ci", "pt-br"),
+            ("di", "di", "pt-br"), ("fi", "fi", "pt-br"),
+            ("gi", "gi", "pt-br"), ("hi", "hi", "pt-br"),
+            ("ji", "ji", "pt-br"), ("li", "li", "pt-br"),
+            ("mi", "mi", "pt-br"), ("ni", "ni", "pt-br"),
+            ("pi", "pi", "pt-br"), ("ri", "ri", "pt-br"),
+            ("si", "si", "pt-br"), ("ti", "ti", "pt-br"),
+            ("vi", "vi", "pt-br"), ("xi", "xi", "pt-br"),
+            ("zi", "zi", "pt-br"),
         ],
     },
     4: {
-        "nome": "Sílabas CVC (consoante + vogal + consoante)",
-        "descricao": "Sílabas fechadas — coda consonantal",
+        "nome": "Sílabas com O (consoante + O)",
+        "descricao": "Todas as consoantes combinadas com a vogal O",
         "itens": [
-            ("bal","bal","pt-br"), ("par","par","pt-br"),
-            ("dor","dor","pt-br"), ("tal","tal","pt-br"),
-            ("mar","mar","pt-br"), ("nal","nal","pt-br"),
-            ("sol","sol","pt-br"), ("cor","cor","pt-br"),
-            ("lar","lar","pt-br"), ("ver","ver","pt-br"),
-            ("fil","fil","pt-br"), ("gol","gol","pt-br"),
+            ("bo", "bo", "pt-br"), ("co", "co", "pt-br"),
+            ("do", "do", "pt-br"), ("fo", "fo", "pt-br"),
+            ("go", "go", "pt-br"), ("ho", "ho", "pt-br"),
+            ("jo", "jo", "pt-br"), ("lo", "lo", "pt-br"),
+            ("mo", "mo", "pt-br"), ("no", "no", "pt-br"),
+            ("po", "po", "pt-br"), ("ro", "ro", "pt-br"),
+            ("so", "so", "pt-br"), ("to", "to", "pt-br"),
+            ("vo", "vo", "pt-br"), ("xo", "xo", "pt-br"),
+            ("zo", "zo", "pt-br"),
         ],
     },
     5: {
+        "nome": "Sílabas com U (consoante + U)",
+        "descricao": "Todas as consoantes combinadas com a vogal U",
+        "itens": [
+            ("bu", "bu", "pt-br"), ("cu", "cu", "pt-br"),
+            ("du", "du", "pt-br"), ("fu", "fu", "pt-br"),
+            ("gu", "gu", "pt-br"), ("hu", "hu", "pt-br"),
+            ("ju", "ju", "pt-br"), ("lu", "lu", "pt-br"),
+            ("mu", "mu", "pt-br"), ("nu", "nu", "pt-br"),
+            ("pu", "pu", "pt-br"), ("ru", "ru", "pt-br"),
+            ("su", "su", "pt-br"), ("tu", "tu", "pt-br"),
+            ("vu", "vu", "pt-br"), ("xu", "xu", "pt-br"),
+            ("zu", "zu", "pt-br"),
+        ],
+    },
+    6: {
+        "nome": "Vogais puras",
+        "descricao": "Sons vocálicos fundamentais — base de toda fonologia",
+        "itens": [
+            ("a_vogal", "a", "pt-br"),
+            ("e_vogal", "e", "pt-br"),
+            ("i_vogal", "i", "pt-br"),
+            ("o_vogal", "o", "pt-br"),
+            ("u_vogal", "u", "pt-br"),
+        ],
+    },
+    7: {
+        "nome": "Vogais nasais",
+        "descricao": "Nasalização — característica marcante do PB",
+        "itens": [
+            ("an_nasal", "ã",  "pt-br"),
+            ("em_nasal", "ẽ",  "pt-br"),
+            ("im_nasal", "ĩ",  "pt-br"),
+            ("om_nasal", "õ",  "pt-br"),
+            ("um_nasal", "ũ",  "pt-br"),
+            ("an_sil",   "an", "pt-br"),
+            ("en_sil",   "en", "pt-br"),
+            ("in_sil",   "in", "pt-br"),
+            ("on_sil",   "on", "pt-br"),
+            ("un_sil",   "un", "pt-br"),
+        ],
+    },
+    8: {
+        "nome": "Sílabas CVC (consoante + vogal + consoante)",
+        "descricao": "Sílabas fechadas — coda consonantal",
+        "itens": [
+            ("bal", "bal", "pt-br"), ("par", "par", "pt-br"),
+            ("dor", "dor", "pt-br"), ("tal", "tal", "pt-br"),
+            ("mar", "mar", "pt-br"), ("nal", "nal", "pt-br"),
+            ("sol", "sol", "pt-br"), ("cor", "cor", "pt-br"),
+            ("lar", "lar", "pt-br"), ("ver", "ver", "pt-br"),
+            ("fil", "fil", "pt-br"), ("gol", "gol", "pt-br"),
+            ("bar", "bar", "pt-br"), ("pes", "pes", "pt-br"),
+            ("bis", "bis", "pt-br"), ("dom", "dom", "pt-br"),
+        ],
+    },
+    9: {
         "nome": "Pares mínimos",
         "descricao": "Contraste fonêmico — distingue sons próximos",
         "itens": [
             ("pato",  "pato",  "pt-br"), ("bato",  "bato",  "pt-br"),
             ("calo",  "calo",  "pt-br"), ("galo",  "galo",  "pt-br"),
             ("faca",  "faca",  "pt-br"), ("vaca",  "vaca",  "pt-br"),
-            ("tio",   "tio",   "pt-br"), ("dio",   "dio",   "pt-br"),
             ("cama",  "cama",  "pt-br"), ("gama",  "gama",  "pt-br"),
             ("lata",  "lata",  "pt-br"), ("rata",  "rata",  "pt-br"),
             ("soma",  "soma",  "pt-br"), ("zona",  "zona",  "pt-br"),
             ("chave", "chave", "pt-br"), ("grave", "grave", "pt-br"),
             ("mala",  "mala",  "pt-br"), ("bala",  "bala",  "pt-br"),
             ("pena",  "pena",  "pt-br"), ("vena",  "vena",  "pt-br"),
+            ("tio",   "tio",   "pt-br"), ("dio",   "dio",   "pt-br"),
         ],
     },
-    6: {
+    10: {
         "nome": "Dígrafos e ditongos",
         "descricao": "Sons compostos característicos do PB",
         "itens": [
@@ -182,61 +271,62 @@ CURRICULO = {
             ("ue",   "ue",   "pt-br"), ("ui",   "ui",   "pt-br"),
             # Ditongos decrescentes
             ("ai",   "ai",   "pt-br"), ("ei",   "ei",   "pt-br"),
-            ("oi",   "oi",   "pt-br"), ("ui2",  "ui",   "pt-br"),
-            ("au",   "au",   "pt-br"), ("eu",   "eu",   "pt-br"),
+            ("oi",   "oi",   "pt-br"), ("au",   "au",   "pt-br"),
+            ("eu",   "eu",   "pt-br"),
             # Ditongos nasais
             ("aen",  "ãe",   "pt-br"), ("aon",  "ão",   "pt-br"),
             ("oin",  "õe",   "pt-br"),
         ],
     },
-    7: {
+    11: {
         "nome": "Encontros consonantais",
         "descricao": "Grupos consonantais — onset complexo",
         "itens": [
-            # Bl, Cl, Fl, Gl, Pl
+            # com L: bl, cl, fl, gl, pl
             ("bla", "bla", "pt-br"), ("cla", "cla", "pt-br"),
             ("fla", "fla", "pt-br"), ("gla", "gla", "pt-br"),
             ("pla", "pla", "pt-br"),
-            # Br, Cr, Dr, Fr, Gr, Pr, Tr, Vr
+            # com R: br, cr, dr, fr, gr, pr, tr
             ("bra", "bra", "pt-br"), ("cra", "cra", "pt-br"),
             ("dra", "dra", "pt-br"), ("fra", "fra", "pt-br"),
             ("gra", "gra", "pt-br"), ("pra", "pra", "pt-br"),
             ("tra", "tra", "pt-br"),
-            # com vogais
+            # variações com outras vogais
             ("bre", "bre", "pt-br"), ("pri", "pri", "pt-br"),
             ("fro", "fro", "pt-br"), ("cru", "cru", "pt-br"),
+            ("gre", "gre", "pt-br"), ("tre", "tre", "pt-br"),
         ],
     },
-    8: {
-        "nome": "Alfabeto completo (nomes das letras)",
+    12: {
+        "nome": "Nomes das letras (alfabeto completo)",
         "descricao": "Os 26 nomes das letras como sons únicos",
         "itens": [
-            ("letra_a",  "a",   "pt-br"),
-            ("letra_b",  "bê",  "pt-br"),
-            ("letra_c",  "cê",  "pt-br"),
-            ("letra_d",  "dê",  "pt-br"),
-            ("letra_e",  "e",   "pt-br"),
-            ("letra_f",  "efe", "pt-br"),
-            ("letra_g",  "gê",  "pt-br"),
-            ("letra_h",  "agá", "pt-br"),
-            ("letra_i",  "i",   "pt-br"),
-            ("letra_j",  "jota","pt-br"),
-            ("letra_k",  "ká",  "pt-br"),
-            ("letra_l",  "ele", "pt-br"),
-            ("letra_m",  "eme", "pt-br"),
-            ("letra_n",  "ene", "pt-br"),
-            ("letra_o",  "o",   "pt-br"),
-            ("letra_p",  "pê",  "pt-br"),
-            ("letra_q",  "quê", "pt-br"),
-            ("letra_r",  "erre","pt-br"),
-            ("letra_s",  "esse","pt-br"),
-            ("letra_t",  "tê",  "pt-br"),
-            ("letra_u",  "u",   "pt-br"),
-            ("letra_v",  "vê",  "pt-br"),
-            ("letra_w",  "dáblio","pt-br"),
-            ("letra_x",  "xis", "pt-br"),
-            ("letra_y",  "ípsilon","pt-br"),
-            ("letra_z",  "zê",  "pt-br"),
+            ("letra_a", "a",       "pt-br"),
+            ("letra_b", "bê",      "pt-br"),
+            ("letra_c", "cê",      "pt-br"),
+            ("letra_d", "dê",      "pt-br"),
+            ("letra_e", "e",       "pt-br"),
+            ("letra_f", "efe",     "pt-br"),
+            ("letra_g", "gê",      "pt-br"),
+            ("letra_h", "agá",     "pt-br"),
+            ("letra_i", "i",       "pt-br"),
+            ("letra_j", "jota",    "pt-br"),
+            ("letra_k", "ká",      "pt-br"),
+            ("letra_l", "ele",     "pt-br"),
+            ("letra_m", "eme",     "pt-br"),
+            ("letra_n", "ene",     "pt-br"),
+            ("letra_o", "o",       "pt-br"),
+            ("letra_p", "pê",      "pt-br"),
+            ("letra_q", "quê",     "pt-br"),
+            ("letra_r", "erre",    "pt-br"),
+            ("letra_s", "esse",    "pt-br"),
+            ("letra_t", "tê",      "pt-br"),
+            ("letra_u", "u",       "pt-br"),
+            ("letra_v", "vê",      "pt-br"),
+            ("letra_w", "dáblio",  "pt-br"),
+            ("letra_x", "xis",     "pt-br"),
+            ("letra_y", "ípsilon", "pt-br"),
+            ("letra_z", "zê",      "pt-br"),
         ],
     },
 }
