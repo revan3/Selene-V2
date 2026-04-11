@@ -60,6 +60,7 @@ use brain_zones::{
     cingulate::AnteriorCingulate,
     orbitofrontal::OrbitalFrontal,
     language::LanguageAreas,
+    amygdala::Amygdala,
 };
 // Q-Learning TD-lambda
 use learning::rl::ReinforcementLearning;
@@ -357,8 +358,11 @@ async fn async_main() {
     let mut ofc = OrbitalFrontal::new(n_neurons / 3, &config);
     // Áreas de linguagem: Wernicke (compreensão) + Broca (produção).
     let mut language = LanguageAreas::new(n_neurons / 3, &config);
+    // Amígdala separada: BLA (condicionamento) + CeA (output arousal).
+    let mut amygdala = Amygdala::new(n_neurons / 4, &config);
     println!("🗣️  Áreas de linguagem online: Wernicke + Broca.");
     println!("⚖️  Cingulado anterior + OFC online: conflito, reversal learning.");
+    println!("😨 Amígdala (BLA + CeA) online: condicionamento de medo e arousal.");
 
     // --- 10. DISPARO DOS SENTIDOS (desativados por padrão) ---
     println!("📷 Inicializando sensores (DESATIVADOS — ative via interface)...");
@@ -475,6 +479,12 @@ async fn async_main() {
                 println!("    💭 Pensamento antes de dormir: {}", pensamento);
             }
             ciclo_sono.dormir(&mut *memory_tier.lock().await, &config).await;
+            // Extinção do medo durante sono (hipocampo + vmPFC consolida segurança)
+            amygdala.extinção_durante_sono();
+            // Snapshot de fim de dia antes de continuar
+            if let Ok(mut sw) = swap_manager.try_lock() {
+                sw.criar_snapshot(step as u64);
+            }
             tempo_acordado = Duration::from_secs(0);
             println!("☀️ Novo dia começou!\n");
             continue;
@@ -1117,6 +1127,8 @@ async fn async_main() {
                 bs.acc_social_pain = cingulate.social_pain;
                 bs.ofc_value_bias  = ofc.value_bias;
                 bs.oxytocin_level  = neuro.oxytocin;
+                bs.amygdala_fear   = amygdala.fear_signal;
+                bs.amygdala_extinction = amygdala.extinction_trace;
                 // Wernicke/Broca: atualizados no server.rs (language.process por input de chat)
                 // mas o frontal_goal_signal pode pre-computar broca aqui
                 let frontal_goal_signal = frontal.goal_queue.front()
@@ -1209,6 +1221,52 @@ async fn async_main() {
                     let mag = cerebelo_out.get(cerb_idx).copied().unwrap_or(0.0).abs();
                     frontal.working_memory_trace[i] =
                         (frontal.working_memory_trace[i] + mag * 0.05).clamp(0.0, 1.0);
+                }
+            }
+
+            // Amígdala (BLA + CeA): atualiza condicionamento emocional.
+            // Roda a cada 5 ticks — muda mais lentamente que o tick neural.
+            if step % 5 == 0 {
+                let amy_inhib_acc = cingulate.amygdala_inhibition();
+                let (fear_sig, arousal_boost) = amygdala.update(
+                    emotion, amy_inhib_acc, neuro.noradrenaline, dt, current_time, &config
+                );
+                // CeA → cortisol: medo ativa eixo HPA
+                let cortisol_drive = amygdala.cortisol_drive();
+                if cortisol_drive > 0.0 {
+                    neuro.cortisol = (neuro.cortisol + cortisol_drive).clamp(0.0, 1.5);
+                }
+                // CeA → noradrenalina: arousal de medo ativa LC
+                if arousal_boost > 0.1 {
+                    neuro.noradrenaline = (neuro.noradrenaline + arousal_boost * 0.15).clamp(0.0, 2.0);
+                }
+                // Rejeição severa → amígdala registra aversão
+                if rl_rpe < -0.4 {
+                    amygdala.registrar_aversao((-rl_rpe - 0.4).clamp(0.0, 0.6));
+                }
+            }
+
+            // Snapshot do grafo a cada 1000 ticks (preserva estado semântico bom)
+            if step % 1000 == 0 && step > 0 {
+                if let Ok(mut sw) = swap_manager.try_lock() {
+                    sw.criar_snapshot(step as u64);
+                    // One-shot: consolida ou descarta fast_weights
+                    sw.consolidar_fast_weights();
+                }
+            }
+
+            // Embeddings: atualiza co-ativações semânticas a cada 50 ticks
+            if step % 50 == 0 {
+                if let Ok(bs) = brain_state.try_lock() {
+                    let ctx: Vec<String> = bs.neural_context.iter().cloned().collect();
+                    drop(bs);
+                    if ctx.len() >= 2 {
+                        if let Ok(mut sw) = swap_manager.try_lock() {
+                            for i in 0..ctx.len().saturating_sub(1) {
+                                sw.atualizar_embeddings_coativacao(&ctx[i], &ctx[i+1], 0.008);
+                            }
+                        }
+                    }
                 }
             }
 

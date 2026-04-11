@@ -10,6 +10,76 @@ use uuid::Uuid;
 use crate::synaptic_core::{NeuronioHibrido, PrecisionType, TipoNeuronal};
 use crate::brain_zones::RegionType;
 
+// ── CAMADA ZERO: primitivas fixas (criadas UMA VEZ, nunca substituídas) ───────
+
+/// 35 fonemas do PT-BR — tags geradas via format!("ph:{:?}", Phoneme).to_lowercase()
+pub const FONEMAS_PRIMITIVOS: &[&str] = &[
+    "ph:a",  "ph:e",  "ph:i",  "ph:o",  "ph:u",
+    "ph:an", "ph:en", "ph:in", "ph:on", "ph:un",
+    "ph:p",  "ph:b",  "ph:t",  "ph:d",  "ph:k",  "ph:g",
+    "ph:f",  "ph:v",  "ph:s",  "ph:z",  "ph:sh", "ph:zh",
+    "ph:ch", "ph:dj",
+    "ph:m",  "ph:n",  "ph:nh",
+    "ph:l",  "ph:lh", "ph:r",  "ph:rr",
+    "ph:w",  "ph:y",
+    "ph:sil",
+];
+
+/// 20 primitivas visuais — bandas espectrais, luminância, bordas, frequência, movimento
+pub const VISUAIS_PRIMITIVOS: &[&str] = &[
+    // 7 bandas espectrais (fotorreceptores S/M/L)
+    "vis:band:violeta", "vis:band:azul",    "vis:band:ciano",
+    "vis:band:verde",   "vis:band:amarelo", "vis:band:laranja", "vis:band:vermelho",
+    // 5 níveis de luminância (luz → sombra)
+    "vis:lum:muito_escuro", "vis:lum:escuro", "vis:lum:medio",
+    "vis:lum:claro",        "vis:lum:muito_claro",
+    // 4 orientações de borda (formas)
+    "vis:borda:0", "vis:borda:45", "vis:borda:90", "vis:borda:135",
+    // 3 frequências espaciais (textura)
+    "vis:freq:baixa", "vis:freq:media", "vis:freq:alta",
+    // 1 detector de movimento
+    "vis:movimento:sim",
+];
+
+// ── One-shot learning ──────────────────────────────────────────────────────
+
+/// Peso temporário de aprendizado rápido (episódico).
+#[derive(Debug, Clone)]
+pub struct FastWeight {
+    /// Peso inicial alto — decai se não reforçado.
+    pub peso: f32,
+    /// Timestamp de criação (segundos desde epoch).
+    pub t_criacao: f64,
+    /// Número de reforços recebidos após o primeiro encontro.
+    pub reforcos: u32,
+    /// Valência emocional no momento do aprendizado.
+    pub valence: f32,
+}
+
+// ── Graph versioning ───────────────────────────────────────────────────────
+
+/// Snapshot do estado semântico em um ponto no tempo.
+#[derive(Debug, Clone)]
+pub struct GraphSnapshot {
+    /// Tick do loop principal em que o snapshot foi criado.
+    pub tick: u64,
+    /// Timestamp (segundos desde epoch).
+    pub timestamp: f64,
+    /// Snapshot do grafo: palavra → vizinhos com pesos.
+    pub grafo: HashMap<String, Vec<(String, f32)>>,
+    /// Snapshot das valências.
+    pub valencias: HashMap<String, f32>,
+    /// Número de sinapses no momento.
+    pub n_sinapses: usize,
+}
+
+const MAX_SNAPSHOTS: usize = 5;
+const FAST_WEIGHT_INICIAL: f32 = 0.75;
+const FAST_WEIGHT_DECAY: f32 = 0.98;  // decai ~2% por tick semântico
+const FAST_WEIGHT_TTL_S: f64 = 300.0; // 5 minutos antes de descartar sem reforço
+const FAST_WEIGHT_CONSOLIDAR_REFORCOS: u32 = 2; // 2 reforços = consolidação permanente
+const EMBED_DIM: usize = 32;
+
 // Limites
 const RAM_PERCENT_FOR_NEURONS: f32 = 0.8;      // 80% da RAM para neurônios ativos
 const LIMITE_BIOLOGICO: usize = 946_000_000;   // 1,1% de 86B neurônios humanos
@@ -31,9 +101,15 @@ pub fn calcular_cap(ram_total_gb: f64, ram_livre_gb: f64) -> (usize, &'static st
 }
 
 // ── Constantes para aprendizado semântico ─────────────────────────────────
-const LTP_CONCEITO:   f32 = 0.018;  // taxa de potenciação inter-conceito
-const PESO_MAX_CONCEITO: f32 = 2.5; // peso máximo de sinapse conceitual
-const I_BASE_CONCEITO: f32 = 12.0;  // corrente base para spike RS (pA)
+const LTP_CONCEITO:      f32 = 0.018;  // taxa de potenciação inter-conceito
+const PESO_MAX_CONCEITO: f32 = 2.5;   // peso máximo de sinapse conceitual
+const I_BASE_CONCEITO:   f32 = 12.0;  // corrente base para spike RS (pA)
+
+/// Número de neurônios por conceito (codificação em população).
+/// Biologicamente: ~50–200 neurônios representam um conceito cortical.
+/// Aqui usamos 20 — rico o suficiente para gradação e ambivalência,
+/// leve o suficiente para rodar em hardware de consumidor.
+const POPULACAO_N: usize = 20;
 
 pub struct SwapManager {
     // RAM: neurônios ativos
@@ -61,14 +137,44 @@ pub struct SwapManager {
     pub total_neurogenese_eventos: usize,
 
     // ── Aprendizado semântico biológico ──────────────────────────────────
-    /// Mapa palavra → UUID do neurônio conceitual correspondente
-    pub palavra_para_id: HashMap<String, Uuid>,
+    /// Mapa palavra → população de POPULACAO_N neurônios conceituais.
+    /// Cada conceito é representado por um conjunto distribuído de neurônios
+    /// com limiares ligeiramente diferentes — codificação em população.
+    pub palavra_para_id: HashMap<String, Vec<Uuid>>,
+    /// Valência acumulada por neurônio individual.
+    /// Permite que o mesmo conceito tenha valências diferentes em cada
+    /// neurônio da população — base para ambivalência emocional genuína.
+    pub valencia_neuronio: HashMap<Uuid, f32>,
     /// Correntes de excitação pendentes por neurônio (decaem a cada tick)
     pub correntes: HashMap<Uuid, f32>,
-    /// Sinapses associativas entre conceitos: (pre, pos) → peso
+    /// Sinapses associativas entre conceitos: (pre_canonico, post_canonico) → peso.
+    /// Opera entre canônicos (pop[0]) para evitar explosão O(N²×vocab²).
     pub sinapses_conceito: HashMap<(Uuid, Uuid), f32>,
-    /// Último neurônio aprendido (para STDP sequencial)
+    /// Último neurônio aprendido (para STDP sequencial — fonemas/visuais)
     pub ultimo_conceito_id: Option<Uuid>,
+    /// Última população conceitual ativada (para STDP entre conceitos)
+    pub ultimo_conceito_pop: Option<Vec<Uuid>>,
+
+    // ── Camada 0: primitivas fixas ────────────────────────────────────────
+    /// Mapa tag-fonema → UUID (ex: "ph:a" → uuid). Nunca cresce após inicializar.
+    pub fonemas_para_id: HashMap<String, Uuid>,
+    /// Mapa tag-visual → UUID (ex: "vis:band:azul" → uuid). Nunca cresce após inicializar.
+    pub visuais_para_id: HashMap<String, Uuid>,
+
+    // ── One-shot learning ─────────────────────────────────────────────────
+    /// Fast-weights: conceitos vistos pela primeira vez recebem peso temporário alto.
+    /// Consolidam em sinapses permanentes se reforçados; caso contrário decaem.
+    pub fast_weights: HashMap<String, FastWeight>,
+
+    // ── Graph versioning ──────────────────────────────────────────────────
+    /// Snapshots periódicos do grafo semântico (máx 5).
+    /// Protege contra sessões ruins sobrescreverem bom aprendizado.
+    pub snapshots: std::collections::VecDeque<GraphSnapshot>,
+
+    // ── Embeddings vetoriais ──────────────────────────────────────────────
+    /// Representação vetorial de 32 dimensões por conceito.
+    /// Permite busca por similaridade semântica (cosine similarity).
+    pub embeddings: HashMap<String, [f32; 32]>,
 }
 
 impl SwapManager {
@@ -91,9 +197,16 @@ impl SwapManager {
             total_neurons_criados: 0,
             total_neurogenese_eventos: 0,
             palavra_para_id: HashMap::new(),
+            valencia_neuronio: HashMap::new(),
             correntes: HashMap::new(),
             sinapses_conceito: HashMap::new(),
             ultimo_conceito_id: None,
+            ultimo_conceito_pop: None,
+            fonemas_para_id: HashMap::new(),
+            visuais_para_id: HashMap::new(),
+            fast_weights: HashMap::new(),
+            snapshots: std::collections::VecDeque::with_capacity(MAX_SNAPSHOTS),
+            embeddings: HashMap::new(),
         }
     }
     
@@ -320,48 +433,203 @@ impl SwapManager {
     // APRENDIZADO SEMÂNTICO BIOLÓGICO
     // ═══════════════════════════════════════════════════════════════════
 
-    /// Cria (ou recupera) o neurônio conceitual para uma palavra e injeta
-    /// corrente proporcional à valência.
-    pub fn aprender_conceito(&mut self, palavra: &str, valence: f32) -> Uuid {
+    /// Retorna o UUID canônico de um conceito (primeiro da população).
+    /// Usado para STDP inter-conceito sem explosão O(N²×vocab²).
+    pub fn canonico(&self, palavra: &str) -> Option<Uuid> {
+        self.palavra_para_id.get(palavra)?.first().copied()
+    }
+
+    /// Cria (ou recupera) a população conceitual para uma palavra e injeta
+    /// corrente proporcional à valência em todos os neurônios da população.
+    ///
+    /// **Codificação em população**: cada conceito é representado por POPULACAO_N
+    /// neurônios com limiares ligeiramente diferentes (ruído biológico de inicialização).
+    /// A valência é distribuída com pequena variação por neurônio — permitindo que
+    /// o mesmo conceito tenha representações emocionais ligeiramente distintas
+    /// (base para ambivalência genuína após múltiplas experiências contraditórias).
+    pub fn aprender_conceito(&mut self, palavra: &str, valence: f32) -> Vec<Uuid> {
         let chave = palavra.to_lowercase();
 
-        let id = if let Some(&existing) = self.palavra_para_id.get(&chave) {
-            self.ultimo_acesso.insert(existing, current_time());
-            *self.frequencia_acesso.entry(existing).or_insert(0) += 1;
-            existing
+        let populacao: Vec<Uuid> = if let Some(pop) = self.palavra_para_id.get(&chave).cloned() {
+            // Conceito já existe — atualiza acesso de toda a população
+            for &id in &pop {
+                self.ultimo_acesso.insert(id, current_time());
+                *self.frequencia_acesso.entry(id).or_insert(0) += 1;
+            }
+            // One-shot: se estava em fast_weights, reforça
+            if let Some(fw) = self.fast_weights.get_mut(&chave) {
+                fw.reforcos += 1;
+                fw.peso = (fw.peso + 0.1).min(1.0);
+            }
+            pop
         } else {
-            let nid = self.next_id;
-            self.next_id = self.next_id.wrapping_add(1);
-            let neuronio = NeuronioHibrido::new(nid, TipoNeuronal::RS, PrecisionType::FP32);
-            let uuid = Uuid::new_v4();
-            self.ram.insert(uuid, neuronio);
-            self.ultimo_acesso.insert(uuid, current_time());
-            self.frequencia_acesso.insert(uuid, 1);
+            // Novo conceito — one-shot: registra fast_weight antes de criar população
+            self.fast_weights.insert(chave.clone(), FastWeight {
+                peso: FAST_WEIGHT_INICIAL,
+                t_criacao: current_time(),
+                reforcos: 0,
+                valence,
+            });
+            // Inicializa embedding determinístico a partir do hash da palavra
+            let emb = embedding_from_hash(&chave);
+            self.embeddings.insert(chave.clone(), emb);
+            // Cria população de POPULACAO_N neurônios
+            let mut pop = Vec::with_capacity(POPULACAO_N);
+            for i in 0..POPULACAO_N {
+                let nid = self.next_id;
+                self.next_id = self.next_id.wrapping_add(1);
+                let mut neuronio = NeuronioHibrido::new(nid, TipoNeuronal::RS, PrecisionType::FP32);
+                // Ruído de inicialização: ±0.25 por neurônio
+                // Cada neurônio da população tem um limiar ligeiramente diferente —
+                // simula variabilidade biológica dentro de uma coluna cortical.
+                let ruido = ((i as f32 * 7.3 + valence.abs() * 13.1) % 0.5) - 0.25;
+                if let crate::synaptic_core::PesoNeuronio::FP32(ref mut v) = neuronio.peso {
+                    *v = (*v + ruido).clamp(0.4, 1.6);
+                }
+                let uuid = Uuid::new_v4();
+                self.ram.insert(uuid, neuronio);
+                self.ultimo_acesso.insert(uuid, current_time());
+                self.frequencia_acesso.insert(uuid, 1);
+                // Valência inicial com pequena variação por neurônio
+                let val_ruido = valence + ((i as f32 * 3.7 + 1.1) % 0.3) - 0.15;
+                self.valencia_neuronio.insert(uuid, val_ruido.clamp(-1.0, 1.0));
+                pop.push(uuid);
+            }
             self.indices.entry("conceito".to_string())
-                .or_insert_with(Vec::new).push(uuid);
-            self.palavra_para_id.insert(chave, uuid);
-            self.total_neurons_criados += 1;
-            uuid
+                .or_insert_with(Vec::new)
+                .extend(pop.iter().copied());
+            self.palavra_para_id.insert(chave, pop.clone());
+            self.total_neurons_criados += POPULACAO_N;
+            pop
         };
 
+        // Injeta corrente em toda a população + atualiza valência por neurônio
         let corrente = valence.abs() * I_BASE_CONCEITO + 4.0;
-        let entry = self.correntes.entry(id).or_insert(0.0);
-        *entry = entry.max(corrente);
+        for &id in &populacao {
+            let entry = self.correntes.entry(id).or_insert(0.0);
+            *entry = entry.max(corrente);
+            // Atualiza valência com média ponderada (a experiência acumula)
+            let v = self.valencia_neuronio.entry(id).or_insert(0.0);
+            *v = (*v * 0.85 + valence * 0.15).clamp(-1.0, 1.0);
+        }
 
-        // STDP associativo sequencial: pre → post LTP
-        if let Some(pre_id) = self.ultimo_conceito_id {
-            if pre_id != id {
-                let peso = self.sinapses_conceito.entry((pre_id, id)).or_insert(0.0);
-                *peso = (*peso + LTP_CONCEITO).clamp(0.0, PESO_MAX_CONCEITO);
+        // STDP entre canônicos: pop_anterior[0] → pop_atual[0]
+        // Manter STDP entre canônicos evita criação de O(N²×vocab²) sinapses.
+        if let Some(ref pre_pop) = self.ultimo_conceito_pop.clone() {
+            if let (Some(&pre_id), Some(&post_id)) = (pre_pop.first(), populacao.first()) {
+                if pre_id != post_id {
+                    let peso = self.sinapses_conceito.entry((pre_id, post_id)).or_insert(0.0);
+                    *peso = (*peso + LTP_CONCEITO).clamp(0.0, PESO_MAX_CONCEITO);
+                }
             }
         }
-        self.ultimo_conceito_id = Some(id);
-        id
+        self.ultimo_conceito_pop = Some(populacao.clone());
+
+        populacao
+    }
+
+    /// Fração da população de um conceito que está atualmente excitada (0..1).
+    /// Representa quão "presente" o conceito está na mente da Selene agora.
+    pub fn ativacao_populacao(&self, palavra: &str) -> f32 {
+        let Some(pop) = self.palavra_para_id.get(palavra) else { return 0.0 };
+        if pop.is_empty() { return 0.0; }
+        let ativos = pop.iter()
+            .filter(|id| self.correntes.get(id).copied().unwrap_or(0.0) > 1.0)
+            .count();
+        ativos as f32 / pop.len() as f32
+    }
+
+    /// Valência média da população de um conceito, ponderada pela ativação.
+    /// Reflete a "memória emocional" acumulada — pode ser ambivalente se o conceito
+    /// foi vivenciado em contextos contraditórios (parte da pop positiva, parte negativa).
+    pub fn valencia_populacao(&self, palavra: &str) -> Option<f32> {
+        let pop = self.palavra_para_id.get(palavra)?;
+        if pop.is_empty() { return None; }
+        let vals: Vec<f32> = pop.iter()
+            .filter_map(|id| self.valencia_neuronio.get(id).copied())
+            .collect();
+        if vals.is_empty() { return None; }
+        Some(vals.iter().sum::<f32>() / vals.len() as f32)
+    }
+
+    /// Lookup inverso: UUID do canônico → palavra.
+    /// Construído sob demanda — não cacheado (vocab é pequeno, ~1k palavras).
+    pub fn id_para_palavra(&self) -> HashMap<Uuid, String> {
+        self.palavra_para_id.iter()
+            .filter_map(|(palavra, pop)| pop.first().map(|&id| (id, palavra.clone())))
+            .collect()
+    }
+
+    /// Constrói um grafo de palavras a partir das sinapses_conceito neurais.
+    /// Substitui o antigo grafo_associacoes (HashMap de strings) — a fonte de
+    /// verdade é agora o STDP entre populações neurais, não co-ocorrência textual.
+    /// Filtro mínimo: apenas palavras com ≥2 chars entram no grafo.
+    pub fn grafo_palavras(&self) -> HashMap<String, Vec<(String, f32)>> {
+        let id_to_word = self.id_para_palavra();
+        let mut grafo: HashMap<String, Vec<(String, f32)>> = HashMap::new();
+        for (&(pre, post), &peso) in &self.sinapses_conceito {
+            if let (Some(w_pre), Some(w_post)) = (id_to_word.get(&pre), id_to_word.get(&post)) {
+                if w_pre.chars().count() >= 2 && w_post.chars().count() >= 2 {
+                    grafo.entry(w_pre.clone()).or_default().push((w_post.clone(), peso));
+                }
+            }
+        }
+        // Ordena vizinhos por peso decrescente (facilitates walk greedy selection)
+        for vizinhos in grafo.values_mut() {
+            vizinhos.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        }
+        grafo
+    }
+
+    /// Constrói o mapa palavra→valência a partir das populações neurais.
+    /// Substitui o antigo palavra_valencias do BrainState — a valência
+    /// agora reflete a memória emocional acumulada via Hebbian learning.
+    pub fn valencias_palavras(&self) -> HashMap<String, f32> {
+        self.palavra_para_id.keys()
+            .filter_map(|p| self.valencia_populacao(p).map(|v| (p.clone(), v)))
+            .collect()
+    }
+
+    /// Injeta uma lista de pares causais (causa, efeito, peso) como sinapses
+    /// de alta prioridade no swap. Usado na migração do grafo_causal legado.
+    pub fn importar_causal(&mut self, pares: Vec<(String, String, f32)>) {
+        for (causa, efeito, peso) in pares {
+            let pop_c = self.aprender_conceito(&causa, 0.3);
+            let pop_e = self.aprender_conceito(&efeito, 0.3);
+            if let (Some(&pre), Some(&post)) = (pop_c.first(), pop_e.first()) {
+                let entry = self.sinapses_conceito.entry((pre, post)).or_insert(0.0);
+                *entry = (*entry + peso * 0.5).clamp(0.0, PESO_MAX_CONCEITO);
+            }
+        }
+    }
+
+    /// Retorna os N conceitos mais ativados no momento (por fração da população excitada).
+    /// Útil para introspecção: "o que a Selene está pensando agora?"
+    pub fn conceitos_ativos_top(&self, n: usize) -> Vec<(String, f32)> {
+        let mut scores: Vec<(String, f32)> = self.palavra_para_id.keys()
+            .map(|p| (p.clone(), self.ativacao_populacao(p)))
+            .filter(|(_, a)| *a > 0.0)
+            .collect();
+        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scores.truncate(n);
+        scores
     }
 
     /// Executa um tick nos neurônios conceituais (chamado a cada tick do loop principal).
+    ///
+    /// Estratégia de população:
+    /// 1. Todos os POPULACAO_N neurônios de cada conceito recebem update (rica representação interna)
+    /// 2. STDP inter-conceito opera APENAS entre canônicos (pop[0]) → O(vocab²), não O((vocab×N)²)
+    /// 3. Propagação sináptica vai do canônico pré para o canônico pós (sinapses já registradas)
     pub fn tick_semantico(&mut self, dt_s: f32, current_time_ms: f32) {
-        let ids: Vec<Uuid> = self.palavra_para_id.values().copied().collect();
+        // Todos os neurônios conceituais (população completa)
+        let ids: Vec<Uuid> = self.palavra_para_id.values()
+            .flat_map(|pop| pop.iter().copied())
+            .collect();
+        // Canônicos (pop[0] de cada conceito) — usados no STDP inter-conceito
+        let canonicos: Vec<Uuid> = self.palavra_para_id.values()
+            .filter_map(|pop| pop.first().copied())
+            .collect();
         let mut spikes: Vec<Uuid> = Vec::new();
 
         for &id in &ids {
@@ -373,9 +641,10 @@ impl SwapManager {
             }
         }
 
-        // STDP inter-conceito: post dispara → fortalece sinapses com pré recente
-        for &post_id in &spikes {
-            for &pre_id in &ids {
+        // STDP inter-conceito: opera apenas entre canônicos para eficiência
+        // post dispara (e é canônico) → fortalece sinapse com pre canônico recente
+        for &post_id in spikes.iter().filter(|id| canonicos.contains(id)) {
+            for &pre_id in &canonicos {
                 if pre_id == post_id { continue; }
                 let pre_trace = self.ram.get(&pre_id).map(|n| n.trace_pos).unwrap_or(0.0);
                 if pre_trace > 0.15 {
@@ -385,7 +654,8 @@ impl SwapManager {
             }
         }
 
-        // Propaga spikes pelas sinapses semânticas
+        // Propaga spikes pelas sinapses semânticas (canônico pre → canônico post)
+        // A corrente injetada no canônico se espalha pela população via tick na próxima chamada
         let sinapses_snap: Vec<((Uuid, Uuid), f32)> = self.sinapses_conceito
             .iter().map(|(&k, &v)| (k, v)).collect();
         for ((pre_id, post_id), peso) in sinapses_snap {
@@ -414,20 +684,34 @@ impl SwapManager {
         let mut n_amostras: u32 = 0;
         let mut t_ms: f32 = 0.0;
 
-        for (palavra, &id) in &self.palavra_para_id {
+        // Injeta corrente inicial em toda a população de cada conceito
+        for (palavra, pop) in &self.palavra_para_id {
             if let Some(&val) = valencias.get(palavra.as_str()) {
-                self.correntes.insert(id, (val.abs() * I_BASE_CONCEITO + 4.0).min(20.0));
+                let corrente = (val.abs() * I_BASE_CONCEITO + 4.0).min(20.0);
+                for &id in pop {
+                    self.correntes.insert(id, corrente);
+                }
             }
         }
 
-        let ids: Vec<Uuid> = self.palavra_para_id.values().copied().collect();
+        // Todos os neurônios (população completa) + canônicos separados para STDP
+        let ids: Vec<Uuid> = self.palavra_para_id.values()
+            .flat_map(|pop| pop.iter().copied())
+            .collect();
+        let canonicos: Vec<Uuid> = self.palavra_para_id.values()
+            .filter_map(|pop| pop.first().copied())
+            .collect();
 
         for ciclo in 0..n_ciclos {
+            // A cada 50 ciclos re-injeta corrente (mantém ativação durante treino longo)
             if ciclo % 50 == 0 {
-                for (palavra, &id) in &self.palavra_para_id {
+                for (palavra, pop) in &self.palavra_para_id {
                     if let Some(&val) = valencias.get(palavra.as_str()) {
-                        let entry = self.correntes.entry(id).or_insert(0.0);
-                        *entry = entry.max((val.abs() * 8.0 + 2.0).min(18.0));
+                        let reforco = (val.abs() * 8.0 + 2.0).min(18.0);
+                        for &id in pop {
+                            let entry = self.correntes.entry(id).or_insert(0.0);
+                            *entry = entry.max(reforco);
+                        }
                     }
                 }
             }
@@ -447,8 +731,9 @@ impl SwapManager {
                 }
             }
 
-            for &post_id in &spikes_ciclo {
-                for &pre_id in &ids {
+            // STDP apenas entre canônicos (eficiência O(vocab²))
+            for &post_id in spikes_ciclo.iter().filter(|id| canonicos.contains(id)) {
+                for &pre_id in &canonicos {
                     if pre_id == post_id { continue; }
                     let pre_trace = self.ram.get(&pre_id).map(|n| n.trace_pos).unwrap_or(0.0);
                     if pre_trace > 0.15 {
@@ -473,6 +758,181 @@ impl SwapManager {
     pub fn sinapses_semanticas_ativas(&self) -> usize {
         self.sinapses_conceito.values().filter(|&&p| p > 0.01).count()
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // CAMADA ZERO — primitivas sensoriais fixas
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Cria neurônio de camada zero (primitivo fixo).
+    /// RS para fonemas (auditivo regular), CH para visuais (burst rápido).
+    fn criar_primitivo(&mut self, tag: &str) -> Uuid {
+        let nid = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+        let tipo = if tag.starts_with("vis:") { TipoNeuronal::CH } else { TipoNeuronal::RS };
+        let neuronio = NeuronioHibrido::new(nid, tipo, PrecisionType::FP32);
+        let uuid = Uuid::new_v4();
+        self.ram.insert(uuid, neuronio);
+        self.ultimo_acesso.insert(uuid, current_time());
+        self.frequencia_acesso.insert(uuid, 0);
+        self.total_neurons_criados += 1;
+        uuid
+    }
+
+    /// Inicializa todos os neurônios de camada zero (35 fonemas + 20 visuais).
+    /// Idempotente — só cria o que ainda não existe.
+    /// Deve ser chamado logo após `carregar_estado()` no startup.
+    pub fn inicializar_camada_zero(&mut self) {
+        let mut criados = 0usize;
+
+        for &tag in FONEMAS_PRIMITIVOS {
+            if !self.fonemas_para_id.contains_key(tag) {
+                let uuid = self.criar_primitivo(tag);
+                self.fonemas_para_id.insert(tag.to_string(), uuid);
+                criados += 1;
+            }
+        }
+
+        for &tag in VISUAIS_PRIMITIVOS {
+            if !self.visuais_para_id.contains_key(tag) {
+                let uuid = self.criar_primitivo(tag);
+                self.visuais_para_id.insert(tag.to_string(), uuid);
+                criados += 1;
+            }
+        }
+
+        if criados > 0 {
+            println!(
+                "🔵 [Camada 0] {} primitivos criados ({} fonemas, {} visuais)",
+                criados,
+                self.fonemas_para_id.len(),
+                self.visuais_para_id.len(),
+            );
+        } else {
+            println!(
+                "🔵 [Camada 0] Restaurada — {} fonemas + {} visuais já presentes",
+                self.fonemas_para_id.len(),
+                self.visuais_para_id.len(),
+            );
+        }
+    }
+
+    /// Aprende uma palavra como sequência de fonemas (camada 1 emergente).
+    ///
+    /// Não cria neurônios novos — apenas reforça as sinapses STDP entre
+    /// os neurônios primitivos de fonema que compõem a palavra.
+    /// A representação da palavra existe APENAS nas sinapses — nunca como neurônio próprio.
+    ///
+    /// `tags`: lista de tags no formato "ph:a", "ph:k", etc.
+    pub fn aprender_sequencia_fonemas(&mut self, tags: &[String], valence: f32) {
+        let corrente_base = valence.abs() * I_BASE_CONCEITO + 4.0;
+        let mut anterior: Option<Uuid> = None;
+
+        for tag in tags {
+            let Some(&id) = self.fonemas_para_id.get(tag.as_str()) else { continue };
+
+            // Injeta corrente proporcional à valência
+            let entry = self.correntes.entry(id).or_insert(0.0);
+            *entry = entry.max(corrente_base);
+
+            // STDP sequencial: pre → post forma o bigrama fonêmico
+            if let Some(pre_id) = anterior {
+                let peso = self.sinapses_conceito.entry((pre_id, id)).or_insert(0.0);
+                *peso = (*peso + LTP_CONCEITO).clamp(0.0, PESO_MAX_CONCEITO);
+            }
+
+            self.ultimo_acesso.insert(id, current_time());
+            *self.frequencia_acesso.entry(id).or_insert(0) += 1;
+            anterior = Some(id);
+        }
+
+        // Propaga contexto sináptico para o próximo aprendizado
+        self.ultimo_conceito_id = anterior;
+    }
+
+    /// Ativa uma primitiva visual injetando corrente e reforçando sinapses.
+    /// Só funciona se `inicializar_camada_zero()` já foi chamado.
+    pub fn ativar_primitiva_visual(&mut self, tag: &str, intensidade: f32) {
+        let Some(&id) = self.visuais_para_id.get(tag) else { return };
+
+        let corrente = intensidade.clamp(0.0, 1.0) * I_BASE_CONCEITO + 2.0;
+        let entry = self.correntes.entry(id).or_insert(0.0);
+        *entry = entry.max(corrente);
+
+        // STDP com último primitivo ativado (cross-modal binding)
+        if let Some(pre_id) = self.ultimo_conceito_id {
+            if pre_id != id {
+                let peso = self.sinapses_conceito.entry((pre_id, id)).or_insert(0.0);
+                *peso = (*peso + LTP_CONCEITO * intensidade).clamp(0.0, PESO_MAX_CONCEITO);
+            }
+        }
+
+        self.ultimo_acesso.insert(id, current_time());
+        *self.frequencia_acesso.entry(id).or_insert(0) += 1;
+        self.ultimo_conceito_id = Some(id);
+    }
+
+    /// Converte métricas visuais agregadas em ativações de primitivas de camada zero.
+    ///
+    /// Parâmetros (todos normalizados 0..1):
+    /// - `lum_media`:   luminância média da cena (claridade / escuridão)
+    /// - `freq_media`:  frequência espacial média (textura / bordas / formas)
+    /// - `taxa_var`:    taxa de variação temporal (movimento entre frames)
+    /// - `nm_medio`:    comprimento de onda dominante estimado em nm (cor)
+    pub fn processar_visual_simples(
+        &mut self,
+        lum_media:  f32,
+        freq_media: f32,
+        taxa_var:   f32,
+        nm_medio:   f32,
+    ) {
+        // Luminância → nível
+        let lum_tag = match lum_media {
+            l if l < 0.15 => "vis:lum:muito_escuro",
+            l if l < 0.35 => "vis:lum:escuro",
+            l if l < 0.60 => "vis:lum:medio",
+            l if l < 0.80 => "vis:lum:claro",
+            _              => "vis:lum:muito_claro",
+        };
+        self.ativar_primitiva_visual(lum_tag, lum_media);
+
+        // Banda espectral dominante → cor
+        let band_tag = match nm_medio as u32 {
+            0..=449   => "vis:band:violeta",
+            450..=494 => "vis:band:azul",
+            495..=519 => "vis:band:ciano",
+            520..=564 => "vis:band:verde",
+            565..=589 => "vis:band:amarelo",
+            590..=624 => "vis:band:laranja",
+            _          => "vis:band:vermelho",
+        };
+        self.ativar_primitiva_visual(band_tag, lum_media);
+
+        // Frequência espacial → textura / formas
+        if freq_media > 0.05 {
+            let freq_tag = match freq_media {
+                f if f < 0.25 => "vis:freq:baixa",
+                f if f < 0.55 => "vis:freq:media",
+                _              => "vis:freq:alta",
+            };
+            self.ativar_primitiva_visual(freq_tag, freq_media);
+
+            // Orientação de borda: aproximada pela razão freq/lum
+            // (heurística: alta freq + baixa lum → bordas horizontais; inverso → verticais)
+            let ratio = (freq_media / (lum_media + 0.01)).clamp(0.0, 4.0) / 4.0;
+            let borda_tag = match ratio {
+                r if r < 0.25 => "vis:borda:0",
+                r if r < 0.50 => "vis:borda:45",
+                r if r < 0.75 => "vis:borda:90",
+                _              => "vis:borda:135",
+            };
+            self.ativar_primitiva_visual(borda_tag, freq_media);
+        }
+
+        // Movimento
+        if taxa_var > 0.04 {
+            self.ativar_primitiva_visual("vis:movimento:sim", taxa_var.min(1.0));
+        }
+    }
 }
 
 pub struct SwapStats {
@@ -488,6 +948,202 @@ pub struct SwapStats {
     pub limite_biologico: usize,
 }
 
+
+impl SwapManager {
+    // ═══════════════════════════════════════════════════════════════════
+    // ONE-SHOT LEARNING — Fast weights episódicos
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Consolida ou descarta fast_weights a cada tick semântico.
+    ///
+    /// Consolidação: reforços ≥ threshold → synapse permanente com peso alto
+    /// Descarte: TTL expirado sem reforço suficiente → remove conceito raro
+    pub fn consolidar_fast_weights(&mut self) {
+        let agora = current_time();
+        let mut consolidar: Vec<(String, f32)> = Vec::new();
+        let mut descartar: Vec<String> = Vec::new();
+
+        for (palavra, fw) in &mut self.fast_weights {
+            // Decaimento natural
+            fw.peso *= FAST_WEIGHT_DECAY;
+
+            if fw.reforcos >= FAST_WEIGHT_CONSOLIDAR_REFORCOS {
+                // Consolidação: fast_weight vira sinapse permanente forte
+                consolidar.push((palavra.clone(), fw.peso * 1.5));
+            } else if agora - fw.t_criacao > FAST_WEIGHT_TTL_S && fw.peso < 0.2 {
+                // TTL expirado e peso baixo → descarta
+                descartar.push(palavra.clone());
+            }
+        }
+
+        // Consolida: reforça sinapses canônicas do conceito com ele mesmo
+        for (palavra, peso_boost) in consolidar {
+            if let Some(pop) = self.palavra_para_id.get(&palavra).cloned() {
+                if let Some(&can) = pop.first() {
+                    let entry = self.sinapses_conceito.entry((can, can)).or_insert(0.0);
+                    *entry = (*entry + peso_boost * 0.3).clamp(0.0, PESO_MAX_CONCEITO);
+                }
+            }
+            self.fast_weights.remove(&palavra);
+            log::debug!("⚡ [ONE-SHOT] '{}' consolidado em sinapse permanente", palavra);
+        }
+
+        for palavra in descartar {
+            self.fast_weights.remove(&palavra);
+        }
+    }
+
+    /// Retorna os N conceitos aprendidos mais recentemente via one-shot.
+    pub fn conceitos_one_shot_recentes(&self, n: usize) -> Vec<(&str, f32)> {
+        let mut v: Vec<(&str, f32)> = self.fast_weights.iter()
+            .map(|(k, fw)| (k.as_str(), fw.peso))
+            .collect();
+        v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        v.truncate(n);
+        v
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // GRAPH VERSIONING — Snapshots do grafo semântico
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Cria um snapshot do estado atual do grafo.
+    /// Chamado periodicamente (ex: a cada 1000 ticks ou no início do sono).
+    pub fn criar_snapshot(&mut self, tick: u64) {
+        if self.snapshots.len() >= MAX_SNAPSHOTS {
+            self.snapshots.pop_front(); // descarta o mais antigo
+        }
+        let snap = GraphSnapshot {
+            tick,
+            timestamp: current_time(),
+            grafo: self.grafo_palavras(),
+            valencias: self.valencias_palavras(),
+            n_sinapses: self.sinapses_semanticas_ativas(),
+        };
+        self.snapshots.push_back(snap);
+        log::info!("📸 [SNAPSHOT] tick={} vocab={} sinapses={}",
+            tick, self.palavra_para_id.len(), self.sinapses_semanticas_ativas());
+    }
+
+    /// Lista snapshots disponíveis: (índice, tick, n_sinapses).
+    pub fn snapshots_disponiveis(&self) -> Vec<(usize, u64, usize)> {
+        self.snapshots.iter().enumerate()
+            .map(|(i, s)| (i, s.tick, s.n_sinapses))
+            .collect()
+    }
+
+    /// Restaura valências de um snapshot anterior.
+    /// Não remove conceitos novos — apenas restaura pesos de valência.
+    /// Útil para reverter aprendizado problemático de uma sessão.
+    pub fn restaurar_valencias_snapshot(&mut self, idx: usize) -> bool {
+        let Some(snap) = self.snapshots.get(idx).cloned() else { return false };
+        let mut restaurados = 0usize;
+        for (palavra, val) in &snap.valencias {
+            if let Some(pop) = self.palavra_para_id.get(palavra).cloned() {
+                for &id in &pop {
+                    if let Some(v) = self.valencia_neuronio.get_mut(&id) {
+                        *v = *val;
+                        restaurados += 1;
+                    }
+                }
+            }
+        }
+        log::info!("🔄 [RESTAURAR] snapshot tick={} → {} valências restauradas",
+            snap.tick, restaurados);
+        true
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // EMBEDDINGS VETORIAIS — Busca por similaridade semântica
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Similaridade de cosseno entre dois conceitos [-1.0, 1.0].
+    /// Retorna None se qualquer conceito não tiver embedding.
+    pub fn similaridade_cosseno(&self, a: &str, b: &str) -> Option<f32> {
+        let ea = self.embeddings.get(a)?;
+        let eb = self.embeddings.get(b)?;
+        let dot: f32 = ea.iter().zip(eb.iter()).map(|(x, y)| x * y).sum();
+        let na: f32 = ea.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let nb: f32 = eb.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if na < 1e-6 || nb < 1e-6 { return None; }
+        Some((dot / (na * nb)).clamp(-1.0, 1.0))
+    }
+
+    /// Top-K vizinhos semânticos de uma palavra (por cosine similarity).
+    /// Exclui a própria palavra e retorna apenas similaridades > threshold.
+    pub fn vizinhos_semanticos(&self, palavra: &str, k: usize, threshold: f32) -> Vec<(String, f32)> {
+        let Some(ea) = self.embeddings.get(palavra) else { return Vec::new() };
+        let mut scores: Vec<(String, f32)> = self.embeddings.iter()
+            .filter(|(w, _)| w.as_str() != palavra)
+            .filter_map(|(w, eb)| {
+                let dot: f32 = ea.iter().zip(eb.iter()).map(|(x, y)| x * y).sum();
+                let na: f32 = ea.iter().map(|x| x * x).sum::<f32>().sqrt();
+                let nb: f32 = eb.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if na < 1e-6 || nb < 1e-6 { return None; }
+                let sim = (dot / (na * nb)).clamp(-1.0, 1.0);
+                if sim > threshold { Some((w.clone(), sim)) } else { None }
+            })
+            .collect();
+        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scores.truncate(k);
+        scores
+    }
+
+    /// Atualiza embeddings de dois conceitos co-ativados (aprendizado associativo).
+    /// Biologicamente: co-ativação → representações aproximam-se no espaço vetorial.
+    pub fn atualizar_embeddings_coativacao(&mut self, palavra_a: &str, palavra_b: &str, lr: f32) {
+        let ea = self.embeddings.get(palavra_a).copied();
+        let eb = self.embeddings.get(palavra_b).copied();
+        if let (Some(mut a), Some(mut b)) = (ea, eb) {
+            for i in 0..EMBED_DIM {
+                let delta_a = lr * (b[i] - a[i]);
+                let delta_b = lr * (a[i] - b[i]);
+                a[i] = (a[i] + delta_a).clamp(-1.0, 1.0);
+                b[i] = (b[i] + delta_b).clamp(-1.0, 1.0);
+            }
+            self.embeddings.insert(palavra_a.to_string(), a);
+            self.embeddings.insert(palavra_b.to_string(), b);
+        }
+    }
+
+    /// Inclui vizinhos semânticos no grafo retornado.
+    /// Usado para enriquecer o graph_walk com similaridade vetorial.
+    pub fn grafo_com_semantica(&self, top_k: usize, threshold: f32) -> HashMap<String, Vec<(String, f32)>> {
+        let mut grafo = self.grafo_palavras();
+        // Para cada palavra, adiciona vizinhos semânticos com peso 0.3×similaridade
+        let palavras: Vec<String> = self.embeddings.keys().cloned().collect();
+        for palavra in &palavras {
+            let vizinhos = self.vizinhos_semanticos(palavra, top_k, threshold);
+            let entry = grafo.entry(palavra.clone()).or_insert_with(Vec::new);
+            for (viz, sim) in vizinhos {
+                // Só adiciona se não existir aresta direta já
+                if !entry.iter().any(|(w, _)| w == &viz) {
+                    entry.push((viz, sim * 0.3));
+                }
+            }
+        }
+        grafo
+    }
+}
+
+/// Gera embedding determinístico de 32 dimensões a partir do hash da string.
+/// Sem dependência externa — inicialização barata e reprodutível.
+fn embedding_from_hash(palavra: &str) -> [f32; EMBED_DIM] {
+    let mut emb = [0.0f32; EMBED_DIM];
+    // FNV-1a hash variant para cada dimensão
+    let bytes = palavra.as_bytes();
+    for (i, slot) in emb.iter_mut().enumerate() {
+        let mut h: u64 = 14695981039346656037u64
+            .wrapping_add(i as u64 * 2654435761);
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(1099511628211);
+        }
+        // Mapeia para [-1.0, 1.0]
+        *slot = ((h & 0xFFFF) as f32 / 32767.5) - 1.0;
+    }
+    emb
+}
 
 fn current_time() -> f64 {
     std::time::SystemTime::now()
@@ -577,5 +1233,213 @@ impl SwapManager {
         if consolidados > 0 {
             log::info!("[Consolidação] {} neurônios SSD→RAM", consolidados);
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // PERSISTÊNCIA DO ESTADO SEMÂNTICO
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Salva o estado semântico do SwapManager para disco.
+    ///
+    /// Persiste:
+    /// - `palavra_para_id`  → garante que palavras já aprendidas não recebam
+    ///   novo UUID ao reiniciar (mantém identidade dos neurônios).
+    /// - `sinapses_conceito` → preserva os pesos STDP acumulados entre conceitos.
+    /// - `next_id` / `total_neurons_criados` → contadores para continuidade.
+    ///
+    /// Não persiste: estado Izhikevich (v, u) dos neurônios — é transitório.
+    /// Os neurônios serão recriados pelo `aprender_conceito` na próxima sessão
+    /// de treino, mas com os UUIDs e pesos sinápticos corretos restaurados.
+    pub fn salvar_estado(&self, caminho: &str) -> std::io::Result<()> {
+        // Serializa palavra_para_id como {palavra: [uuid1, uuid2, ...]} (população)
+        let palavras: serde_json::Map<String, serde_json::Value> = self.palavra_para_id
+            .iter()
+            .map(|(p, pop)| {
+                let uuids: Vec<serde_json::Value> = pop.iter()
+                    .map(|u| serde_json::Value::String(u.to_string()))
+                    .collect();
+                (p.clone(), serde_json::Value::Array(uuids))
+            })
+            .collect();
+
+        // Serializa sinapses_conceito como [{pre, post, peso}]
+        let sinapses: Vec<serde_json::Value> = self.sinapses_conceito
+            .iter()
+            .filter(|(_, &p)| p > 0.005) // descarta sinapses praticamente nulas
+            .map(|((pre, post), &peso)| serde_json::json!({
+                "pre":  pre.to_string(),
+                "post": post.to_string(),
+                "peso": peso,
+            }))
+            .collect();
+
+        // Serializa fonemas_para_id
+        let fonemas_json: serde_json::Map<String, serde_json::Value> = self.fonemas_para_id
+            .iter()
+            .map(|(t, u)| (t.clone(), serde_json::Value::String(u.to_string())))
+            .collect();
+
+        // Serializa visuais_para_id
+        let visuais_json: serde_json::Map<String, serde_json::Value> = self.visuais_para_id
+            .iter()
+            .map(|(t, u)| (t.clone(), serde_json::Value::String(u.to_string())))
+            .collect();
+
+        // Serializa valencia_neuronio como {uuid: val}
+        let valencias_json: serde_json::Map<String, serde_json::Value> = self.valencia_neuronio
+            .iter()
+            .map(|(id, &val)| (id.to_string(), serde_json::Value::from(val as f64)))
+            .collect();
+
+        let payload = serde_json::json!({
+            "selene_swap_v2": {
+                "next_id":           self.next_id,
+                "total_criados":     self.total_neurons_criados,
+                "populacao_n":       POPULACAO_N,
+                "n_palavras":        self.palavra_para_id.len(),
+                "n_sinapses":        sinapses.len(),
+                "palavra_para_id":   palavras,
+                "sinapses_conceito": sinapses,
+                "fonemas_para_id":   fonemas_json,
+                "visuais_para_id":   visuais_json,
+                "valencia_neuronio": valencias_json,
+            }
+        });
+
+        let json = serde_json::to_string_pretty(&payload)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        std::fs::write(caminho, json)
+    }
+
+    /// Restaura o estado semântico a partir do arquivo salvo por `salvar_estado`.
+    ///
+    /// Após a restauração, `aprender_conceito` vai reconhecer as palavras já
+    /// aprendidas (via `palavra_para_id`) e reutilizar seus UUIDs, garantindo
+    /// continuidade dos pesos sinápticos.
+    pub fn carregar_estado(&mut self, caminho: &str) {
+        let content = match std::fs::read_to_string(caminho) {
+            Ok(c) => c,
+            Err(_) => return, // arquivo não existe ainda — normal na primeira execução
+        };
+        let json: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(j) => j,
+            Err(e) => { log::warn!("[SwapState] JSON inválido em {}: {}", caminho, e); return; }
+        };
+
+        // Suporta v2 (populações) e v1 legado (UUID único por palavra)
+        let (swap, is_v2) = if let Some(s) = json.get("selene_swap_v2") {
+            (s, true)
+        } else if let Some(s) = json.get("selene_swap_v1") {
+            (s, false)
+        } else {
+            return;
+        };
+
+        // Restaura next_id e contadores
+        if let Some(n) = swap["next_id"].as_u64() { self.next_id = n as u32; }
+        if let Some(n) = swap["total_criados"].as_u64() { self.total_neurons_criados = n as usize; }
+
+        // Restaura palavra_para_id
+        let mut n_palavras = 0usize;
+        if let Some(obj) = swap["palavra_para_id"].as_object() {
+            for (palavra, val) in obj {
+                let uuids: Vec<Uuid> = if is_v2 {
+                    // v2: array de UUIDs (população)
+                    val.as_array()
+                        .map(|arr| arr.iter()
+                            .filter_map(|v| v.as_str().and_then(|s| Uuid::parse_str(s).ok()))
+                            .collect())
+                        .unwrap_or_default()
+                } else {
+                    // v1 legado: UUID único — envolve em Vec
+                    val.as_str()
+                        .and_then(|s| Uuid::parse_str(s).ok())
+                        .map(|u| vec![u])
+                        .unwrap_or_default()
+                };
+
+                if uuids.is_empty() { continue; }
+
+                // Cria placeholder em RAM para cada neurônio da população
+                for &uuid in &uuids {
+                    self.ram.entry(uuid).or_insert_with(|| {
+                        let nid = self.next_id;
+                        self.next_id = self.next_id.wrapping_add(1);
+                        NeuronioHibrido::new(nid, TipoNeuronal::RS, PrecisionType::FP32)
+                    });
+                }
+                self.palavra_para_id.insert(palavra.clone(), uuids);
+                n_palavras += 1;
+            }
+        }
+
+        // Restaura valencia_neuronio (v2 apenas)
+        if is_v2 {
+            if let Some(obj) = swap["valencia_neuronio"].as_object() {
+                for (uuid_str, val) in obj {
+                    if let (Ok(uuid), Some(v)) = (Uuid::parse_str(uuid_str), val.as_f64()) {
+                        self.valencia_neuronio.insert(uuid, v as f32);
+                    }
+                }
+            }
+        }
+
+        // Restaura sinapses_conceito
+        let mut n_sinapses = 0usize;
+        if let Some(arr) = swap["sinapses_conceito"].as_array() {
+            for s in arr {
+                if let (Some(pre_str), Some(post_str), Some(peso)) = (
+                    s["pre"].as_str(), s["post"].as_str(), s["peso"].as_f64()
+                ) {
+                    if let (Ok(pre), Ok(post)) = (
+                        Uuid::parse_str(pre_str), Uuid::parse_str(post_str)
+                    ) {
+                        self.sinapses_conceito.insert((pre, post), peso as f32);
+                        n_sinapses += 1;
+                    }
+                }
+            }
+        }
+
+        // Restaura fonemas_para_id (camada 0 fonêmica)
+        let mut n_fonemas = 0usize;
+        if let Some(obj) = swap["fonemas_para_id"].as_object() {
+            for (tag, val) in obj {
+                if let Some(uuid_str) = val.as_str() {
+                    if let Ok(uuid) = Uuid::parse_str(uuid_str) {
+                        self.fonemas_para_id.insert(tag.clone(), uuid);
+                        self.ram.entry(uuid).or_insert_with(|| {
+                            let nid = self.next_id;
+                            self.next_id = self.next_id.wrapping_add(1);
+                            NeuronioHibrido::new(nid, TipoNeuronal::RS, PrecisionType::FP32)
+                        });
+                        n_fonemas += 1;
+                    }
+                }
+            }
+        }
+
+        // Restaura visuais_para_id (camada 0 visual)
+        let mut n_visuais = 0usize;
+        if let Some(obj) = swap["visuais_para_id"].as_object() {
+            for (tag, val) in obj {
+                if let Some(uuid_str) = val.as_str() {
+                    if let Ok(uuid) = Uuid::parse_str(uuid_str) {
+                        self.visuais_para_id.insert(tag.clone(), uuid);
+                        self.ram.entry(uuid).or_insert_with(|| {
+                            let nid = self.next_id;
+                            self.next_id = self.next_id.wrapping_add(1);
+                            NeuronioHibrido::new(nid, TipoNeuronal::CH, PrecisionType::FP32)
+                        });
+                        n_visuais += 1;
+                    }
+                }
+            }
+        }
+
+        println!(
+            "🧠 [SwapState] Restaurado: {} conceituais | {} fonemas | {} visuais | {} sinapses",
+            n_palavras, n_fonemas, n_visuais, n_sinapses
+        );
     }
 }

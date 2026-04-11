@@ -16,6 +16,7 @@ pub mod depth_stack;
 pub mod cingulate;
 pub mod orbitofrontal;
 pub mod language;
+pub mod amygdala;
 
 // Re-exportações
 pub use frontal::FrontalLobe;
@@ -29,6 +30,7 @@ pub use corpus_callosum::CorpusCallosum;
 pub use cingulate::AnteriorCingulate;
 pub use orbitofrontal::OrbitalFrontal;
 pub use language::LanguageAreas;
+pub use amygdala::Amygdala;
 
 use serde::{Serialize, Deserialize};
 

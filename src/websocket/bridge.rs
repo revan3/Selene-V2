@@ -299,6 +299,14 @@ pub struct BrainState {
     /// Ocitocina atual [0.0, 1.5].
     /// Alta após interações positivas → tom mais acolhedor, menor sensibilidade a rejeição.
     pub oxytocin_level: f32,
+
+    /// Sinal de medo da amígdala (BLA) [0.0, 1.0].
+    /// Alto = contexto associado a experiências aversivas → cautela e recolhimento.
+    pub amygdala_fear: f32,
+
+    /// Traço de extinção da amígdala [0.0, 1.0].
+    /// Alto = medo suprimido por experiências seguras / sono → Selene mais à vontade.
+    pub amygdala_extinction: f32,
 }
 
 pub struct EgoVoiceState {
@@ -580,6 +588,8 @@ impl BrainState {
             wernicke_comprehension: 0.5,
             broca_fluency: 0.5,
             oxytocin_level: 0.5,
+            amygdala_fear: 0.0,
+            amygdala_extinction: 0.3,
         }
     }
 
