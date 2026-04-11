@@ -145,13 +145,14 @@ async fn ciclo_consciente_tick(brain: &Arc<TokioMutex<BrainState>>) {
             .cloned()
             .unwrap_or_default();
 
-        if !estimulo.is_empty() {
+        let falou = if !estimulo.is_empty() {
             let (fala, score) = decidir_falar(&state, &estimulo, saliencia);
             if fala {
                 let _ = state.pensamento_tx.send(estimulo.clone());
                 state.ultimo_pensamento_espontaneo = std::time::Instant::now();
                 state.tedio_nivel = 0.0;
                 log::info!("💭 [FALA] '{}' score={:.2} (sal={:.2} tédio={:.2})", estimulo, score, saliencia, tedio_atual);
+                true
             } else {
                 let resumo = format!("guardei: {} (score={:.2})", estimulo, score);
                 state.ego.pensamentos_recentes.push_back(resumo);
@@ -159,6 +160,22 @@ async fn ciclo_consciente_tick(brain: &Arc<TokioMutex<BrainState>>) {
                     state.ego.pensamentos_recentes.pop_front();
                 }
                 log::debug!("🤫 [GUARDA] '{}' score={:.2} — inibido pelo filtro executivo", estimulo, score);
+                false
+            }
+        } else { false };
+
+        // Fallback: se não falou por saliência, tenta ideia gerada pelo motor de hipóteses.
+        // Biologicamente: theta-sequences hipocampais projetam predições para o PFC;
+        // se o filtro executivo aprova, a predição vira expressão espontânea.
+        if !falou {
+            if let Some(topico) = state.hypothesis_engine.proximo_topico_previsto() {
+                let topico = topico.to_string();
+                let (fala_hip, score_hip) = decidir_falar(&state, &topico, saliencia * 0.8);
+                if fala_hip {
+                    let _ = state.pensamento_tx.send(format!("hipotese:{}", topico));
+                    state.ultimo_pensamento_espontaneo = std::time::Instant::now();
+                    log::info!("🧠 [HIPÓTESE] '{}' score={:.2}", topico, score_hip);
+                }
             }
         }
     }
@@ -170,17 +187,20 @@ async fn ciclo_consciente_tick(brain: &Arc<TokioMutex<BrainState>>) {
 // Inspirado no circuito Go/NoGo dos gânglios basais + controle pré-frontal:
 //
 //   FALAR (Go):
-//     + drive interno (saliência × tédio)         → até +0.40
-//     + gate dopaminérgico (dopamina > 0.7)        → até +0.20
-//     + congruência com goal frontal               →      +0.20
-//     + RPE recente positivo (aprendeu que falar = bom) → +0.12
+//     + drive interno (saliência × tédio)              → até +0.40
+//     + gate dopaminérgico (dopamina > 0.7)             → até +0.20
+//     + congruência com goal frontal                    →      +0.20
+//     + RPE recente positivo (aprendeu que falar = bom) →      +0.12
+//     + OFC: contexto historicamente recompensado       → até +0.15
 //
 //   GUARDAR (NoGo):
-//     - controle serotonérgico (serotonina alta)  → até −0.30
-//     - traço cautelosa (personalidade)            → até −0.25
-//     - noradrenalina alta (estresse/alerta)       → até −0.15
-//     - chat muito recente (< 30s, redundância)    →      −0.35
-//     - RPE recente negativo (aprendeu a calar)    →      −0.15
+//     - controle serotonérgico (serotonina alta)       → até −0.30
+//     - traço cautelosa (personalidade)                → até −0.25
+//     - noradrenalina alta (estresse/alerta)           → até −0.15
+//     - chat muito recente (< 30s, redundância)        →      −0.35
+//     - RPE recente negativo (aprendeu a calar)        →      −0.15
+//     - ACC conflito alto (frontal × límbico divergem) → até −0.18
+//     - dor social acumulada (rejeições persistentes)  → até −0.20
 //
 // Threshold: score > 0.45 → fala; ≤ 0.45 → guarda.
 // Retorna (bool, f32) — decisão + score para log.
@@ -212,6 +232,10 @@ fn decidir_falar(state: &crate::websocket::bridge::BrainState, estimulo: &str, s
         &state.ego.tracos.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
     );
 
+    // OFC: valor aprendido por contexto → Go se este contexto foi historicamente recompensado
+    // Biologicamente: vmOFC codifica valor esperado por contexto e facilita ação congruente
+    let bonus_ofc = (state.ofc_value_bias * 0.15).clamp(0.0, 0.15);
+
     // ── NoGo signals ───────────────────────────────────────────────────────
 
     // Controle serotonérgico: serotonina alta = paciência/filtro = menos impulsivo
@@ -237,9 +261,21 @@ fn decidir_falar(state: &crate::websocket::bridge::BrainState, estimulo: &str, s
     // RPE aprendido negativo: último feedback foi punição → aprende a calar
     let inib_rpe = if state.ultimo_rpe < -0.30 { 0.15 } else { 0.0 };
 
+    // ACC conflito alto: frontal e límbico divergem → via indireta suprime output
+    // Biologicamente: dACC projeta para BG via indireta quando conflito > threshold
+    let inib_acc = if state.acc_conflict > 0.50 {
+        ((state.acc_conflict - 0.50) * 0.36).clamp(0.0, 0.18)
+    } else { 0.0 };
+
+    // Dor social acumulada: histórico de rejeições → recolhimento persistente
+    // Biologicamente: rACC registra rejeição social; ativa vmPFC para supressão de expressão
+    // É diferente do inib_rpe (instantâneo) — este é memória afetiva de médio prazo
+    let inib_social_pain = (state.acc_social_pain * 0.20).clamp(0.0, 0.20);
+
     // ── Score final ────────────────────────────────────────────────────────
-    let score = drive + gate_dopa + bonus_goal + bonus_rpe + bonus_valor
-              - inib_sero - inib_cautelosa - inib_nor - inib_chat - inib_rpe;
+    let score = drive + gate_dopa + bonus_goal + bonus_rpe + bonus_valor + bonus_ofc
+              - inib_sero - inib_cautelosa - inib_nor - inib_chat - inib_rpe
+              - inib_acc - inib_social_pain;
 
     (score > 0.45, score)
 }
