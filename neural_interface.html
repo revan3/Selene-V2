@@ -6,8 +6,7 @@
 <title>SELENE NEXUS — Neural Interface</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&family=Exo+2:wght@300;400;600&display=swap" rel="stylesheet">
-<script src="d3.v7.min.js"></script>
-<script>if (!window.d3) document.write('<scr'+'ipt src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"><\/scr'+'ipt>');</script>
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <style>
 :root {
   --bg:      #060a0f;
@@ -55,6 +54,7 @@ body::before {
   display: grid;
   grid-template-rows: 52px 1fr;
   height: 100vh;
+  /* no mobile o @media adiciona a 3ª row: 52px 1fr 54px */
 }
 
 /* ══════════════════════════════════════════
@@ -203,10 +203,30 @@ header::after {
   cursor: grab;
 }
 #brain-canvas:active { cursor: grabbing; }
+#constellation-canvas {
+  position: absolute;
+  top: 28px; left: 0; right: 0; bottom: 0;
+  display: none;
+}
 .brain-hint {
   position: absolute; bottom: 8px; right: 12px;
   font-family: var(--mono); font-size: 9px; color: rgba(74,112,144,0.5);
   pointer-events: none;
+}
+.tab-btns {
+  display: flex; gap: 4px;
+}
+.tab-btn {
+  font-family: var(--orb); font-size: 7px; letter-spacing: 2px;
+  color: var(--muted); background: transparent;
+  border: 1px solid rgba(26,45,64,0.8); border-radius: 3px;
+  padding: 2px 7px; cursor: pointer; transition: all 0.2s;
+}
+.tab-btn:hover { color: var(--accent); border-color: var(--accent); }
+.tab-btn.active {
+  color: var(--accent2); border-color: var(--accent2);
+  background: rgba(123,79,255,0.12);
+  text-shadow: 0 0 8px rgba(123,79,255,0.6);
 }
 
 /* ══════════════════════════════════════════
@@ -267,6 +287,27 @@ header::after {
 .c-delta { color: #4a7090; }
 .c-theta { color: #7b4fff; }
 .c-alpha { color: #00ffb3; }
+
+/* Espectro Visual */
+.espectro-bar {
+  display: flex; gap: 2px; height: 16px; margin: 5px 0 4px;
+  border-radius: 3px; overflow: hidden;
+}
+.espectro-banda {
+  flex: 1; opacity: 0.28; border-radius: 2px;
+  transition: opacity 0.35s ease, box-shadow 0.35s ease;
+}
+.espectro-banda.ativa {
+  opacity: 1;
+  box-shadow: 0 0 8px 2px rgba(255,255,255,0.4);
+}
+.espectro-info {
+  font-family: var(--mono); font-size: 9px; color: var(--muted);
+  min-height: 24px; line-height: 1.5;
+}
+.espectro-word { color: #c084fc; font-size: 11px; letter-spacing: 1px; margin-right: 4px; }
+.espectro-ph   { color: var(--muted); font-size: 8px; }
+.espectro-nm   { float: right; color: var(--accent); }
 .c-beta  { color: #00d4ff; }
 .c-gamma { color: #ff9a00; }
 
@@ -406,6 +447,23 @@ header::after {
 .ico-conversa.selene-falando { background: rgba(255,200,0,0.18); border-color: #ffc800; color: #ffc800; }
 .ico-screen.screen-on { background: rgba(255,165,0,0.22); border-color: #ffa500; color: #ffa500;
   animation: rec-pulse 0.7s infinite alternate; }
+/* Modo Ambiente — ouve tudo, foca quando relevante */
+.ico-ambient { background: rgba(0,255,200,0.07); border: 1px solid rgba(0,255,200,0.28); color: #00ffc8; }
+.ico-ambient.ambient-on {
+  background: rgba(0,255,200,0.18); border-color: #00ffc8; color: #00ffc8;
+  animation: rec-pulse 1.4s infinite alternate;
+}
+.ico-ambient.ambient-focused {
+  background: rgba(255,200,0,0.22); border-color: #ffc800; color: #ffc800;
+  animation: rec-pulse 0.5s infinite alternate;
+}
+/* Badge de score de relevância */
+#ambient-score {
+  position: absolute; bottom: -14px; left: 50%; transform: translateX(-50%);
+  font-size: 9px; font-family: var(--mono); color: var(--muted);
+  white-space: nowrap; pointer-events: none; transition: color 0.3s;
+}
+#btn-ambient { position: relative; }
 .ico-send { background: linear-gradient(135deg, var(--accent), #0099cc); color: #000; }
 .ico-send:active { transform: scale(0.9); }
 .ico-send:disabled { opacity: 0.3; background: var(--border); color: var(--muted); cursor: not-allowed; }
@@ -443,6 +501,148 @@ header::after {
   background: linear-gradient(135deg, var(--accent), var(--accent2));
   color: #000; font-family: var(--sans); font-size: 13px; font-weight: 700;
   cursor: pointer; letter-spacing: 0.04em; }
+
+/* ══════════════════════════════════════════
+   MOBILE NAV BAR (oculto no desktop)
+══════════════════════════════════════════ */
+.mobile-nav {
+  display: none; /* só aparece no mobile via @media */
+}
+
+/* ══════════════════════════════════════════
+   RESPONSIVE — MOBILE  (≤ 768 px)
+══════════════════════════════════════════ */
+@media (max-width: 768px) {
+
+  /* App: header 48px + conteúdo + nav 54px */
+  .app {
+    grid-template-rows: 48px 1fr 54px;
+  }
+
+  /* Header compacto */
+  header { padding: 0 10px; height: 48px; }
+  .logo  { font-size: 13px; letter-spacing: 3px; }
+  .hstat { display: none; }
+  .hbtn  { height: 28px; padding: 0 9px; font-size: 9px; }
+
+  /* Grid some — cada painel vira uma "tela" absoluta */
+  .main-grid {
+    display: block;
+    position: relative;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    gap: 0;
+  }
+
+  /* Painéis empilhados — todos ocultos por padrão */
+  .eye-panel,
+  .brain-panel,
+  .chat-panel,
+  .metrics-panel {
+    position: absolute;
+    inset: 0;
+    display: none !important;
+    width: 100%;
+    height: 100%;
+    grid-row: unset;
+    grid-column: unset;
+  }
+
+  /* Painel ativo: mob-active-panel sobrescreve o none acima */
+  .brain-panel.mob-active,
+  .chat-panel.mob-active,
+  .metrics-panel.mob-active {
+    display: flex !important;
+    flex-direction: column;
+  }
+
+  /* Chat começa visível antes do JS carregar (sem flash de tela vazia) */
+  .chat-panel { display: flex !important; }
+  #chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  #chat-input {
+    font-size: 15px;
+    min-height: 40px;
+  }
+  .chat-input-bar { padding: 6px 8px; }
+  .ico-btn { width: 34px; height: 34px; }
+
+  /* ── GRAFO ── */
+  .brain-panel .panel-label { padding: 6px 10px; flex-shrink: 0; }
+  #brain-canvas,
+  #constellation-canvas {
+    flex: 1;
+    width: 100% !important;
+    height: 100% !important;
+  }
+
+  /* ── MÉTRICAS — coluna scrollável ── */
+  .metrics-panel {
+    flex-direction: column;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 8px 12px 16px;
+    gap: 0;
+  }
+  .metric-section   { min-width: unset; border-right: none; padding-right: 0; }
+  .big-val          { font-size: 16px; }
+  .wave-grid        { grid-template-columns: 1fr 1fr; gap: 6px; }
+  .espectro-bar     { height: 12px; }
+  .espectro-info    { font-size: 9px; }
+
+  /* Modal ocupa a tela inteira */
+  .modal-box {
+    width: calc(100vw - 24px);
+    max-width: 100%;
+    padding: 18px 14px;
+  }
+  .modal-input { font-size: 14px; }
+
+  /* ── MOBILE NAV BAR ── */
+  .mobile-nav {
+    display: flex;
+    align-items: stretch;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    height: 54px;
+  }
+  .mob-btn {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-family: var(--orb);
+    font-size: 7px;
+    letter-spacing: 1.5px;
+    transition: color 0.2s, background 0.2s;
+    padding: 0;
+    position: relative;
+  }
+  .mob-btn svg { opacity: 0.5; transition: opacity 0.2s; }
+  .mob-btn.mob-active-tab {
+    color: var(--accent);
+    background: rgba(0,212,255,0.06);
+  }
+  .mob-btn.mob-active-tab svg { opacity: 1; }
+  .mob-btn.mob-active-tab::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 20%; right: 20%;
+    height: 2px;
+    background: var(--accent);
+    border-radius: 0 0 2px 2px;
+  }
+}
 </style>
 </head>
 <body>
@@ -459,7 +659,7 @@ header::after {
     </div>
     <div class="hstat">
       <span class="hstat-val" id="h-neurons">—</span>
-      <span>neurônios</span>
+      <span>sinapses</span>
     </div>
     <div class="hstat">
       <span>onda</span>
@@ -519,14 +719,18 @@ header::after {
     </div>
   </div>
 
-  <!-- GRAFO MENTAL (sem labels) -->
+  <!-- GRAFO MENTAL / CONSTELAÇÃO NEURAL -->
   <div class="brain-panel">
     <div class="panel-label">
-      GRAFO MENTAL
       <span id="brain-info">— aguardando conexão</span>
+      <div class="tab-btns">
+        <button class="tab-btn active" id="tab-grafo" onclick="switchBrainTab('grafo')">GRAFO</button>
+        <button class="tab-btn" id="tab-const" onclick="switchBrainTab('const')">CONSTELAÇÃO</button>
+      </div>
     </div>
     <svg id="brain-canvas"></svg>
-    <div class="brain-hint">scroll: zoom · arrastar: pan</div>
+    <canvas id="constellation-canvas"></canvas>
+    <div class="brain-hint" id="brain-hint-text">scroll: zoom · arrastar: pan</div>
   </div>
 
   <!-- METRICAS -->
@@ -534,10 +738,43 @@ header::after {
     <div class="metric-section">
       <div class="metric-section-title">Sistema</div>
       <div class="big-metric">
-        <span class="big-label">NEURÔNIOS</span>
-        <span><span class="big-val" id="m-neurons">—</span><span class="big-unit">ativos</span></span>
+        <span class="big-label">SINAPSES</span>
+        <span><span class="big-val" id="m-neurons">—</span><span class="big-unit">aprendidas</span></span>
       </div>
-      <div class="mini-stat"><span class="mini-k">CAPACIDADE</span><span class="mini-v" id="m-cap">—</span></div>
+      <div class="mini-stat"><span class="mini-k">NEURÔNIOS ATIVOS</span><span class="mini-v" id="m-cap">—</span></div>
+      <div class="mini-stat">
+        <span class="mini-k">CAMADA 0</span>
+        <span class="mini-v" id="m-camada0" style="color:#a78bfa">— / 55</span>
+      </div>
+      <div class="mini-stat">
+        <span class="mini-k" style="color:#60a5fa">FONEMAS</span>
+        <span class="mini-v" id="m-fonemas">— / 35</span>
+      </div>
+      <div class="mini-stat">
+        <span class="mini-k" style="color:#34d399">VISUAIS</span>
+        <span class="mini-v" id="m-visuais">— / 20</span>
+      </div>
+
+      <!-- Espectro Visual: acende a banda quando learn_cor dispara -->
+      <div class="metric-section-title" style="margin-top:8px">Espectro Visual</div>
+      <div class="espectro-bar">
+        <div class="espectro-banda" id="eb-violeta"
+             style="background:#8B00FF" title="violeta 380-449nm"></div>
+        <div class="espectro-banda" id="eb-azul"
+             style="background:#1E90FF" title="azul 450-494nm"></div>
+        <div class="espectro-banda" id="eb-ciano"
+             style="background:#00FFFF" title="ciano 495-519nm"></div>
+        <div class="espectro-banda" id="eb-verde"
+             style="background:#00DD44" title="verde 520-564nm"></div>
+        <div class="espectro-banda" id="eb-amarelo"
+             style="background:#FFE000" title="amarelo 565-589nm"></div>
+        <div class="espectro-banda" id="eb-laranja"
+             style="background:#FF7700" title="laranja 590-624nm"></div>
+        <div class="espectro-banda" id="eb-vermelho"
+             style="background:#FF1111" title="vermelho ≥625nm"></div>
+      </div>
+      <div class="espectro-info" id="espectro-info">—</div>
+
       <div class="mini-stat"><span class="mini-k">CPU TEMP</span><span class="mini-v" id="m-temp" style="color:var(--accent)">—</span></div>
       <div class="mini-stat"><span class="mini-k">RAM</span><span class="mini-v" id="m-ram">— GB</span></div>
       <div class="mini-stat"><span class="mini-k">STEP</span><span class="mini-v" id="m-step">—</span></div>
@@ -660,6 +897,16 @@ header::after {
             <line x1="15" y1="10" x2="15" y2="10" stroke-width="3" stroke-linecap="round"/>
           </svg>
         </button>
+        <button class="ico-btn ico-ambient" id="btn-ambient" title="Modo Ambiente — ouve tudo, responde quando relevante">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="2"/>
+            <path d="M16.24 7.76a6 6 0 0 1 0 8.49"/>
+            <path d="M7.76 16.24a6 6 0 0 1 0-8.49"/>
+            <path d="M20.07 3.93a10 10 0 0 1 0 16.14"/>
+            <path d="M3.93 20.07a10 10 0 0 1 0-16.14"/>
+          </svg>
+          <span id="ambient-score"></span>
+        </button>
         <button class="ico-btn ico-screen" id="btn-screen" title="Compartilhar tela">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
@@ -679,6 +926,32 @@ header::after {
 
 
 </div><!-- /main-grid -->
+
+<!-- MOBILE NAV BAR — oculto no desktop, visível no mobile via CSS -->
+<nav class="mobile-nav" aria-label="Navegação mobile">
+  <button class="mob-btn mob-active-tab" id="mobt-chat" onclick="mobTab('chat')">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+    </svg>
+    CHAT
+  </button>
+  <button class="mob-btn" id="mobt-grafo" onclick="mobTab('grafo')">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+      <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+      <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+    </svg>
+    GRAFO
+  </button>
+  <button class="mob-btn" id="mobt-metrics" onclick="mobTab('metrics')">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/>
+      <line x1="6"  y1="20" x2="6"  y2="14"/>
+    </svg>
+    MÉTRICAS
+  </button>
+</nav>
+
 </div><!-- /app -->
 
 <!-- SLEEP OVERLAY -->
@@ -698,7 +971,7 @@ header::after {
     <div class="modal-title">CONECTAR A SELENE</div>
     <div class="modal-label">ENDERECO DO SERVIDOR (IP:PORTA)</div>
     <input class="modal-input" type="text" id="modal-host"
-      placeholder="localhost:3030 ou 192.168.1.x:3030">
+      placeholder="localhost:3030 · 192.168.x.x:3030 · selene.seudominio.com">
     <div class="modal-label" style="font-size:9px;color:var(--muted);margin-top:-10px;margin-bottom:12px">
       WebSocket: ws://[host]/selene
     </div>
@@ -771,7 +1044,7 @@ header::after {
   window.addEventListener('resize', fit);
   new ResizeObserver(fit).observe(panel);
 
-  function rN(d) { return 3 + Math.sqrt(Math.max(0, d.weight)) * 50; }
+  function rN(d) { return 2 + Math.sqrt(Math.max(0, d.weight)) * 14; }
   function cN(d) {
     if (d._flash) return '#f9a8d4';
     return d.weight > 0.012 ? '#a78bfa' : '#38bdf8';
@@ -810,11 +1083,12 @@ header::after {
 
     if (sim) sim.stop();
     sim = d3.forceSimulation(nodes)
-      .force('link',   d3.forceLink(links).id(d=>d.id).distance(55).strength(d=>d.weight*.6))
-      .force('charge', d3.forceManyBody().strength(-75))
-      .force('x',      d3.forceX(W/2).strength(0.04))
-      .force('y',      d3.forceY(H/2).strength(0.04))
-      .force('collide',d3.forceCollide().radius(d=>rN(d)+2))
+      .force('link',   d3.forceLink(links).id(d=>d.id).distance(32).strength(d=>d.weight*.7))
+      .force('charge', d3.forceManyBody().strength(-40))
+      .force('center', d3.forceCenter(W/2, H/2))
+      .force('x',      d3.forceX(W/2).strength(0.08))
+      .force('y',      d3.forceY(H/2).strength(0.08))
+      .force('collide',d3.forceCollide().radius(d=>rN(d)+1))
       .on('tick', tick);
 
     linkEl = gL.selectAll('line').data(links, d=>d.source+d.target);
@@ -857,10 +1131,265 @@ header::after {
       nodes.forEach(nd=>nd._flash=false);
       if(nodeEl) nodeEl.attr('fill',cN).attr('r',rN);
     }, 300);
-    document.getElementById('brain-info').textContent =
-      `${ativos.toLocaleString('pt-BR')} / ${total.toLocaleString('pt-BR')} neurônios ativos`;
+  };
+  // Expõe fit() para o mobTab() reposicionar o grafo ao trocar de aba
+  window.fitBrainGraph = fit;
+})();
+
+// ════════════════════════════════════════════════
+// CONSTELAÇÃO NEURAL — Canvas 2D + D3 forceSimulation
+// ════════════════════════════════════════════════
+(function() {
+  const MAX_DOTS   = 600;   // máx visual para performance
+  const cvs = document.getElementById('constellation-canvas');
+  if (!cvs) return;
+  const ctx = cvs.getContext('2d');
+
+  let W = 400, H = 220;
+  let animRunning = false;
+  let rafId;
+  // Brilho de fundo proporcional ao número de sinapses aprendidas (0..1)
+  let constellationSynapseBrilho = 0;
+
+  // CAMADA 0: exatamente 55 neurônios primitivos fixos.
+  // Os primeiros 35 = fonemas (azulados), os últimos 20 = visuais (esverdeados).
+  // Gerados em posições semi-organizadas para distinguir os grupos.
+  const N_PRIMITIVOS = 55;
+  const N_FONEMAS    = 35;
+  let pts = Array.from({length: N_PRIMITIVOS}, (_, i) => {
+    const isFonema = i < N_FONEMAS;
+    // Fonemas: lado esquerdo; visuais: lado direito — separação visual
+    const xBase = isFonema
+      ? 0.05 + (i % 7) * 0.12
+      : 0.88 - ((i - N_FONEMAS) % 5) * 0.16;
+    const yBase = isFonema
+      ? 0.10 + Math.floor(i / 7) * 0.17
+      : 0.12 + Math.floor((i - N_FONEMAS) / 5) * 0.22;
+    return {
+      x:       xBase * 400 + (Math.random() - 0.5) * 20,
+      y:       yBase * 220 + (Math.random() - 0.5) * 20,
+      vx:      (Math.random() - 0.5) * 0.12,
+      vy:      (Math.random() - 0.5) * 0.12,
+      glow:    0,
+      active:  false,
+      isFonema,
+    };
+  });
+
+  // ── Animação Canvas ────────────────────────────────────────
+  function draw() {
+    // Fundo: escurece menos quando há mais sinapses (nebulosa neural)
+    const bgAlpha = 0.88 - constellationSynapseBrilho * 0.12;
+    ctx.fillStyle = `rgba(6,10,15,${bgAlpha})`;
+    ctx.fillRect(0, 0, W, H);
+
+    // Glow de fundo difuso proporcional às sinapses (como nebulosa crescente)
+    if (constellationSynapseBrilho > 0.01) {
+      const cx = W * 0.5, cy = H * 0.5;
+      const r  = Math.max(W, H) * 0.7;
+      const nebula = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+      nebula.addColorStop(0,   `rgba(80,30,180,${0.06 * constellationSynapseBrilho})`);
+      nebula.addColorStop(0.6, `rgba(30,10,80,${0.03 * constellationSynapseBrilho})`);
+      nebula.addColorStop(1,   'rgba(0,0,0,0)');
+      ctx.fillStyle = nebula;
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    for (const p of pts) {
+      // Deriva suave dentro de zonas semi-fixas (fonemas à esquerda, visuais à direita)
+      p.x += p.vx; p.y += p.vy;
+      if (p.x < 2)     { p.x = 2;     p.vx =  Math.abs(p.vx) * 0.9; }
+      if (p.x > W - 2) { p.x = W - 2; p.vx = -Math.abs(p.vx) * 0.9; }
+      if (p.y < 2)     { p.y = 2;     p.vy =  Math.abs(p.vy) * 0.9; }
+      if (p.y > H - 2) { p.y = H - 2; p.vy = -Math.abs(p.vy) * 0.9; }
+
+      // Interpola glow
+      p.glow = p.active
+        ? Math.min(1, p.glow + 0.10)
+        : Math.max(0, p.glow - 0.03);
+
+      const g = p.glow;
+
+      if (g > 0.01) {
+        // Cor por tipo: fonemas = roxo/azul · visuais = verde/ciano
+        const [r1, g1, b1] = p.isFonema ? [167, 139, 250] : [52, 211, 153];
+        const [r2, g2, b2] = p.isFonema ? [100,  60, 255] : [16, 185, 129];
+
+        // Aura exterior
+        const halo = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 4 + g * 3);
+        halo.addColorStop(0,   `rgba(${r1},${g1},${b1},${0.6 * g})`);
+        halo.addColorStop(0.5, `rgba(${r2},${g2},${b2},${0.25 * g})`);
+        halo.addColorStop(1,   'rgba(0,0,0,0)');
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 4 + g * 3, 0, Math.PI * 2);
+        ctx.fillStyle = halo;
+        ctx.fill();
+        // Núcleo brilhante
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 1.0 + g * 0.8, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(230,245,255,${0.88 + g * 0.12})`;
+        ctx.fill();
+      } else {
+        // Primitivo inativo — fonema cinza-azul · visual cinza-verde
+        const col = p.isFonema ? 'rgba(50,65,110,0.85)' : 'rgba(35,70,55,0.85)';
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 0.9, 0, Math.PI * 2);
+        ctx.fillStyle = col;
+        ctx.fill();
+      }
+    }
+
+    if (animRunning) rafId = requestAnimationFrame(draw);
+  }
+
+  // ── Redimensionamento ──────────────────────────────────────
+  function resize() {
+    const rect = cvs.getBoundingClientRect();
+    W = rect.width  > 10 ? rect.width  : 400;
+    H = rect.height > 10 ? rect.height : 220;
+    const dpr = window.devicePixelRatio || 1;
+    cvs.width  = W * dpr;
+    cvs.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // Reposiciona pontos fora da área
+    pts.forEach(p => {
+      p.x = Math.random() * W;
+      p.y = Math.random() * H;
+    });
+  }
+  setTimeout(resize, 80);
+  window.addEventListener('resize', resize);
+  new ResizeObserver(resize).observe(cvs);
+
+  // ── API pública ────────────────────────────────────────────
+  // ativos   = spikes_vivos (neurônios disparando nos últimos 500ms)
+  // total    = total de neurônios na camada 0 (55 fixos)
+  // sinapses = sinapses aprendidas (cresce com o treino — usada como brilho de fundo)
+  window.updateConstellation = function(ativos, total, sinapses) {
+    // Camada 0: sempre 55 neurônios fixos
+    // total é sempre ≤ 55; ativos = disparando agora; sinapses = aprendidas (crescente)
+    const nAtivos   = Math.min(MAX_DOTS, ativos);
+    // Brilho de fundo: quanto mais sinapses, mais brilhante o canvas fica
+    // Normalizado para ~5000 sinapses = máximo visível
+    const sinBrilho = Math.min(sinapses / 5000, 1.0);
+    constellationSynapseBrilho = sinBrilho;
+
+    // Marca os primeiros nAtivos pontos como "disparando" (glow roxo)
+    pts.forEach((p, i) => { p.active = i < nAtivos; });
+
+    // Atualiza label
+    const info = document.getElementById('brain-info');
+    if (info) info.textContent =
+      `${ativos} ativos · ${total} neurônios · ${sinapses.toLocaleString('pt-BR')} sinapses`;
+  };
+
+  window.startConstellation = function() {
+    if (animRunning) return;
+    animRunning = true;
+    resize();
+    draw();
+  };
+
+  window.stopConstellation = function() {
+    animRunning = false;
+    if (rafId) cancelAnimationFrame(rafId);
   };
 })();
+
+// ════════════════════════════════════════════════
+// TAB SWITCHING — GRAFO / CONSTELAÇÃO
+// ════════════════════════════════════════════════
+function switchBrainTab(tab) {
+  const svgEl  = document.getElementById('brain-canvas');
+  const cvsEl  = document.getElementById('constellation-canvas');
+  const hintEl = document.getElementById('brain-hint-text');
+  const tGrafo = document.getElementById('tab-grafo');
+  const tConst = document.getElementById('tab-const');
+
+  if (tab === 'grafo') {
+    svgEl.style.display  = '';
+    cvsEl.style.display  = 'none';
+    hintEl.textContent   = 'scroll: zoom · arrastar: pan';
+    tGrafo.classList.add('active');
+    tConst.classList.remove('active');
+    if (window.stopConstellation) window.stopConstellation();
+  } else {
+    svgEl.style.display  = 'none';
+    cvsEl.style.display  = '';
+    hintEl.textContent   = 'roxo/azul = fonemas · verde = visuais · brilho = disparando';
+    tGrafo.classList.remove('active');
+    tConst.classList.add('active');
+    if (window.startConstellation) window.startConstellation();
+  }
+}
+
+// ════════════════════════════════════════════════
+// MOBILE TAB SWITCHING
+// ════════════════════════════════════════════════
+const MOB_PANELS = {
+  chat:    '.chat-panel',
+  grafo:   '.brain-panel',
+  metrics: '.metrics-panel',
+};
+
+function mobTab(tab) {
+  // Só opera no modo mobile (evita afetar desktop se chamado acidentalmente)
+  if (window.innerWidth > 768) return;
+
+  // Remove mob-active de todos os painéis (e força display:none via CSS)
+  document.querySelectorAll('.chat-panel,.brain-panel,.metrics-panel')
+    .forEach(el => {
+      el.classList.remove('mob-active');
+      el.style.display = 'none';        // garante ocultação imediata
+    });
+
+  // Activa o painel correto
+  const panel = document.querySelector(MOB_PANELS[tab]);
+  if (panel) {
+    panel.style.display = '';           // deixa o CSS assumir
+    panel.classList.add('mob-active');
+  }
+
+  // Atualiza indicador da nav bar
+  document.querySelectorAll('.mob-btn')
+    .forEach(el => el.classList.remove('mob-active-tab'));
+  document.getElementById(`mobt-${tab}`)?.classList.add('mob-active-tab');
+
+  // Reposiciona grafo ao entrar na aba (o SVG pode ter tido 0×0 enquanto oculto)
+  if (tab === 'grafo') {
+    setTimeout(() => window.fitBrainGraph?.(), 60);
+    setTimeout(() => window.fitBrainGraph?.(), 250);
+    // Se constelação estava ativa, reinicia o canvas com dimensões corretas
+    const cvsEl = document.getElementById('constellation-canvas');
+    if (cvsEl && cvsEl.style.display !== 'none') {
+      setTimeout(() => window.startConstellation?.(), 80);
+    }
+  }
+}
+
+// Inicializa estado da nav bar ao carregar
+document.addEventListener('DOMContentLoaded', () => {
+  if (window.innerWidth <= 768) {
+    // Garante que só o chat está visível e o botão correto está ativo
+    mobTab('chat');
+  }
+});
+
+// Ao redimensionar para desktop, limpa mob-active para não conflitar com o grid
+window.addEventListener('resize', () => {
+  if (window.innerWidth > 768) {
+    document.querySelectorAll('.chat-panel,.brain-panel,.metrics-panel')
+      .forEach(el => {
+        el.classList.remove('mob-active');
+        el.style.display = ''; // remove inline style, CSS do desktop assume
+      });
+  } else {
+    // Voltou para mobile: garante que a aba ativa está visível
+    const activeBtn = document.querySelector('.mob-btn.mob-active-tab');
+    const tabId = activeBtn?.id?.replace('mobt-', '') || 'chat';
+    mobTab(tabId);
+  }
+});
 
 // ════════════════════════════════════════════════
 // WEBSOCKET STATE
@@ -884,7 +1413,18 @@ function connect(host) {
   state.host = host;
   localStorage.setItem('selene_host', host);
 
-  const url = `ws://${host}/selene`;
+  // ws://  → local (ex: localhost:3030 ou 192.168.x.x:3030)
+  // wss:// → remoto via Cloudflare Tunnel (ex: selene.seudominio.com)
+  let url;
+  if (host.startsWith('ws://') || host.startsWith('wss://')) {
+    url = host.endsWith('/selene') ? host : host + '/selene';
+  } else if (/:\d+$/.test(host)) {
+    // Tem porta explícita → conexão local sem TLS
+    url = `ws://${host}/selene`;
+  } else {
+    // Sem porta → assumir Cloudflare Tunnel com TLS
+    url = `wss://${host}/selene`;
+  }
   try {
     state.ws = new WebSocket(url);
   } catch(e) { setConnected(false); return; }
@@ -941,7 +1481,11 @@ function handleEvent(d) {
     case 'chat_reply':
       removeTyping();
       appendMessage('selene', d.message, d.emocao);
-      falar(d.message);
+      // Aguarda até 80ms para receber voz_params antes de falar.
+      // O servidor envia voz_params logo após chat_reply; esse delay
+      // garante que pendingVozParams esteja preenchido quando falar() rodar.
+      { const msgSnapshot = d.message;
+        setTimeout(() => falar(msgSnapshot), 80); }
       // Atualiza grafo após cada resposta (Selene acabou de aprender)
       if (state.ws?.readyState === WebSocket.OPEN)
         state.ws.send(JSON.stringify({ action: 'vocab_request' }));
@@ -949,7 +1493,27 @@ function handleEvent(d) {
 
     case 'sem_memoria':
       removeTyping();
-      appendMessage('selene', '...', 0);
+      appendMessage('selene', 'ainda estou aprendendo...', 0);
+      falar('ainda estou aprendendo');
+      break;
+
+    // Pensamento espontâneo: Selene fala sem ser perguntada (inner monologue)
+    case 'pensamento_espontaneo':
+      appendMessage('selene', d.message, d.emotion ?? 0);
+      falar(d.message);
+      break;
+
+    // Curiosidade espontânea com resposta elaborada
+    case 'curiosidade_espontanea':
+      appendMessage('selene', d.message, d.emotion ?? 0);
+      falar(d.message);
+      break;
+
+    // Modulação emocional da voz: aplica parâmetros ao próximo falar()
+    case 'voz_params':
+      if (Array.isArray(d.formants) && d.formants.length > 0) {
+        pendingVozParams = d.formants;
+      }
       break;
 
     case 'curiosidade':
@@ -983,6 +1547,39 @@ function handleEvent(d) {
       console.log(`[feedback] ${d.reforcos} arestas reforçadas`);
       break;
 
+    case 'cor_aprendida': {
+      const bandaMap = {
+        'vis:band:violeta':  'violeta',
+        'vis:band:azul':     'azul',
+        'vis:band:ciano':    'ciano',
+        'vis:band:verde':    'verde',
+        'vis:band:amarelo':  'amarelo',
+        'vis:band:laranja':  'laranja',
+        'vis:band:vermelho': 'vermelho',
+      };
+      // Apaga todas as bandas ativas
+      document.querySelectorAll('.espectro-banda')
+        .forEach(el => el.classList.remove('ativa'));
+      const key = bandaMap[d.banda];
+      if (key) {
+        const el = document.getElementById(`eb-${key}`);
+        if (el) {
+          el.classList.add('ativa');
+          setTimeout(() => el.classList.remove('ativa'), 3500);
+        }
+      }
+      // Atualiza texto informativo
+      const phStr = (d.fonemas || []).map(p => p.replace('ph:', '')).join('-');
+      const info = document.getElementById('espectro-info');
+      if (info) {
+        info.innerHTML =
+          `<span class="espectro-word">${d.word}</span>` +
+          `<span class="espectro-ph">/${phStr}/</span>` +
+          `<span class="espectro-nm">${Math.round(d.nm)}nm</span>`;
+      }
+      break;
+    }
+
     default:
       break;
   }
@@ -995,8 +1592,12 @@ function pct(v) { return Math.round((v ?? 0) * 100); }
 function fmt(v, dec=3) { return (v ?? 0).toFixed(dec); }
 
 function updateTelemetry(s) {
-  const ativos = s.swap?.neuronios_ativos ?? 0;
-  const cap    = s.swap?.capacidade_max ?? 0;
+  const ativos    = s.swap?.neuronios_ativos    ?? 0;
+  const conceitos = s.swap?.total_conceitos     ?? 55;
+  const sinapses  = s.swap?.sinapses_aprendidas ?? 0;
+  const fonemas   = s.swap?.fonemas_ativos      ?? 0;
+  const visuais   = s.swap?.visuais_ativos      ?? 0;
+  const cap       = s.swap?.capacidade_max      ?? 0;
   const dopa   = s.neurotransmissores?.dopamina ?? 0;
   const sero   = s.neurotransmissores?.serotonina ?? 0;
   const nor    = s.neurotransmissores?.noradrenalina ?? 0;
@@ -1009,17 +1610,21 @@ function updateTelemetry(s) {
   const ondas  = s.ondas ?? {};
   const dom    = ondas.dominante ?? '';
 
-  // Header
-  document.getElementById('h-neurons').textContent = ativos.toLocaleString('pt-BR');
+  // Header — mostra total de sinapses aprendidas (cresce com cada palavra/frase)
+  document.getElementById('h-neurons').textContent = sinapses.toLocaleString('pt-BR');
   document.getElementById('h-step').textContent    = step.toLocaleString('pt-BR');
   document.getElementById('h-emo').textContent     = emocao.toFixed(2);
   const hWave = document.getElementById('h-wave');
   hWave.textContent  = dom.toUpperCase() || '—';
   hWave.style.color  = waveColors[dom] ?? 'var(--accent)';
 
-  // System
-  document.getElementById('m-neurons').textContent = ativos.toLocaleString('pt-BR');
-  document.getElementById('m-cap').textContent     = cap.toLocaleString('pt-BR');
+  // System — m-neurons mostra sinapses aprendidas; m-cap mostra neurônios ativos (disparando)
+  document.getElementById('m-neurons').textContent = sinapses.toLocaleString('pt-BR');
+  document.getElementById('m-cap').textContent     = ativos.toLocaleString('pt-BR');
+  // Camada 0: fonemas e visuais
+  document.getElementById('m-camada0').textContent = (fonemas + visuais) + ' / 55';
+  document.getElementById('m-fonemas').textContent = fonemas + ' / 35';
+  document.getElementById('m-visuais').textContent = visuais + ' / 20';
   const tempEl = document.getElementById('m-temp');
   tempEl.textContent = temp.toFixed(1) + ' °C';
   tempEl.style.color = temp > 80 ? '#ff3d5c' : temp > 65 ? '#ff9a00' : 'var(--accent3)';
@@ -1049,9 +1654,14 @@ function updateTelemetry(s) {
     cell.classList.toggle('dominant', w === dom);
   });
 
-  // Brain 3D
+  // Grafo mental — flash de atividade nos nós de palavras
   if (window.updateBrainActivity) {
     window.updateBrainActivity(ativos, cap || 500);
+  }
+  // Constelação neural — 55 pontos fixos (camada 0), roxos = disparando agora
+  // sinapses passada como contexto para brilho de fundo proporcional ao aprendizado
+  if (window.updateConstellation) {
+    window.updateConstellation(ativos, conceitos, sinapses);
   }
 
   // Tracos de personalidade
@@ -1206,13 +1816,92 @@ function addSystemMsg(texto) {
 const $input = document.getElementById('chat-input');
 const $send  = document.getElementById('btn-send');
 
+// ── Converte texto em 32 bandas FFT fonéticas (PT-BR) ─────────────────────────
+// Espelha a lógica de texto_para_bandas_fft() do servidor (server.rs).
+// Cada fonema contribui energia nas bandas correspondentes a F0, F1, F2.
+// Garante que o frontend envie SINAL DE ÁUDIO, não texto puro.
+function textoBandas32(text) {
+  const MAX_HZ = 8000;
+  const bands = new Float32Array(32);
+  // Tabela simplificada PT-BR: [f0_hz, f1_hz, f2_hz, energia]
+  const PH = {
+    'a':0, 'á':0, 'â':0, 'à':0,
+    'e':1, 'é':1, 'ê':1,
+    'i':2, 'í':2,
+    'o':3, 'ó':3, 'ô':3,
+    'u':4, 'ú':4, 'ü':4,
+    'ã':5, 'õ':6,
+    'm':7, 'n':8, 'nh':8,
+    'l':9, 'lh':9,
+    'r':10, 'rr':10,
+    's':11, 'c':11, 'ç':11,
+    'z':12, 'x':13,
+    'f':14, 'v':15,
+    'p':16, 'b':17,
+    't':18, 'd':19,
+    'k':20, 'q':20, 'g':21,
+    'h':22, 'j':23, 'ch':23,
+  };
+  // [f0, f1, f2, energy] por índice de fonema
+  const FORMANTS = [
+    [120, 800,1200,0.90], // a
+    [180, 500,1800,0.85], // e
+    [200, 300,2300,0.80], // i
+    [130, 500, 900,0.85], // o
+    [110, 300, 700,0.80], // u
+    [120, 700,1100,0.88], // ã
+    [130, 650,1050,0.87], // õ
+    [110, 280, 900,0.50], // m
+    [115, 300,1800,0.50], // n
+    [130, 350,1000,0.55], // l
+    [120, 400,1200,0.60], // r
+    [  0,   0,5000,0.45], // s/ç
+    [110,   0,4800,0.50], // z
+    [  0,   0,5200,0.40], // x
+    [  0,   0,5500,0.35], // f
+    [110,   0,5000,0.40], // v
+    [  0, 500,1200,0.30], // p
+    [100, 500,1200,0.35], // b
+    [  0, 400,4000,0.30], // t
+    [100, 400,3500,0.35], // d
+    [  0, 300,2000,0.30], // k/q
+    [100, 300,1900,0.35], // g
+    [  0, 300,1000,0.20], // h
+    [100, 250,2800,0.45], // j/ch
+  ];
+  function addE(freq, e) {
+    if (freq < 1) return;
+    const idx = Math.min(31, Math.floor((freq / MAX_HZ) * 32));
+    bands[idx] = Math.min(1, bands[idx] + e);
+    if (idx > 0)  bands[idx-1] = Math.min(1, bands[idx-1] + e * 0.4);
+    if (idx < 31) bands[idx+1] = Math.min(1, bands[idx+1] + e * 0.4);
+  }
+  const chars = text.toLowerCase();
+  for (let i = 0; i < chars.length; i++) {
+    const two = chars.slice(i, i + 2);
+    let idx = PH[two]; let skip = false;
+    if (idx !== undefined) { skip = true; i++; }
+    else idx = PH[chars[i]];
+    if (idx === undefined) continue;
+    const [f0, f1, f2, e] = FORMANTS[idx];
+    addE(f0, e); addE(f1, e * 0.8); addE(f2, e * 0.6);
+  }
+  const peak = Math.max(...bands);
+  if (peak > 0.001) for (let i = 0; i < 32; i++) bands[i] /= peak;
+  return Array.from(bands);
+}
+
 function sendMessage(text) {
   if (!text.trim() || !state.connected || !state.ws) return;
   appendMessage('user', text);
   $input.value = ''; $input.style.height = 'auto';
   $send.disabled = true;
   showTyping();
-  state.ws.send(JSON.stringify({ action: 'chat', message: text }));
+  // Pipeline áudio-primeiro: envia bandas FFT fonéticas + transcript.
+  // O servidor recebe o sinal de frequência antes do texto — como se o usuário
+  // tivesse falado em voz alta (inner speech sintético do lado do cliente).
+  const bands = textoBandas32(text);
+  state.ws.send(JSON.stringify({ action: 'audio_chat', transcript: text, bands }));
 }
 
 $input.addEventListener('input', () => {
@@ -1289,6 +1978,56 @@ if (SR) {
     if (analyserNode) lastBands = calcBands32(analyserNode, audioCtx.sampleRate);
   };
 
+  // ── Scoring de relevância (modo ambiente) ──────────────────────────────────
+  // Decide se uma frase ouvida passivamente é "para a Selene" sem usar nome.
+  // Biologicamente: criança direciona atenção por contexto, não só por nome.
+  //
+  // Sinais usados:
+  //   +0.35 pergunta direta (termina em ? ou tem entonação interrogativa)
+  //   +0.25 pronome de 2ª pessoa ("você", "te", "tua", "teu", "sua")
+  //   +0.20 palavras do vocabulário ativo da Selene (últimos conceitos)
+  //   +0.30 nome explícito ("selene")
+  //   +0.15 emoção/urgência (exclamação ou palavras fortes)
+  //   +0.15 continuidade semântica com a conversa anterior
+  // Threshold: ≥ 0.40 → entra no chat; < 0.40 → só aprende em fundo
+  function scoreRelevancia(text) {
+    const t = text.toLowerCase().trim();
+    let score = 0;
+
+    // Nome explícito
+    if (/\bselene\b/.test(t)) score += 0.30;
+
+    // Pergunta direta
+    if (t.endsWith('?') || /\b(você|vc|te|tua|teu|sua|seu)\b/.test(t)) score += 0.25;
+    if (t.endsWith('?')) score += 0.10; // bônus extra pela pontuação
+
+    // Pronomes de 2ª pessoa adicionais
+    if (/\b(acha|acho que você|me diz|me conta|o que você|como você|o que vc|quando você)\b/.test(t)) score += 0.15;
+
+    // Palavras de chamamento / urgência
+    if (/[!]{1,}$/.test(t) || /\b(olha|olhe|atenção|espera|ei|hey|oi|olá)\b/.test(t)) score += 0.15;
+
+    // Continuidade semântica: palavras da frase aparecem no histórico recente
+    const palavras = t.split(/\s+/).filter(w => w.length > 3);
+    const historico = Array.from(document.querySelectorAll('.chat-msg .msg-text'))
+      .slice(-6).map(el => el.textContent.toLowerCase());
+    const ctx = historico.join(' ');
+    const overlap = palavras.filter(w => ctx.includes(w)).length;
+    if (overlap >= 2) score += 0.15;
+    else if (overlap === 1) score += 0.07;
+
+    // Vocabulário ativo da Selene (conceitos recentes no grafo)
+    if (state.graphWords && state.graphWords.length) {
+      const matchVocab = palavras.filter(w =>
+        state.graphWords.some(gw => gw.toLowerCase().startsWith(w))
+      ).length;
+      if (matchVocab >= 2) score += 0.20;
+      else if (matchVocab === 1) score += 0.10;
+    }
+
+    return Math.min(score, 1.0);
+  }
+
   state.recognition.onend = () => {
     state.recording = false;
     $mic.classList.remove('recording');
@@ -1296,23 +2035,59 @@ if (SR) {
     if (text && state.connected) {
       lastTranscript = text;
       setTimeout(() => {
-        // Modo conversa OU microfone manual: envia ao chat
-        if (state.conversaOn || !state.listenOn) sendMessage(text);
-        if (lastBands && state.ws?.readyState === WebSocket.OPEN) {
-          state.ws.send(JSON.stringify({
-            action: 'audio_learn',
-            transcript: text,
-            bands: lastBands,
-          }));
+        if (state.ambientOn) {
+          // MODO AMBIENTE: avalia relevância antes de decidir
+          const score = scoreRelevancia(text);
+          const $btn = document.getElementById('btn-ambient');
+          const $badge = document.getElementById('ambient-score');
+
+          // Atualiza badge visual com o score
+          $badge.textContent = (score * 100).toFixed(0) + '%';
+          $badge.style.color = score >= 0.4 ? '#ffc800' : score >= 0.2 ? '#00ffc8' : 'var(--muted)';
+
+          if (score >= 0.40) {
+            // FOCO: frase é relevante — entra no chat como se tivesse digitado
+            $btn.classList.add('ambient-focused');
+            setTimeout(() => $btn.classList.remove('ambient-focused'), 2000);
+            addSystemMsg(`🎯 foco ativado (score ${(score*100).toFixed(0)}%) — "${text}"`);
+            sendMessage(text);
+          } else {
+            // PASSIVO: ouve e aprende, não responde
+            if (score >= 0.15) {
+              addSystemMsg(`👂 ouvindo (score ${(score*100).toFixed(0)}%) — "${text.substring(0,40)}${text.length>40?'…':''}"`);
+            }
+            // Envia para aprendizado de fundo (neural_context, mas não responde)
+            if (state.ws?.readyState === WebSocket.OPEN) {
+              state.ws.send(JSON.stringify({
+                action: 'passive_hear',
+                transcript: text,
+                score,
+              }));
+            }
+          }
+          // Sempre aprende o som
+          if (lastBands && state.ws?.readyState === WebSocket.OPEN) {
+            state.ws.send(JSON.stringify({ action: 'audio_learn', transcript: text, bands: lastBands }));
+          }
+        } else {
+          // Modos anteriores: conversa ou escuta manual
+          if (state.conversaOn || !state.listenOn) sendMessage(text);
+          if (lastBands && state.ws?.readyState === WebSocket.OPEN) {
+            state.ws.send(JSON.stringify({ action: 'audio_learn', transcript: text, bands: lastBands }));
+          }
         }
         lastBands = null;
       }, 300);
     }
-    // Reinicia se listenOn (mas não conversaOn — este espera o TTS terminar)
-    if (state.listenOn && !state.conversaOn && state.connected) {
+    // Reinicia o mic se qualquer modo contínuo estiver ativo
+    const modoContínuo = (state.listenOn || state.ambientOn) && !state.conversaOn;
+    if (modoContínuo && state.connected) {
       setTimeout(() => {
         try { state.recognition.start(); state.recording = true; } catch(_) {}
       }, 200);
+    }
+    if (state.conversaOn && state.connected) {
+      // conversaOn usa seu próprio reinício no onend
     }
   };
 
@@ -1446,6 +2221,48 @@ document.getElementById('btn-vid').addEventListener('click', async () => {
     stopCamera();
     if (state.ws?.readyState === 1)
       state.ws.send(JSON.stringify({ action: 'toggle_sensor', sensor: 'video', active: false }));
+  }
+});
+
+// ════════════════════════════════════════════════
+// AMBIENTE — ouve tudo continuamente, responde quando relevante
+// Funciona como uma criança: processa tudo, foca quando a conversa
+// parece ser com ela (score ≥ 0.40), aprende passivamente o resto.
+// ════════════════════════════════════════════════
+state.ambientOn = false;
+document.getElementById('btn-ambient').addEventListener('click', async () => {
+  if (!state.ws || state.ws.readyState !== 1) return;
+  state.ambientOn = !state.ambientOn;
+  const $btn = document.getElementById('btn-ambient');
+  const $badge = document.getElementById('ambient-score');
+  $btn.classList.toggle('ambient-on', state.ambientOn);
+
+  if (state.ambientOn) {
+    // Desliga modos exclusivos
+    if (state.listenOn) {
+      state.listenOn = false;
+      document.getElementById('btn-listen').classList.remove('listen-on');
+    }
+    if (state.conversaOn) {
+      state.conversaOn = false;
+      document.getElementById('btn-conversa').classList.remove('conversa-on');
+    }
+    const ok = await initAudioCapture();
+    if (ok && state.recognition) {
+      try {
+        state.recognition.continuous = false; // Web Speech API reinicia por frase
+        state.recognition.start();
+        state.recording = true;
+      } catch(_) {}
+    }
+    $badge.textContent = '—';
+    addSystemMsg('👂 Modo ambiente ativado — ouvindo tudo, focando quando relevante.');
+  } else {
+    if (state.recognition && state.recording) {
+      try { state.recognition.stop(); } catch(_) {}
+    }
+    $badge.textContent = '';
+    addSystemMsg('Modo ambiente desativado.');
   }
 });
 
@@ -1594,6 +2411,10 @@ const VOZES_PREFERIDAS = [
 ];
 let vozSelene = null;
 let ttsAtivo = true;
+// Parâmetros emocionais do último voz_params recebido do servidor.
+// Aplicados na próxima chamada de falar() para modular pitch/rate/volume
+// de acordo com o estado interno real da Selene (dopamina, serotonina, NE).
+let pendingVozParams = null;
 
 function initTTS() {
   const vozes = speechSynthesis.getVoices();
@@ -1621,10 +2442,28 @@ function falar(texto) {
 
   const u = new SpeechSynthesisUtterance(texto);
   if (vozSelene) u.voice = vozSelene;
-  u.lang   = 'pt-BR';
-  u.pitch  = 1.15;
-  u.rate   = 0.93;
-  u.volume = 0.90;
+  u.lang = 'pt-BR';
+
+  // Aplica modulação emocional do voz_params se disponível.
+  // f0 médio dos formantes → pitch (baseline 200Hz para voz feminina).
+  // dur_ms médio → rate (baseline 80ms por fonema; mais lento = rate menor).
+  // energy médio → volume.
+  if (pendingVozParams && pendingVozParams.length > 0) {
+    const voiced = pendingVozParams.filter(f => f.voiced && f.f0 > 0);
+    const allDur  = pendingVozParams.filter(f => f.dur_ms > 0);
+    const allEn   = pendingVozParams.filter(f => f.energy > 0);
+    const avgF0  = voiced.length  ? voiced.reduce((s,f) => s + f.f0,  0) / voiced.length  : 200;
+    const avgDur  = allDur.length  ? allDur.reduce((s,f)  => s + f.dur_ms, 0) / allDur.length  : 80;
+    const avgEn   = allEn.length   ? allEn.reduce((s,f)   => s + f.energy,  0) / allEn.length   : 0.85;
+    u.pitch  = Math.max(0.6, Math.min(1.8, (avgF0 / 200) * 1.15));
+    u.rate   = Math.max(0.6, Math.min(1.4, (80 / avgDur) * 0.93));
+    u.volume = Math.max(0.4, Math.min(1.0, avgEn * 0.95 + 0.1));
+    pendingVozParams = null; // consome uma vez
+  } else {
+    u.pitch  = 1.15;
+    u.rate   = 0.93;
+    u.volume = 0.90;
+  }
 
   // Após Selene terminar de falar: reinicia microfone
   u.onend = () => {

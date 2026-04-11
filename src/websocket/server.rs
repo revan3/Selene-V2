@@ -2251,6 +2251,48 @@ pub async fn handle_connection(
                                     }
                                 }
 
+                                // ── PASSIVE_HEAR: escuta de fundo — aprende sem responder ──────────────────
+                                // Enviado pelo modo Ambiente quando score < 0.40.
+                                // Injeta tokens no neural_context e aprende valências,
+                                // mas NÃO dispara gerar_resposta_emergente.
+                                Some("passive_hear") => {
+                                    let transcript = json["transcript"].as_str().unwrap_or("").to_string();
+                                    let score = json["score"].as_f64().unwrap_or(0.0) as f32;
+                                    if transcript.is_empty() { continue; }
+
+                                    let mut state = brain.lock().await;
+
+                                    // Injeta palavras no neural_context (aprendizado passivo)
+                                    let tokens: Vec<String> = transcript.split_whitespace()
+                                        .map(|w: &str| w.to_lowercase()
+                                            .trim_matches(|c: char| !c.is_alphabetic())
+                                            .to_string())
+                                        .filter(|w: &String| w.len() > 2)
+                                        .collect();
+
+                                    for palavra in &tokens {
+                                        if !state.neural_context.contains(palavra) {
+                                            state.neural_context.push_back(palavra.clone());
+                                        }
+                                    }
+                                    while state.neural_context.len() > 20 {
+                                        state.neural_context.pop_front();
+                                    }
+
+                                    // Aprende valências no swap (aprendizado passivo de vocabulário)
+                                    let swap_arc = state.swap_manager.clone();
+                                    drop(state);
+                                    if let Ok(mut sw) = swap_arc.try_lock() {
+                                        let valence = 0.1 * score; // valência leve — contexto neutro
+                                        for palavra in &tokens {
+                                            sw.aprender_conceito(palavra, valence);
+                                        }
+                                    }
+
+                                    log::debug!("[PASSIVE] score={:.2} tokens={} transcript='{}'",
+                                        score, tokens.len(), &transcript[..transcript.len().min(40)]);
+                                }
+
                                 // ── VISUAL_LEARN: vincula padrão visual (512 pixels luminância) às palavras ──
                                 // Recebe frame da webcam convertido em luminância + label/transcript.
                                 // Cria assinatura visual por palavra:
