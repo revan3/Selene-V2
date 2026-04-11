@@ -218,6 +218,33 @@ impl TemporalLobe {
         self.hebbian_weights.iter().map(|v| v.len()).sum()
     }
 
+    /// P3: Retorna índices dos N neurônios mais ativos em D1 (abstração média).
+    /// Usado para mapear a representação abstrata do temporal para conceitos no swap.
+    pub fn d1_top_indices(&self, n: usize) -> Vec<usize> {
+        let mut indexed: Vec<(usize, f32)> = self.depth_stack.d1.iter()
+            .enumerate()
+            .filter(|(_, &v)| v > 0.05)
+            .map(|(i, &v)| (i, v))
+            .collect();
+        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        indexed.into_iter().take(n).map(|(i, _)| i).collect()
+    }
+
+    /// P2-B: Exporta pares de índices de neurônios com conexão Hebbiana forte.
+    /// Retorna (i, j, peso) onde i→j tem peso ≥ min_peso.
+    /// Usado para propagar aprendizado local do temporal para o grafo global do swap.
+    pub fn hebbian_pares_fortes(&self, min_peso: f32) -> Vec<(usize, usize, f32)> {
+        let mut pares = Vec::new();
+        for (i, conns) in self.hebbian_weights.iter().enumerate() {
+            for &(j, peso) in conns {
+                if peso >= min_peso {
+                    pares.push((i, j, peso));
+                }
+            }
+        }
+        pares
+    }
+
     /// Máximo de conexões Hebbianas por neurônio (deve ser <= K=8).
     pub fn max_hebbian_per_neuron(&self) -> usize {
         self.hebbian_weights.iter().map(|v| v.len()).max().unwrap_or(0)

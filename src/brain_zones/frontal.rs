@@ -289,6 +289,33 @@ impl FrontalLobe {
         });
     }
 
+    /// Avalia se o goal atual foi atingido comparando o output atual com o padrão do goal.
+    /// similarity > threshold → goal concluído (removido da fila), retorna RPE positivo.
+    /// ticks_vida > timeout → goal expirado sem sucesso, retorna RPE negativo leve.
+    /// Retorna (rpe: f32, goal_desc: Option<String>) onde rpe != 0 indica evento.
+    pub fn avaliar_goal(&mut self, output_atual: &[f32]) -> (f32, Option<String>) {
+        let Some(goal) = self.goal_queue.front() else { return (0.0, None) };
+        let n = goal.padrao.len().min(output_atual.len());
+        if n == 0 { return (0.0, None); }
+
+        // Similaridade cosseno entre padrão do goal e output atual
+        let dot: f32  = (0..n).map(|i| goal.padrao[i] * output_atual[i]).sum();
+        let mag_g: f32 = (0..n).map(|i| goal.padrao[i].powi(2)).sum::<f32>().sqrt();
+        let mag_o: f32 = (0..n).map(|i| output_atual[i].powi(2)).sum::<f32>().sqrt();
+        let sim = if mag_g > 1e-6 && mag_o > 1e-6 { dot / (mag_g * mag_o) } else { 0.0 };
+
+        let threshold = 0.65 * goal.prioridade.max(0.4);
+        let prioridade = goal.prioridade; // copia antes de soltar o borrow
+        if sim >= threshold {
+            // Goal atingido → RPE positivo proporcional à prioridade
+            let desc = self.goal_queue.pop_front().map(|g| g.descricao);
+            let rpe = prioridade * 0.4;
+            return (rpe, desc);
+        }
+        // Expirado sem sucesso (timeout já tratado no decide())
+        (0.0, None)
+    }
+
     pub fn set_dopamine(&mut self, level: f32) {
         self.dopamine_level = level.clamp(0.3, 2.5);
     }

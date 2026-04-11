@@ -7,3 +7,4 @@ pub mod hypothesis;
 pub mod pensamento;
 pub mod curriculo;
 pub mod binding;
+pub mod narrativa;

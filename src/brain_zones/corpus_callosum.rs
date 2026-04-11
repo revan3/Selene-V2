@@ -85,4 +85,11 @@ impl CorpusCallosum {
     pub fn set_connectivity(&mut self, health: f32) {
         self.connectivity_factor = health.clamp(0.0, 1.0);
     }
+
+    /// Ajusta a latência de transmissão inter-hemisférica.
+    /// Arousal alto → transmissão mais rápida (min 4ms).
+    /// Arousal baixo/sono → latência maior (max 20ms).
+    pub fn set_latency(&mut self, latency_ms: f32) {
+        self.latency_ms = latency_ms.clamp(4.0, 20.0);
+    }
 }

@@ -135,6 +135,25 @@ impl HippocampusV2 {
 
         let ca3_spikes = self.ca3_recurrent.update(&ca3_in, dt, t_ms);
 
+        // ── Hebbian LTP / LTD ───────────────────────────────────────────────
+        // Regra bio-inspirada: se CA1[i] e CA3[i] dispararam juntos → LTP (potenciação).
+        // Se CA1[i] disparou mas CA3[i] não → LTD suave (depressão competitiva, BCM-like).
+        // O peso emocional escala a magnitude: momentos emocionalmente salientes aprendem mais.
+        // Resultado: ltp_matrix[i] → 1.0 para padrões frequentes/emocionais, → 0.1 para infreq.
+        let ew = emotional_weight.abs().clamp(0.05, 1.0);
+        for i in 0..n {
+            if ca1_spikes[i] {
+                let delta = if ca3_spikes[i] {
+                    // LTP: co-ativação CA1×CA3 → reforça peso
+                    self.consolidation_rate * (1.0 - self.ltp_matrix[i])
+                } else {
+                    // LTD suave: CA1 ativo sem CA3 → deprime levemente
+                    -self.consolidation_rate * 0.3 * self.ltp_matrix[i]
+                };
+                self.ltp_matrix[i] = (self.ltp_matrix[i] + delta * ew).clamp(0.1, 1.0);
+            }
+        }
+
         let output: Vec<f32> = (0..n).map(|i| {
             self.prev_ca3_spikes[i] = ca3_spikes[i];
             if ca3_spikes[i] { 1.0 } else { 0.0 }

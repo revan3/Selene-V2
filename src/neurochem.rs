@@ -16,6 +16,26 @@ pub struct NeuroChem {
     /// Produzida pelo núcleo basal de Meynert; degrada com fadiga (adenosina alta).
     /// Análogo biológico: inibidores de colinesterase melhoram memória em Alzheimer.
     pub acetylcholine: f32,
+
+    /// Ocitocina — neuropeptídeo de vínculo social, confiança e empatia.
+    /// Produzida pelo hipotálamo; liberada em interações positivas (carinho, validação, humor).
+    /// Alta ocitocina: inibe amígdala (reduz medo social), aumenta confiança, facilita aprendizado social.
+    /// Baixa ocitocina: maior sensibilidade a rejeição, isolamento emocional.
+    /// Biologicamente: analgesia social, apego, cooperação.
+    pub oxytocin: f32,
+
+    /// Sinal do receptor D1 dopaminérgico [0.0, 1.0].
+    /// D1 é ionotrópico excitatório no PFC/córtex — fortalece Working Memory.
+    /// Alto D1 = dopamina alta → PFC excitado → mais capacidade de WM e planejamento.
+    /// Analogia: D1 é o "acelerador" do PFC.
+    pub d1_signal: f32,
+
+    /// Sinal do receptor D2 dopaminérgico [0.0, 1.0].
+    /// D2 é inibitório no estriado e pré-sináptico — filtra ruído, foca sinal.
+    /// Alto D2 = dopamina alta → estriado filtrado → ações mais precisas, menos impulsividade.
+    /// Analogia: D2 é o "filtro de ruído" dos gânglios basais.
+    pub d2_signal: f32,
+
     last_temp: f32,
 }
 
@@ -73,6 +93,9 @@ impl NeuroChem {
             cortisol: 0.0,
             noradrenaline: 0.5,
             acetylcholine: 0.7, // baseline saudável de ACh
+            oxytocin: 0.5,       // baseline neutro — cresce com interações positivas
+            d1_signal: 0.5,      // derivado de dopamina (via update)
+            d2_signal: 0.5,      // derivado de dopamina (via update)
             last_temp: 0.0,
         }
     }
@@ -125,5 +148,42 @@ impl NeuroChem {
         let target_ach = (0.8 - adenosina_proxy * 0.4 + self.noradrenaline * 0.2)
             .clamp(0.2, 1.2);
         self.acetylcholine += (target_ach - self.acetylcholine) * decay_rate;
+
+        // D1 signal: excitatório no PFC — escala com dopamina alta.
+        // Curva sigmoide: D1 começa a subir acima de dopa≈0.6, satura em dopa≈1.8.
+        // Biologicamente: D1Rs têm baixa afinidade — precisam de dopamina alta para ativar.
+        let target_d1 = (1.0 / (1.0 + (-4.0 * (self.dopamine - 1.0)).exp()))
+            .clamp(0.1, 1.0);
+        self.d1_signal += (target_d1 - self.d1_signal) * decay_rate * 2.0;
+
+        // D2 signal: inibitório no estriado — afinidade ALTA, ativa mesmo com dopa baixa.
+        // Satura rapidamente; em dopamina muito alta, autoreceptores D2 reduzem liberação.
+        // Biologicamente: D2Rs são pré-sinápticos autorreceptores + pós-sinápticos no estriado.
+        let target_d2 = (1.0 / (1.0 + (-6.0 * (self.dopamine - 0.5)).exp()))
+            .clamp(0.1, 1.0);
+        self.d2_signal += (target_d2 - self.d2_signal) * decay_rate * 2.0;
+
+        // Ocitocina — decai lentamente na ausência de interações positivas.
+        // Cresce por chamadas externas (registrar_interacao_positiva).
+        // Cortisol alto (estresse) inibe levemente a liberação de ocitocina.
+        let oxt_decay = 0.0002 / fator_tempo; // decaimento muito lento
+        let cortisol_inhibition = self.cortisol * 0.1;
+        self.oxytocin = (self.oxytocin - oxt_decay - cortisol_inhibition * oxt_decay)
+            .clamp(0.1, 1.5);
+    }
+
+    /// Registra uma interação social positiva — libera ocitocina.
+    /// Chamar quando: reward positivo, feedback positivo, humor compartilhado.
+    /// `intensidade` ∈ [0.0, 1.0].
+    pub fn registrar_interacao_positiva(&mut self, intensidade: f32) {
+        self.oxytocin = (self.oxytocin + intensidade * 0.15).clamp(0.0, 1.5);
+        // Ocitocina também atenua cortisol levemente (efeito ansiolítico)
+        self.cortisol = (self.cortisol - intensidade * 0.05).clamp(0.0, 2.0);
+    }
+
+    /// Registra rejeição social — reduz ocitocina, aumenta cortisol.
+    pub fn registrar_rejeicao(&mut self, intensidade: f32) {
+        self.oxytocin = (self.oxytocin - intensidade * 0.1).clamp(0.1, 1.5);
+        self.cortisol = (self.cortisol + intensidade * 0.08).clamp(0.0, 2.0);
     }
 }

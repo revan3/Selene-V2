@@ -109,11 +109,20 @@ impl Cerebellum {
             }
         }
 
-        // LTD cerebelar: fibras trepadeiras (erro) deprimem Purkinje
-        for i in 0..n_p.min(climbing_fiber_error.len()) {
+        // Acumula erro via EMA — memória de erros recentes escala a taxa de LTD
+        // Sem isso, error_signal fica sempre zero e o cerebelo aprende na mesma taxa
+        // independentemente de o erro estar piorando ou melhorando ao longo do tempo.
+        let n_err = n_p.min(climbing_fiber_error.len());
+        for i in 0..n_err {
+            self.error_signal[i] = self.error_signal[i] * 0.95 + climbing_fiber_error[i].abs() * 0.05;
+        }
+
+        // LTD cerebelar: taxa adaptativa — erros acumulados aceleram o aprendizado
+        for i in 0..n_err {
             let err = climbing_fiber_error[i].abs();
+            let lr = 0.01 * (1.0 + self.error_signal[i] * 3.0).min(4.0);
             if err > 0.1 {
-                self.ltd_factor[i] = (self.ltd_factor[i] - err * 0.01).max(0.1);
+                self.ltd_factor[i] = (self.ltd_factor[i] - err * lr).max(0.1);
             } else {
                 self.ltd_factor[i] = (self.ltd_factor[i] + 0.001).min(1.0);
             }

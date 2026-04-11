@@ -13,6 +13,9 @@ pub mod cerebellum;
 pub mod corpus_callosum;
 pub mod mirror_neurons;
 pub mod depth_stack;
+pub mod cingulate;
+pub mod orbitofrontal;
+pub mod language;
 
 // Re-exportações
 pub use frontal::FrontalLobe;
@@ -23,6 +26,9 @@ pub use limbic::LimbicSystem;
 pub use hippocampus::HippocampusV2;
 pub use cerebellum::Cerebellum;
 pub use corpus_callosum::CorpusCallosum;
+pub use cingulate::AnteriorCingulate;
+pub use orbitofrontal::OrbitalFrontal;
+pub use language::LanguageAreas;
 
 use serde::{Serialize, Deserialize};
 
