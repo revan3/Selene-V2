@@ -1,0 +1,82 @@
+[package]
+name = "selene_brain"
+version = "2.0.0"
+edition = "2021"
+
+[lib]
+name = "selene_kernel"
+crate-type = ["rlib"]
+
+[dependencies]
+log = "0.4"
+simplelog = "0.12"
+rand = "0.8"
+rand_distr = "0.4"
+rayon = "1.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+surrealdb = { version = "1.5", features = ["kv-rocksdb"] }
+tokio = { version = "1", features = ["full"] }
+memmap2 = "0.9"
+cpal = "0.15"
+spectrum-analyzer = "1.7"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = "0.4"
+half = { version = "2.4", features = ["serde"] }
+bincode = "1.3"
+warp = "0.3"
+futures-util = "0.3"
+futures = "0.3"
+sysinfo = "0.30"
+nokhwa = { version = "0.10", features = ["input-native"] }   # input-native = WinRT no Windows
+# Mantemos o windows APENAS para timeBeginPeriod/timeEndPeriod
+windows = { version = "0.52", features = ["Win32_Media"] }
+
+[features]
+test-bin = []
+ego = []
+
+[[bin]]
+name = "selene_brain"
+path = "src/main.rs"
+
+[[bin]]
+name = "check_selene"
+path = "src/bin/check_selene.rs"
+required-features = ["test-bin"]
+
+[[bin]]
+name = "system_checkup"
+path = "src/bin/system_checkup.rs"
+required-features = ["test-bin"]
+
+[[bin]]
+name = "benchmark"
+path = "src/bin/benchmark.rs"
+
+[[bin]]
+name = "learning_test"
+path = "src/bin/learning_test.rs"
+
+[[bin]]
+name = "test_neuron_v3"
+path = "src/bin/test_neuron_v3.rs"
+
+[[bin]]
+name = "stability_test"
+path = "src/bin/stability_test.rs"
+
+[[bin]]
+name = "system_test"
+path = "src/bin/system_test.rs"
+
+[[bin]]
+name = "intensive_benchmark"
+path = "src/bin/intensive_benchmark.rs"
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+codegen-units = 16
+debug = true
+strip = "none"

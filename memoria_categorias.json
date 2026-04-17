@@ -1,0 +1,26 @@
+{
+  "_comentario": "Edite este arquivo para classificar palavras do vocabulário da Selene.",
+  "_grupos": {
+    "personagem": "amarelo — nomes de personagens ficcionais ou reais",
+    "emocao":     "rosa    — sentimentos e estados emocionais",
+    "conceito":   "verde   — ideias abstratas, temas, valores",
+    "objeto":     "laranja — coisas físicas, lugares, itens",
+    "core":       "roxo    — vocabulário central da Selene (peso alto)"
+  },
+  "personagem": [
+    "hamel", "eugene", "dynaz", "sienna" , "mer", "anise"
+  ],
+  "emocao": [
+    "amor", "alegria", "tristeza", "medo", "raiva", "curiosidade",
+    "saudade", "esperança", "paz", "ansiedade"
+  ],
+  "conceito": [
+    "alma", "reencarnacao", "heroi", "deusa", "feiticeira",
+    "personagem", "missao", "destino", "poder", "magia",
+    "morte", "vida", "existencia", "tempo", "verdade"
+  ],
+  "objeto": [
+    "espada", "batalha", "guerra", "terra", "mundo",
+    "minotauro", "guerreiro"
+  ]
+}

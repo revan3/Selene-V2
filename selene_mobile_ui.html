@@ -1,0 +1,1581 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Selene — Neural Interface Mobile</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#00d4ff">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Selene">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:        #060a0f;
+  --surface:   #0b1018;
+  --panel:     #0f1822;
+  --border:    #1a2d40;
+  --accent:    #00d4ff;
+  --accent2:   #7b4fff;
+  --accent3:   #00ffb3;
+  --warn:      #ff9a00;
+  --danger:    #ff3d5c;
+  --text:      #cce8f4;
+  --muted:     #4a7090;
+  --mono:      'Share Tech Mono', monospace;
+  --sans:      'Exo 2', sans-serif;
+  --safe-bottom: env(safe-area-inset-bottom, 16px);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background: repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,212,255,0.018) 3px,rgba(0,212,255,0.018) 4px);
+  pointer-events: none;
+  z-index: 9999;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  max-width: 430px;
+  margin: 0 auto;
+  position: relative;
+}
+
+/* HEADER */
+header {
+  flex-shrink: 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 14px 8px;
+  position: relative;
+  overflow: hidden;
+}
+header::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: shimmer 3s infinite;
+}
+@keyframes shimmer { 0%{transform:translateX(-100%)} 100%{transform:translateX(100%)} }
+
+.header-top { display: flex; align-items: center; gap: 10px; }
+
+.logo-ring {
+  width: 36px; height: 36px; border-radius: 50%;
+  border: 1.5px solid var(--accent);
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 0 12px rgba(0,212,255,0.35);
+  animation: pulse-ring 2.5s ease-in-out infinite;
+  flex-shrink: 0;
+}
+@keyframes pulse-ring {
+  0%,100%{box-shadow:0 0 8px rgba(0,212,255,0.3)}
+  50%{box-shadow:0 0 18px rgba(0,212,255,0.65)}
+}
+.logo-ring svg { width: 18px; height: 18px; }
+
+.header-info { flex: 1; min-width: 0; }
+.header-name { font-family: var(--mono); font-size: 15px; color: var(--accent); letter-spacing: 0.08em; line-height: 1; }
+.header-sub  { font-size: 10px; color: var(--muted); letter-spacing: 0.1em; margin-top: 2px; }
+
+.status-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--danger); box-shadow: 0 0 8px var(--danger);
+  animation: blink 1.8s ease-in-out infinite; flex-shrink: 0;
+}
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+/* NEURAL CANVAS — substitui métricas-bar */
+#neural-canvas {
+  display: block;
+  width: 100%;
+  height: 82px;
+  margin-top: 8px;
+  border-top: 1px solid rgba(26,45,64,0.5);
+  cursor: default;
+  opacity: 0.92;
+}
+
+/* Mantém métricas acessíveis via sys-panel */
+.metrics-bar { display: none; }
+
+/* CHAT */
+#chat {
+  flex: 1; overflow-y: auto; padding: 14px 12px;
+  display: flex; flex-direction: column; gap: 12px; scroll-behavior: smooth;
+}
+#chat::-webkit-scrollbar { width: 3px; }
+#chat::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* MESSAGES */
+.msg { display: flex; flex-direction: column; max-width: 88%; animation: msg-in 0.25s cubic-bezier(0.34,1.56,0.64,1) both; }
+@keyframes msg-in { from{opacity:0;transform:translateY(10px) scale(0.97)} to{opacity:1;transform:translateY(0) scale(1)} }
+.msg.user   { align-self: flex-end; align-items: flex-end; }
+.msg.selene { align-self: flex-start; align-items: flex-start; }
+
+.msg-bubble { padding: 10px 13px; border-radius: 16px; font-size: 13.5px; line-height: 1.55; position: relative; word-break: break-word; }
+.msg.user .msg-bubble {
+  background: linear-gradient(135deg,#1a3a6e,#0f2448); border: 1px solid #2a4a8a;
+  border-bottom-right-radius: 4px; color: #d4eaff;
+}
+.msg.selene .msg-bubble {
+  background: var(--panel); border: 1px solid var(--border);
+  border-bottom-left-radius: 4px; color: #ffffff;
+}
+
+/* PENSAMENTOS — cinza claro, fonte menor, sem fundo/borda */
+.msg.pensamento { align-self: flex-start; align-items: flex-start; max-width: 92%; }
+.msg.pensamento .msg-bubble {
+  background: transparent; border: none; padding: 1px 6px;
+  font-size: 11px; font-style: italic; line-height: 1.4;
+  color: rgba(140, 175, 200, 0.55);
+}
+.msg.pensamento .msg-bubble::before { display: none; }
+.msg.pensamento .msg-meta { font-size: 8px; opacity: 0.35; margin-top: 1px; }
+.msg.selene .msg-bubble::before {
+  content:''; position:absolute; top:0; left:0; right:0; height:1px;
+  background: linear-gradient(90deg,var(--accent),transparent); border-radius: 16px 16px 0 0;
+}
+.msg-meta { font-size: 9px; color: var(--muted); margin-top: 3px; letter-spacing: 0.05em; font-family: var(--mono); }
+
+.typing-bubble { display:flex; align-items:center; gap:5px; padding:10px 14px; background:var(--panel); border:1px solid var(--border); border-radius:16px; border-bottom-left-radius:4px; width:fit-content; }
+.typing-dot { width:5px;height:5px;border-radius:50%;background:var(--accent);animation:tdot 1.2s infinite; }
+.typing-dot:nth-child(2){animation-delay:0.18s;background:var(--accent2)}
+.typing-dot:nth-child(3){animation-delay:0.36s;background:var(--accent3)}
+@keyframes tdot { 0%,80%,100%{transform:scale(0.7);opacity:0.4} 40%{transform:scale(1);opacity:1} }
+
+.api-notice { background:rgba(0,0,0,0.4); border:1px solid rgba(255,154,0,0.3); border-radius:8px; padding:8px 12px; text-align:center; font-size:11px; color:var(--warn); font-family:var(--mono); letter-spacing:0.06em; }
+
+/* INPUT */
+#input-area { flex-shrink:0; background:var(--surface); border-top:1px solid var(--border); padding:10px 12px; padding-bottom:calc(10px + var(--safe-bottom)); }
+.input-row { display:flex; align-items:flex-end; gap:8px; background:var(--panel); border:1px solid var(--border); border-radius:22px; padding:8px 8px 8px 14px; transition:border-color 0.2s; }
+.input-row:focus-within { border-color:var(--accent); box-shadow:0 0 12px rgba(0,212,255,0.12); }
+#text-input { flex:1; background:none; border:none; outline:none; font-family:var(--sans); font-size:14px; color:var(--text); resize:none; max-height:100px; line-height:1.4; padding:2px 0; }
+#text-input::placeholder { color:var(--muted); }
+
+.icon-btn { width:34px;height:34px;border-radius:50%;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all 0.2s;-webkit-tap-highlight-color:transparent; }
+.btn-audio { background:rgba(123,79,255,0.15); border:1px solid rgba(123,79,255,0.4); color:var(--accent2); }
+.btn-audio.recording { background:rgba(255,61,92,0.25); border-color:var(--danger); color:var(--danger); animation:rec-pulse 0.7s infinite alternate; }
+@keyframes rec-pulse { from{box-shadow:0 0 5px rgba(255,61,92,0.3)} to{box-shadow:0 0 14px rgba(255,61,92,0.7)} }
+.btn-send { background:linear-gradient(135deg,var(--accent),#0099cc); color:#000; }
+.btn-send:active { transform:scale(0.9); }
+.btn-send:disabled { opacity:0.35; background:var(--border); color:var(--muted); cursor:not-allowed; }
+
+/* MODAL */
+#api-modal { position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:1000;display:flex;align-items:flex-end;backdrop-filter:blur(4px); }
+#api-modal.hidden { display:none; }
+.modal-sheet { background:var(--surface); border:1px solid var(--border); border-bottom:none; border-radius:20px 20px 0 0; padding:20px 20px calc(20px + var(--safe-bottom)); width:100%; animation:sheet-up 0.3s cubic-bezier(0.34,1.3,0.64,1); }
+@keyframes sheet-up { from{transform:translateY(60%);opacity:0} to{transform:translateY(0);opacity:1} }
+.modal-title { font-family:var(--mono); font-size:13px; color:var(--accent); letter-spacing:0.1em; margin-bottom:16px; display:flex;align-items:center;gap:8px; }
+.modal-title::before { content:''; width:3px;height:16px;background:var(--accent);border-radius:2px; }
+.field-label { font-size:10px; font-family:var(--mono); color:var(--muted); letter-spacing:0.1em; margin-bottom:5px; }
+.field-input { width:100%; background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:10px 12px; font-family:var(--mono); font-size:12px; color:var(--text); outline:none; margin-bottom:12px; transition:border-color 0.2s; }
+.field-input:focus { border-color:var(--accent); }
+.modal-actions { display:flex; gap:8px; margin-top:4px; }
+.btn-modal { flex:1;padding:11px;border-radius:10px;border:none;font-family:var(--sans);font-size:13px;font-weight:600;cursor:pointer;letter-spacing:0.04em;transition:all 0.2s; }
+.btn-cancel  { background:var(--panel); border:1px solid var(--border); color:var(--muted); }
+.btn-connect { background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#000; }
+
+/* SYS PANEL */
+#sys-panel { background:var(--panel); border-bottom:1px solid var(--border); overflow:hidden; max-height:0; transition:max-height 0.35s ease; }
+#sys-panel.open { max-height:420px; overflow-y:auto; }
+#sys-panel.open::-webkit-scrollbar { width:3px; }
+#sys-panel.open::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+.sys-inner { padding:10px 14px; display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.sys-row { display:flex; flex-direction:column; gap:3px; }
+.sys-key { font-family:var(--mono); font-size:9px; color:var(--muted); letter-spacing:0.1em; }
+.sys-val { font-family:var(--mono); font-size:11px; color:var(--text); }
+
+/* PENSAMENTOS LOG — interno ao sys-panel */
+#sys-pensamentos-wrap { grid-column:1/-1; margin-top:4px; }
+#sys-pensamentos-label { font-family:var(--mono); font-size:9px; color:var(--muted); letter-spacing:0.1em; margin-bottom:4px; }
+#sys-pensamentos {
+  background:rgba(0,0,0,0.35); border:1px solid var(--border); border-radius:6px;
+  padding:6px 9px; max-height:110px; overflow-y:auto;
+  font-family:var(--mono); font-size:10px; color:rgba(140,175,200,0.65); line-height:1.6;
+}
+#sys-pensamentos::-webkit-scrollbar { width:2px; }
+#sys-pensamentos::-webkit-scrollbar-thumb { background:var(--border); }
+.pens-line { animation:msg-in 0.15s ease both; }
+.pens-ts { color:rgba(74,112,144,0.7); margin-right:5px; }
+
+/* VOLUME SELENE */
+.sys-vol-row { grid-column:1/-1; display:flex; align-items:center; gap:8px; margin-top:2px; }
+.sys-vol-label { font-family:var(--mono); font-size:9px; color:var(--muted); letter-spacing:0.1em; white-space:nowrap; }
+#sel-volume { flex:1; accent-color:var(--accent); height:3px; cursor:pointer; }
+
+/* HEADER ACTIONS */
+.header-actions { display:flex; gap:8px; }
+.hbtn { width:28px;height:28px;border-radius:8px;background:rgba(255,255,255,0.04);border:1px solid var(--border);color:var(--muted);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.2s;-webkit-tap-highlight-color:transparent; }
+.hbtn:active,.hbtn.active { background:rgba(0,212,255,0.1); border-color:var(--accent); color:var(--accent); }
+.hbtn-danger { background:rgba(255,61,92,0.08); border-color:rgba(255,61,92,0.35); color:var(--danger); }
+.hbtn-danger:active { background:rgba(255,61,92,0.22); }
+
+/* TRAIN BUTTON */
+.hbtn-train { width:28px;height:28px;border-radius:8px;background:rgba(0,255,179,0.08);border:1px solid rgba(0,255,179,0.35);color:var(--accent3);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.2s;-webkit-tap-highlight-color:transparent; }
+.hbtn-train:active { transform:scale(0.9); }
+.hbtn-train.training { border-color:var(--warn);color:var(--warn);animation:train-glow 1s ease-in-out infinite alternate; }
+@keyframes train-glow { from{box-shadow:0 0 4px rgba(255,154,0,0.3);background:rgba(255,154,0,0.08)} to{box-shadow:0 0 14px rgba(255,154,0,0.6);background:rgba(255,154,0,0.18)} }
+
+/* TRAIN MODAL */
+#train-modal { position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:1001;display:flex;align-items:flex-end;backdrop-filter:blur(5px); }
+#train-modal.hidden { display:none; }
+.train-sheet { background:var(--surface);border:1px solid rgba(0,255,179,0.25);border-bottom:none;border-radius:20px 20px 0 0;padding:20px 20px calc(20px + var(--safe-bottom));width:100%;animation:sheet-up 0.3s cubic-bezier(0.34,1.3,0.64,1);max-height:92dvh;overflow-y:auto; }
+.train-sheet::-webkit-scrollbar { width:2px; }
+.train-sheet::-webkit-scrollbar-thumb { background:var(--border); }
+.train-title { font-family:var(--mono);font-size:13px;color:var(--accent3);letter-spacing:0.1em;margin-bottom:14px;display:flex;align-items:center;gap:8px; }
+.train-title::before { content:'';width:3px;height:16px;background:var(--accent3);border-radius:2px; }
+.preset-row { display:flex;gap:6px;margin-bottom:14px; }
+.preset-btn { flex:1;padding:8px 4px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--muted);font-family:var(--mono);font-size:10px;letter-spacing:0.06em;cursor:pointer;text-align:center;transition:all 0.2s; }
+.preset-btn.active { border-color:var(--accent3);color:var(--accent3);background:rgba(0,255,179,0.08); }
+.param-grid { display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px; }
+.param-cell { display:flex;flex-direction:column;gap:4px; }
+.param-label { font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:0.1em; }
+.param-input { background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-family:var(--mono);font-size:12px;color:var(--text);outline:none;width:100%;transition:border-color 0.2s; }
+.param-input:focus { border-color:var(--accent3); }
+.train-actions { display:flex;gap:8px; }
+.btn-train-go { flex:2;padding:12px;border-radius:10px;border:none;background:linear-gradient(135deg,#00ffb3,#00cc88);color:#000;font-family:var(--sans);font-size:14px;font-weight:700;cursor:pointer;letter-spacing:0.05em;transition:all 0.2s;display:flex;align-items:center;justify-content:center;gap:6px; }
+.btn-train-go:active { transform:scale(0.97); }
+.btn-train-go:disabled { opacity:0.4;background:var(--border);color:var(--muted);cursor:not-allowed; }
+.btn-train-cancel { flex:1;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--panel);color:var(--muted);font-family:var(--sans);font-size:13px;cursor:pointer; }
+
+/* TRAINING CARD */
+.train-card { background:var(--panel);border:1px solid rgba(0,255,179,0.3);border-radius:14px;padding:12px 14px;width:100%;max-width:100%;align-self:stretch;animation:msg-in 0.25s cubic-bezier(0.34,1.56,0.64,1) both;position:relative;overflow:hidden; }
+.train-card::before { content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,var(--accent3),transparent); }
+.train-card-header { display:flex;align-items:center;justify-content:space-between;margin-bottom:10px; }
+.train-card-title { font-family:var(--mono);font-size:11px;color:var(--accent3);letter-spacing:0.1em;display:flex;align-items:center;gap:6px; }
+.train-spinner { width:10px;height:10px;border:1.5px solid rgba(0,255,179,0.3);border-top-color:var(--accent3);border-radius:50%;animation:spin 0.7s linear infinite; }
+@keyframes spin { to{transform:rotate(360deg)} }
+.train-status-badge { font-family:var(--mono);font-size:9px;padding:2px 7px;border-radius:10px;background:rgba(0,255,179,0.12);border:1px solid rgba(0,255,179,0.3);color:var(--accent3);letter-spacing:0.06em; }
+.train-status-badge.done { background:rgba(0,212,255,0.1);border-color:var(--accent);color:var(--accent); }
+.train-status-badge.err  { background:rgba(255,61,92,0.1);border-color:var(--danger);color:var(--danger); }
+.train-progress-label { font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:0.08em;margin-bottom:4px;display:flex;justify-content:space-between; }
+.train-progress-track { height:5px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;margin-bottom:10px; }
+.train-progress-fill { height:100%;background:linear-gradient(90deg,var(--accent3),#00cc88);border-radius:3px;transition:width 0.6s ease;position:relative; }
+.train-metrics { display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px; }
+.train-metric-cell { background:rgba(0,0,0,0.25);border:1px solid var(--border);border-radius:6px;padding:5px 6px;text-align:center; }
+.train-metric-key { font-family:var(--mono);font-size:8px;color:var(--muted);letter-spacing:0.08em; }
+.train-metric-val { font-family:var(--mono);font-size:12px;font-weight:bold;margin-top:1px; }
+.tv-epoch{color:var(--accent)} .tv-loss{color:var(--danger)} .tv-acc{color:var(--accent3)}
+.train-log { background:rgba(0,0,0,0.35);border:1px solid var(--border);border-radius:6px;padding:7px 9px;max-height:80px;overflow-y:auto;font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.6; }
+.train-log::-webkit-scrollbar { width:2px; }
+.train-log::-webkit-scrollbar-thumb { background:var(--border); }
+.log-line { animation:msg-in 0.15s ease both; }
+.log-line.ok{color:var(--accent3)} .log-line.warn{color:var(--warn)} .log-line.err{color:var(--danger)}
+.btn-abort { margin-top:9px;width:100%;padding:7px;border-radius:7px;border:1px solid rgba(255,61,92,0.4);background:rgba(255,61,92,0.07);color:var(--danger);font-family:var(--mono);font-size:10px;letter-spacing:0.08em;cursor:pointer;transition:all 0.2s; }
+.btn-abort:active { background:rgba(255,61,92,0.2); }
+.btn-abort.hidden { display:none; }
+
+/* ── FEEDBACK (aprovar / reprovar resposta da Selene) ── */
+.feedback-row { display:flex; gap:6px; margin-top:5px; }
+.fb-btn {
+  padding:3px 14px; border-radius:12px; border:none; cursor:pointer;
+  font-size:14px; font-weight:700; line-height:1.6;
+  transition:all 0.18s; -webkit-tap-highlight-color:transparent;
+  outline:none;
+}
+.fb-btn:disabled { opacity:0.3; cursor:not-allowed; }
+.fb-ok  { background:rgba(0,255,179,0.1);  border:1px solid rgba(0,255,179,0.4); color:var(--accent3); }
+.fb-ok.voted  { background:rgba(0,255,179,0.28); box-shadow:0 0 8px rgba(0,255,179,0.35); }
+.fb-no  { background:rgba(255,61,92,0.08); border:1px solid rgba(255,61,92,0.35); color:var(--danger); }
+.fb-no.voted  { background:rgba(255,61,92,0.25); box-shadow:0 0 8px rgba(255,61,92,0.35); }
+
+/* WAVE badge no header */
+.wave-badge {
+  font-family:var(--mono); font-size:9px; padding:1px 7px;
+  border-radius:8px; border:1px solid rgba(0,212,255,0.35);
+  color:var(--accent); background:rgba(0,212,255,0.08);
+  letter-spacing:0.08em; margin-left:6px; vertical-align:middle;
+}
+
+/* VIDEO button */
+.btn-video { background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.3); color:var(--accent); }
+.btn-video.cam-on { background:rgba(255,61,92,0.18); border-color:var(--danger); color:var(--danger);
+  animation:rec-pulse 0.7s infinite alternate; }
+.btn-tts { background:rgba(255,200,0,0.08); border:1px solid rgba(255,200,0,0.3); color:#ffc800; }
+.btn-tts.muted { background:rgba(80,80,80,0.1); border-color:rgba(80,80,80,0.3); color:#444; }
+.btn-listen { background:rgba(0,255,150,0.08); border:1px solid rgba(0,255,150,0.3); color:#00ff96; }
+.btn-listen.listen-on { background:rgba(0,255,150,0.22); border-color:#00ff96; color:#00ff96; animation:rec-pulse 0.7s infinite alternate; }
+.btn-screen { background:rgba(255,165,0,0.08); border:1px solid rgba(255,165,0,0.3); color:#ffa500; }
+.btn-screen.screen-on { background:rgba(255,165,0,0.22); border-color:#ffa500; color:#ffa500; animation:rec-pulse 0.7s infinite alternate; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- HEADER -->
+  <header>
+    <div class="header-top">
+      <div class="logo-ring">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="color:var(--accent)">
+          <circle cx="12" cy="12" r="4"/>
+          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10"/>
+          <path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>
+        </svg>
+      </div>
+      <div class="header-info">
+        <div class="header-name">SELENE v2.4 <span class="wave-badge" id="wave-badge">—</span></div>
+        <div class="header-sub" id="conn-status">DESCONECTADO · WS</div>
+      </div>
+      <div class="header-actions">
+        <button class="hbtn" id="btn-expand-sys" title="Métricas">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+        </button>
+        <button class="hbtn-train" id="btn-train" title="Treinamento STDP">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2a5 5 0 0 1 5 5c0 2.1-1.3 4-3.2 4.8L15 20H9l1.2-8.2C8.3 11 7 9.1 7 7a5 5 0 0 1 5-5z"/>
+            <line x1="9" y1="17" x2="15" y2="17"/>
+          </svg>
+        </button>
+        <button class="hbtn hbtn-danger" id="btn-shutdown" title="Desligar Selene" style="display:none">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
+            <line x1="12" y1="2" x2="12" y2="12"/>
+          </svg>
+        </button>
+        <button class="hbtn" id="btn-cfg" title="Conectar à Selene">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/>
+          </svg>
+        </button>
+      </div>
+      <div class="status-dot" id="status-dot"></div>
+    </div>
+    <canvas id="neural-canvas"></canvas>
+  </header>
+
+  <!-- SYSTEM PANEL -->
+  <div id="sys-panel">
+    <div class="sys-inner">
+      <div class="sys-row"><span class="sys-key">UPTIME</span><span class="sys-val" id="s-uptime">--</span></div>
+      <div class="sys-row"><span class="sys-key">NEURÔNIOS</span><span class="sys-val" id="s-neurons">--</span></div>
+      <div class="sys-row"><span class="sys-key">STEP</span><span class="sys-val" id="s-step">--</span></div>
+      <div class="sys-row"><span class="sys-key">LATÊNCIA WS</span><span class="sys-val" id="s-latency">--</span></div>
+      <div class="sys-row"><span class="sys-key">DOPAMINA</span><span class="sys-val" id="s-dopa">--</span></div>
+      <div class="sys-row"><span class="sys-key">SEROTONINA</span><span class="sys-val" id="s-sero">--</span></div>
+      <div class="sys-row"><span class="sys-key">NORADR.</span><span class="sys-val" id="s-nor">--</span></div>
+      <div class="sys-row"><span class="sys-key">SENTIMENTO</span><span class="sys-val" id="s-sentiment">--</span></div>
+      <div class="sys-row" style="grid-column:1/-1">
+        <span class="sys-key">ÁUDIO</span>
+        <div style="display:flex;gap:8px;margin-top:4px">
+          <button id="btn-audio-on"  style="flex:1;padding:5px;border-radius:6px;border:1px solid rgba(0,255,179,0.4);background:rgba(0,255,179,0.08);color:var(--accent3);font-family:var(--mono);font-size:9px;cursor:pointer">ON</button>
+          <button id="btn-audio-off" style="flex:1;padding:5px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--muted);font-family:var(--mono);font-size:9px;cursor:pointer">OFF</button>
+        </div>
+      </div>
+      <div class="sys-row" style="grid-column:1/-1">
+        <span class="sys-key">VÍDEO</span>
+        <div style="display:flex;gap:8px;margin-top:4px">
+          <button id="btn-video-on"  style="flex:1;padding:5px;border-radius:6px;border:1px solid rgba(0,255,179,0.4);background:rgba(0,255,179,0.08);color:var(--accent3);font-family:var(--mono);font-size:9px;cursor:pointer">ON</button>
+          <button id="btn-video-off" style="flex:1;padding:5px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--muted);font-family:var(--mono);font-size:9px;cursor:pointer">OFF</button>
+        </div>
+      </div>
+      <!-- VOLUME DA VOZ -->
+      <div class="sys-vol-row">
+        <span class="sys-vol-label">VOZ</span>
+        <input id="sel-volume" type="range" min="0" max="1" step="0.05" value="0.85">
+        <span class="sys-val" id="sel-vol-val" style="font-size:10px;min-width:28px;text-align:right">85%</span>
+      </div>
+      <!-- PENSAMENTOS INTERNOS -->
+      <div id="sys-pensamentos-wrap">
+        <div id="sys-pensamentos-label">PROCESSAMENTO INTERNO</div>
+        <div id="sys-pensamentos"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CHAT -->
+  <div id="chat">
+    <div class="api-notice" id="api-notice">
+      ⚡ Configure o endereço IP da Selene para conectar.<br>
+      <span style="font-size:10px;opacity:0.7">Toque no ícone ⊙ no canto superior direito.</span>
+    </div>
+  </div>
+
+  <!-- INPUT -->
+  <div id="input-area">
+    <div class="input-row">
+      <textarea id="text-input" placeholder="Mensagem para Selene..." rows="1"></textarea>
+      <button class="icon-btn btn-audio" id="btn-mic" title="Microfone">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="23"/>
+          <line x1="8" y1="23" x2="16" y2="23"/>
+        </svg>
+      </button>
+      <button class="icon-btn btn-video" id="btn-vid" title="Câmera">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="23 7 16 12 23 17 23 7"/>
+          <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+        </svg>
+      </button>
+      <button class="icon-btn btn-tts" id="btn-tts" title="Voz da Selene">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+          <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+          <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+        </svg>
+      </button>
+      <button class="icon-btn btn-listen" id="btn-listen" title="Ouvir sempre">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 18v-6a9 9 0 0 1 18 0v6"/>
+          <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>
+        </svg>
+      </button>
+      <button class="icon-btn btn-screen" id="btn-screen" title="Compartilhar tela">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+          <line x1="8" y1="21" x2="16" y2="21"/>
+          <line x1="12" y1="17" x2="12" y2="21"/>
+        </svg>
+      </button>
+      <button class="icon-btn btn-send" id="btn-send" disabled title="Enviar">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <line x1="22" y1="2" x2="11" y2="13"/>
+          <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- SLEEP OVERLAY -->
+<div id="sleep-overlay" style="display:none;position:fixed;inset:0;z-index:900;background:rgba(5,5,15,0.90);backdrop-filter:blur(6px);flex-direction:column;align-items:center;justify-content:center;gap:16px;">
+  <div style="font-size:48px;animation:zzz-float 3s ease-in-out infinite;">💤</div>
+  <div style="font-family:monospace;font-size:11px;letter-spacing:0.2em;color:rgba(123,79,255,0.7);">SELENE DORMINDO</div>
+  <div id="sleep-phase-label" style="font-family:monospace;font-size:10px;color:rgba(0,212,255,0.5);letter-spacing:0.15em;">N1 - CONSOLIDAÇÃO</div>
+  <div style="font-family:monospace;font-size:9px;color:rgba(255,255,255,0.2);margin-top:6px;">toque ou escreva para despertar</div>
+</div>
+<style>@keyframes zzz-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}</style>
+
+<!-- CONNECT MODAL -->
+<div id="api-modal" class="hidden">
+  <div class="modal-sheet">
+    <div class="modal-title">CONECTAR À SELENE</div>
+    <div class="field-label">ENDEREÇO DA SELENE (IP:PORTA)</div>
+    <input class="field-input" type="text" id="api-url" placeholder="192.168.1.100:3030 ou localhost:3030">
+    <div class="field-label" style="font-size:9px;color:var(--muted);margin-top:-8px;margin-bottom:10px">
+      WebSocket: ws://[host]/selene · Interface: http://[host]/
+    </div>
+    <div class="modal-actions">
+      <button class="btn-modal btn-cancel" id="btn-cancel-modal">Cancelar</button>
+      <button class="btn-modal btn-connect" id="btn-connect-modal">Conectar</button>
+    </div>
+  </div>
+</div>
+
+<!-- TRAIN MODAL -->
+<div id="train-modal" class="hidden">
+  <div class="train-sheet">
+    <div class="train-title">TREINAMENTO STDP</div>
+    <div class="field-label">PRESET</div>
+    <div class="preset-row">
+      <button class="preset-btn active" data-preset="rapido">RÁPIDO</button>
+      <button class="preset-btn" data-preset="padrao">PADRÃO</button>
+      <button class="preset-btn" data-preset="profundo">PROFUNDO</button>
+      <button class="preset-btn" data-preset="custom">CUSTOM</button>
+    </div>
+    <div class="param-grid">
+      <div class="param-cell"><div class="param-label">EPOCHS</div><input class="param-input" id="p-epochs" type="number" value="6" min="1" max="500"></div>
+      <div class="param-cell"><div class="param-label">BATCH</div><input class="param-input" id="p-batch" type="number" value="32" min="1" max="512"></div>
+      <div class="param-cell"><div class="param-label">LTP (A+)</div><input class="param-input" id="p-ltp" type="number" value="0.012" step="0.001" min="0.001" max="0.1"></div>
+      <div class="param-cell"><div class="param-label">LTD (A−)</div><input class="param-input" id="p-ltd" type="number" value="0.003" step="0.001" min="0.001" max="0.1"></div>
+      <div class="param-cell"><div class="param-label">SW NEG</div><input class="param-input" id="p-sw" type="number" value="1.15" step="0.01" min="0.5" max="3.0"></div>
+      <div class="param-cell"><div class="param-label">LEARNING RATE</div><input class="param-input" id="p-lr" type="number" value="0.001" step="0.0001" min="0.0001" max="0.1"></div>
+    </div>
+    <div class="train-actions">
+      <button class="btn-train-cancel" id="btn-train-modal-cancel">Cancelar</button>
+      <button class="btn-train-go" id="btn-train-go">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        TREINAR
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════
+const state = {
+  connected: false,
+  // window.location.host é sempre o correto: a página é servida pelo próprio Selene.
+  // localStorage serve apenas para sobrescrever manualmente via modal (casos especiais).
+  host: window.location.host || localStorage.getItem('selene_host') || 'localhost:3030',
+  ws: null,
+  pingTs: 0,
+  startTime: null,
+  uptimeTick: null,
+  recording: false,
+  recognition: null,
+  trainRunning: false,
+  lastStatus: null,
+  pensamentosVisto: new Set(),
+  activeNeurons: 0,
+  audioCtx: null,
+  audioVolume: 0.85,
+};
+
+// ═══════════════════════════════════════════════════════
+// ELEMENTS
+// ═══════════════════════════════════════════════════════
+const $chat    = document.getElementById('chat');
+const $input   = document.getElementById('text-input');
+const $send    = document.getElementById('btn-send');
+const $mic     = document.getElementById('btn-mic');
+const $modal   = document.getElementById('api-modal');
+const $cfg     = document.getElementById('btn-cfg');
+const $cancel  = document.getElementById('btn-cancel-modal');
+const $connect = document.getElementById('btn-connect-modal');
+const $sysPanel= document.getElementById('sys-panel');
+const $sysTgl  = document.getElementById('btn-expand-sys');
+const $notice  = document.getElementById('api-notice');
+const $status  = document.getElementById('conn-status');
+const $dot     = document.getElementById('status-dot');
+const $shutdown= document.getElementById('btn-shutdown');
+const $btnTrain= document.getElementById('btn-train');
+
+// ═══════════════════════════════════════════════════════
+// WEBSOCKET — conexão principal com a Selene
+// ═══════════════════════════════════════════════════════
+function wsUrl(host) {
+  return `ws://${host}/selene`;
+}
+
+function connect(host) {
+  if (state.ws) { state.ws.close(); state.ws = null; }
+  state.host = host;
+  localStorage.setItem('selene_host', host);
+
+  const ws = new WebSocket(wsUrl(host));
+  state.ws = ws;
+
+  ws.onopen = () => {
+    setConnected(true);
+    if ($notice) $notice.remove();
+    appendMessage('selene', `Conexão WebSocket estabelecida com Selene v2.4 em ${host}.`);
+    schedulePing();
+  };
+
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+
+      // Latência (pong)
+      if (msg.event === 'pong') {
+        document.getElementById('s-latency').textContent = (Date.now() - state.pingTs) + 'ms';
+        return;
+      }
+
+      // Resposta de chat
+      if (msg.event === 'chat_reply') {
+        removeTyping();
+        appendMessage('selene', msg.message, msg.emotion);
+        falar(msg.message);
+        $send.disabled = false;
+        return;
+      }
+
+      // Cérebro vazio — Selene ainda não aprendeu nada
+      if (msg.event === 'sem_memoria') {
+        removeTyping();
+        appendMessage('selene', '...', 0);
+        $send.disabled = false;
+        return;
+      }
+
+      // Sono noturno
+      if (msg.event === 'sono') {
+        document.getElementById('sleep-overlay').style.display = 'flex';
+        document.getElementById('sleep-phase-label').textContent = (msg.fase || 'N1').toUpperCase();
+        if (msg.msg) falar(msg.msg);
+        return;
+      }
+      if (msg.event === 'despertar') {
+        document.getElementById('sleep-overlay').style.display = 'none';
+        if (msg.msg) falar(msg.msg);
+        return;
+      }
+
+      // ACKs de controle
+      if (msg.event === 'shutdown_ack') {
+        appendMessage('selene', '🛑 Desligamento gracioso iniciado. Até logo.');
+        setTimeout(() => setConnected(false), 2000);
+        return;
+      }
+      if (msg.event === 'sensor_ack') {
+        const label = msg.sensor === 'audio' ? 'Áudio' : 'Vídeo';
+        appendMessage('selene', `${label}: ${msg.active ? '🟢 ATIVADO' : '⚪ DESATIVADO'}`);
+        return;
+      }
+
+      // Progresso de treino
+      if (msg.epoch !== undefined) {
+        updateTrainProgress(msg.epoch, msg.epochs || msg.epoch, msg.loss, msg.acc);
+        trainLog(`Época ${msg.epoch}  loss=${msg.loss?.toFixed(4) ?? '--'}  acc=${msg.acc !== null ? (msg.acc*100).toFixed(1)+'%' : '--'}`);
+        return;
+      }
+      if (msg.status === 'done') {
+        finishTrainCard(true, msg.message || 'Treino concluído.');
+        appendMessage('selene', `✅ Treino STDP finalizado: ${msg.message}`);
+        return;
+      }
+      if (msg.status === 'error') {
+        finishTrainCard(false, msg.message || 'Erro no treino.');
+        return;
+      }
+
+      // Telemetria NeuralStatus (pacote periódico de 500ms)
+      if (msg.neurotransmissores !== undefined) {
+        applyTelemetry(msg);
+        return;
+      }
+
+      // Voz — síntese formântica no browser
+      if (msg.event === 'voz_params' && Array.isArray(msg.formants) && msg.formants.length > 0) {
+        synthesizeFormants(msg.formants);
+        return;
+      }
+
+    } catch { /* mensagem não-JSON ignorada */ }
+  };
+
+  ws.onclose = () => {
+    setConnected(false);
+    // Tenta reconectar após 4 segundos se tinha conexão
+    if (state.host) {
+      setTimeout(() => { if (!state.connected && state.host) connect(state.host); }, 4000);
+    }
+  };
+
+  ws.onerror = () => {
+    setConnected(false);
+  };
+}
+
+// ═══════════════════════════════════════════════════════
+// TELEMETRIA — mapeia NeuralStatus para a UI
+// ═══════════════════════════════════════════════════════
+function applyTelemetry(s) {
+  state.lastStatus = s;
+
+  // Métricas do header
+  const alerta = (s.atividade?.alerta ?? 0) * 100;
+  const emocao = Math.abs(s.atividade?.emocao ?? 0) * 100;
+  const ramGb  = s.hardware?.ram_usage_gb ?? 0;
+  const ramPct = Math.min((ramGb / 20) * 100, 100);
+  const neurPct= Math.min(((s.swap?.neuronios_ativos ?? 0) / (s.swap?.capacidade_max ?? 1e6)) * 100, 100);
+  const temp   = s.hardware?.cpu_temp ?? 0;
+
+  setMetric('m-cpu-val', 'm-cpu-bar', alerta, '%');
+  setMetric('m-ram-val', 'm-ram-bar', ramGb,  'GB', ramPct);
+  setMetric('m-gpu-val', 'm-gpu-bar', emocao, '%');
+  setMetric('m-disk-val','m-disk-bar', s.swap?.neuronios_ativos ?? 0, '', neurPct, true);
+  setMetric('m-temp-val','m-temp-bar', temp,  '°', Math.min(temp/100*100,100));
+
+  // Cor da temperatura
+  const tempEl = document.getElementById('m-temp-val');
+  if (temp > 80) tempEl.style.color = 'var(--danger)';
+  else if (temp > 70) tempEl.style.color = 'var(--warn)';
+  else tempEl.style.color = '#ff7eb3';
+
+  // Painel expandido
+  document.getElementById('s-neurons').textContent  = (s.swap?.neuronios_ativos ?? 0).toLocaleString('pt-BR');
+  document.getElementById('s-step').textContent     = (s.atividade?.step ?? 0).toLocaleString('pt-BR');
+  document.getElementById('s-dopa').textContent     = (s.neurotransmissores?.dopamina ?? 0).toFixed(3);
+  document.getElementById('s-sero').textContent     = (s.neurotransmissores?.serotonina ?? 0).toFixed(3);
+  document.getElementById('s-nor').textContent      = (s.neurotransmissores?.noradrenalina ?? 0).toFixed(3);
+  document.getElementById('s-sentiment').textContent= (s.ego?.sentimento_atual ?? 0).toFixed(3);
+
+  // Onda dominante no badge do header
+  const ondaDom = s.ondas?.dominante ?? '';
+  if (ondaDom) {
+    const badge = document.getElementById('wave-badge');
+    if (badge) {
+      badge.textContent = ondaDom.toUpperCase();
+      const waveColors = { delta:'#4a7090', theta:'#7b4fff', alpha:'#00ffb3', beta:'#00d4ff', gamma:'#ff9a00' };
+      badge.style.color       = waveColors[ondaDom] ?? 'var(--accent)';
+      badge.style.borderColor = (waveColors[ondaDom] ?? 'var(--accent)') + '60';
+    }
+  }
+
+  // Neural canvas — atualiza neurônios ativos
+  const ativos = s.swap?.neuronios_ativos ?? 0;
+  if (ativos !== state.activeNeurons) {
+    state.activeNeurons = ativos;
+    ncUpdateActive(ativos);
+  }
+
+  // Pensamentos — exibe novos no chat em cinza
+  const pensamentos = s.ego?.pensamentos ?? [];
+  pensamentos.forEach(p => {
+    if (p && !state.pensamentosVisto.has(p)) {
+      state.pensamentosVisto.add(p);
+      appendPensamento(p);
+      if (state.pensamentosVisto.size > 300) {
+        state.pensamentosVisto.delete(state.pensamentosVisto.values().next().value);
+      }
+    }
+  });
+}
+
+function setMetric(valId, barId, val, unit, pct, isInt) {
+  const pctFinal = pct !== undefined ? pct : val;
+  const display  = isInt ? Math.round(val).toLocaleString('pt-BR') : `${Math.round(val*10)/10}${unit}`;
+  document.getElementById(valId).textContent    = display;
+  document.getElementById(barId).style.width    = pctFinal.toFixed(1) + '%';
+}
+
+// ═══════════════════════════════════════════════════════
+// SÍNTESE DE VOZ — Web Audio API (formants Klatt-style)
+// ═══════════════════════════════════════════════════════
+function getAudioCtx() {
+  if (!state.audioCtx) {
+    state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (state.audioCtx.state === 'suspended') state.audioCtx.resume();
+  return state.audioCtx;
+}
+
+function synthesizeFormants(formants) {
+  let ctx;
+  try { ctx = getAudioCtx(); } catch { return; }
+
+  const vol = state.audioVolume;
+  let t = ctx.currentTime + 0.06;
+
+  for (const ph of formants) {
+    const durS   = Math.max((ph.dur_ms  || 80)   / 1000, 0.008);
+    const f0     = ph.f0     || 120;
+    const f1     = ph.f1     || 500;
+    const f2     = ph.f2     || 1500;
+    const f3     = ph.f3     || 2500;
+    const energy = (ph.energy || 0.5) * vol;
+    const voiced = ph.voiced !== false;
+
+    if (energy < 0.004) { t += durS; continue; }
+
+    // Excitação
+    let src;
+    if (voiced) {
+      src = ctx.createOscillator();
+      src.type = 'sawtooth';
+      src.frequency.value = f0;
+    } else {
+      const n   = Math.max(Math.ceil(durS * ctx.sampleRate), 1);
+      const buf = ctx.createBuffer(1, n, ctx.sampleRate);
+      const d   = buf.getChannelData(0);
+      for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+      src = ctx.createBufferSource();
+      src.buffer = buf;
+    }
+
+    // Filtros formânticos (bandpass)
+    const mkBP = (freq, bw) => {
+      const f = ctx.createBiquadFilter();
+      f.type = 'bandpass';
+      f.frequency.value = freq;
+      f.Q.value = Math.max(freq / Math.max(bw, 1), 0.1);
+      return f;
+    };
+    const bp1 = mkBP(f1,  80);
+    const bp2 = mkBP(f2, 120);
+    const bp3 = mkBP(f3, 160);
+
+    // Envelope de amplitude
+    const gain = ctx.createGain();
+    const fade = Math.min(0.008, durS * 0.15);
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(energy, t + fade);
+    gain.gain.setValueAtTime(energy, t + durS - fade);
+    gain.gain.linearRampToValueAtTime(0, t + durS);
+
+    src.connect(bp1); bp1.connect(bp2); bp2.connect(bp3); bp3.connect(gain);
+    gain.connect(ctx.destination);
+
+    src.start(t);
+    src.stop(t + durS);
+    t += durS;
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// PING — mede latência real do WebSocket
+// ═══════════════════════════════════════════════════════
+function schedulePing() {
+  setInterval(() => {
+    if (state.ws?.readyState === 1) {
+      state.pingTs = Date.now();
+      state.ws.send(JSON.stringify({ action: 'ping' }));
+    }
+  }, 5000);
+}
+
+// ═══════════════════════════════════════════════════════
+// MODAL DE CONEXÃO
+// ═══════════════════════════════════════════════════════
+$cfg.addEventListener('click', () => {
+  document.getElementById('api-url').value = state.host;
+  $modal.classList.remove('hidden');
+});
+$cancel.addEventListener('click', () => $modal.classList.add('hidden'));
+$modal.addEventListener('click', e => { if (e.target === $modal) $modal.classList.add('hidden'); });
+$connect.addEventListener('click', () => {
+  const host = document.getElementById('api-url').value.trim();
+  if (!host) { alert('Informe o endereço da Selene.'); return; }
+  $modal.classList.add('hidden');
+  connect(host);
+});
+
+// ═══════════════════════════════════════════════════════
+// ESTADO DE CONEXÃO
+// ═══════════════════════════════════════════════════════
+function setConnected(v) {
+  state.connected = v;
+  $dot.style.background = v ? 'var(--accent3)' : 'var(--danger)';
+  $dot.style.boxShadow  = v ? '0 0 8px var(--accent3)' : '0 0 8px var(--danger)';
+  $status.textContent   = v ? `ONLINE · ${state.host}` : 'DESCONECTADO · WS';
+  $send.disabled        = !v;
+  $shutdown.style.display = v ? 'flex' : 'none';
+  if (v && !state.startTime) { state.startTime = Date.now(); startUptime(); }
+}
+
+function startUptime() {
+  const el = document.getElementById('s-uptime');
+  state.uptimeTick = setInterval(() => {
+    const s   = Math.floor((Date.now() - state.startTime) / 1000);
+    const h   = String(Math.floor(s/3600)).padStart(2,'0');
+    const m   = String(Math.floor((s%3600)/60)).padStart(2,'0');
+    const sec = String(s%60).padStart(2,'0');
+    el.textContent = `${h}:${m}:${sec}`;
+  }, 1000);
+}
+
+// Auto-conectar ao carregar — usa host salvo ou o próprio servidor
+connect(state.host);
+
+// Volume da voz
+const $volSlider = document.getElementById('sel-volume');
+const $volVal    = document.getElementById('sel-vol-val');
+$volSlider.addEventListener('input', () => {
+  state.audioVolume = parseFloat($volSlider.value);
+  $volVal.textContent = Math.round(state.audioVolume * 100) + '%';
+});
+
+// Desbloqueia AudioContext no primeiro toque/clique (requisito de browser)
+function unlockAudio() {
+  if (state.audioCtx) return;
+  try {
+    state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    state.audioCtx.resume();
+  } catch { /* não suportado */ }
+}
+document.addEventListener('click',     unlockAudio, { once: true });
+document.addEventListener('touchstart', unlockAudio, { once: true });
+
+// ═══════════════════════════════════════════════════════
+// SYS PANEL
+// ═══════════════════════════════════════════════════════
+$sysTgl.addEventListener('click', () => {
+  $sysPanel.classList.toggle('open');
+  $sysTgl.classList.toggle('active');
+});
+
+// ═══════════════════════════════════════════════════════
+// MENSAGENS
+// ═══════════════════════════════════════════════════════
+function nowStr() {
+  return new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+
+function appendMessage(role, text, emotion) {
+  const wrap   = document.createElement('div');
+  wrap.className = `msg ${role}`;
+  const bubble = document.createElement('div');
+  bubble.className = 'msg-bubble';
+  bubble.textContent = text;
+  const meta = document.createElement('div');
+  meta.className = 'msg-meta';
+  meta.textContent = role === 'selene'
+    ? `SELENE · ${nowStr()}${emotion !== undefined ? ` · emo:${emotion.toFixed(2)}` : ''}`
+    : `VOCÊ · ${nowStr()}`;
+  wrap.appendChild(bubble);
+  wrap.appendChild(meta);
+
+  // Botões de feedback — apenas para mensagens da Selene
+  if (role === 'selene') {
+    const fbRow = document.createElement('div');
+    fbRow.className = 'feedback-row';
+    const okBtn = document.createElement('button');
+    okBtn.className = 'fb-btn fb-ok';
+    okBtn.title = 'Aprovar — reforça esta resposta no grafo';
+    okBtn.textContent = '✓';
+    const noBtn = document.createElement('button');
+    noBtn.className = 'fb-btn fb-no';
+    noBtn.title = 'Reprovar — penaliza esta resposta no grafo';
+    noBtn.textContent = '✗';
+
+    okBtn.addEventListener('click', () => {
+      if (state.ws?.readyState === 1) {
+        state.ws.send(JSON.stringify({ action: 'feedback', valence: 1 }));
+        okBtn.classList.add('voted');
+        noBtn.disabled = true;
+      }
+    });
+    noBtn.addEventListener('click', () => {
+      if (state.ws?.readyState === 1) {
+        state.ws.send(JSON.stringify({ action: 'feedback', valence: -1 }));
+        noBtn.classList.add('voted');
+        okBtn.disabled = true;
+      }
+    });
+    fbRow.appendChild(okBtn);
+    fbRow.appendChild(noBtn);
+    wrap.appendChild(fbRow);
+  }
+
+  $chat.appendChild(wrap);
+  $chat.scrollTop = $chat.scrollHeight;
+  return wrap;
+}
+
+function appendPensamento(texto) {
+  const log = document.getElementById('sys-pensamentos');
+  if (!log) return;
+  const line = document.createElement('div');
+  line.className = 'pens-line';
+  const ts = document.createElement('span');
+  ts.className = 'pens-ts';
+  ts.textContent = nowStr();
+  line.appendChild(ts);
+  line.appendChild(document.createTextNode(texto));
+  log.appendChild(line);
+  // Mantém no máximo 80 linhas no log
+  while (log.children.length > 80) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+
+function showTyping() {
+  const wrap   = document.createElement('div');
+  wrap.className = 'msg selene';
+  wrap.id = 'typing-indicator';
+  const bubble = document.createElement('div');
+  bubble.className = 'typing-bubble';
+  bubble.innerHTML = '<div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>';
+  wrap.appendChild(bubble);
+  $chat.appendChild(wrap);
+  $chat.scrollTop = $chat.scrollHeight;
+}
+
+function removeTyping() {
+  const el = document.getElementById('typing-indicator');
+  if (el) el.remove();
+}
+
+// ═══════════════════════════════════════════════════════
+// ENVIAR MENSAGEM — via WebSocket
+// ═══════════════════════════════════════════════════════
+function sendMessage(text) {
+  if (!text.trim() || !state.connected || !state.ws) return;
+  appendMessage('user', text);
+  $input.value = '';
+  $input.style.height = 'auto';
+  $send.disabled = true;
+  showTyping();
+  state.ws.send(JSON.stringify({ action: 'chat', message: text }));
+}
+
+$input.addEventListener('input', () => {
+  $send.disabled = !state.connected || !$input.value.trim();
+  $input.style.height = 'auto';
+  $input.style.height = Math.min($input.scrollHeight, 100) + 'px';
+});
+$input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!$send.disabled) sendMessage($input.value); }
+});
+$send.addEventListener('click', () => sendMessage($input.value));
+
+// ═══════════════════════════════════════════════════════
+// CONTROLES DE SENSOR
+// ═══════════════════════════════════════════════════════
+function toggleSensor(sensor, active) {
+  if (!state.ws) return;
+  state.ws.send(JSON.stringify({ action: 'toggle_sensor', sensor, active }));
+}
+document.getElementById('btn-audio-on') .addEventListener('click', () => toggleSensor('audio', true));
+document.getElementById('btn-audio-off').addEventListener('click', () => toggleSensor('audio', false));
+document.getElementById('btn-video-on') .addEventListener('click', () => toggleSensor('video', true));
+document.getElementById('btn-video-off').addEventListener('click', () => toggleSensor('video', false));
+
+// ═══════════════════════════════════════════════════════
+// SHUTDOWN
+// ═══════════════════════════════════════════════════════
+$shutdown.addEventListener('click', () => {
+  if (!confirm('Desligar a Selene com segurança?')) return;
+  state.ws.send(JSON.stringify({ action: 'shutdown' }));
+});
+
+// ═══════════════════════════════════════════════════════
+// CAPTURA DUAL: STT (texto) + AudioContext (frequências)
+// ═══════════════════════════════════════════════════════
+
+function calcBands32(analyser, sampleRate) {
+  const data = new Float32Array(analyser.frequencyBinCount);
+  analyser.getFloatFrequencyData(data);
+  const N = data.length;
+  const bands = new Array(32).fill(0);
+  const logMin = Math.log10(50), logMax = Math.log10(8000);
+  for (let b = 0; b < 32; b++) {
+    const fLow  = Math.pow(10, logMin + (b / 32) * (logMax - logMin));
+    const fHigh = Math.pow(10, logMin + ((b + 1) / 32) * (logMax - logMin));
+    const iLow  = Math.max(0, Math.round(fLow  / (sampleRate / 2) * N));
+    const iHigh = Math.min(N - 1, Math.round(fHigh / (sampleRate / 2) * N));
+    let sum = 0, count = 0;
+    for (let i = iLow; i <= iHigh; i++) {
+      sum += Math.pow(10, data[i] / 20);
+      count++;
+    }
+    bands[b] = count > 0 ? Math.min(1, (sum / count) * 12) : 0;
+  }
+  return bands;
+}
+
+let audioCtx = null, analyserNode = null, lastBands = null;
+let lastTranscript = '';
+
+async function initAudioCapture() {
+  if (audioCtx) return true;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    audioCtx = new AudioContext({ sampleRate: 16000 });
+    const source = audioCtx.createMediaStreamSource(stream);
+    analyserNode = audioCtx.createAnalyser();
+    analyserNode.fftSize = 256;
+    source.connect(analyserNode);
+    return true;
+  } catch { return false; }
+}
+
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (SpeechRecognition) {
+  state.recognition = new SpeechRecognition();
+  state.recognition.lang = 'pt-BR';
+  state.recognition.interimResults = true;
+  state.recognition.continuous = false;
+
+  state.recognition.onresult = (e) => {
+    const t = Array.from(e.results).map(r => r[0].transcript).join('');
+    $input.value = t;
+    $send.disabled = !state.connected || !t.trim();
+    if (analyserNode) lastBands = calcBands32(analyserNode, audioCtx.sampleRate);
+  };
+
+  state.recognition.onend = () => {
+    state.recording = false; $mic.classList.remove('recording');
+    const text = $input.value.trim();
+    if (text && state.connected) {
+      lastTranscript = text;
+      setTimeout(() => {
+        if (!state.listenOn) sendMessage(text);
+        if (lastBands && state.ws?.readyState === WebSocket.OPEN) {
+          state.ws.send(JSON.stringify({ action: 'audio_learn', transcript: text, bands: lastBands }));
+        }
+        lastBands = null;
+      }, 300);
+    }
+    if (state.listenOn && state.connected) {
+      setTimeout(() => { try { state.recognition.start(); state.recording = true; } catch(_) {} }, 200);
+    }
+  };
+
+  state.recognition.onerror = (e) => {
+    state.recording = false; $mic.classList.remove('recording');
+    if (state.listenOn && state.connected) {
+      setTimeout(() => { try { state.recognition.start(); state.recording = true; } catch(_) {} }, 500);
+    }
+  };
+
+  $mic.addEventListener('click', async () => {
+    if (state.recording) {
+      state.recognition.stop();
+    } else {
+      await initAudioCapture();
+      state.recording = true;
+      $mic.classList.add('recording');
+      state.recognition.start();
+    }
+  });
+} else {
+  $mic.style.opacity = '0.4'; $mic.style.cursor = 'not-allowed';
+}
+
+// ═══════════════════════════════════════════════════════
+// CÂMERA — captura visual + visual_learn
+// Frame 32×16 px (512 pixels = N_NEURONS) → luminância BT.601 → visual_learn
+// ═══════════════════════════════════════════════════════
+const $vid = document.getElementById('btn-vid');
+let camOn = false;
+const VID_W = 32, VID_H = 16;
+let camStream = null, camVideo = null, camCanvas = null, camCtx2d = null, camIntervalId = null;
+
+async function startCamera() {
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    camVideo = document.createElement('video');
+    camVideo.srcObject = camStream;
+    camVideo.muted = true;
+    camVideo.playsInline = true;
+    await camVideo.play();
+    camCanvas = document.createElement('canvas');
+    camCanvas.width = VID_W; camCanvas.height = VID_H;
+    camCtx2d = camCanvas.getContext('2d');
+    camIntervalId = setInterval(() => {
+      if (!camOn || !state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+      camCtx2d.drawImage(camVideo, 0, 0, VID_W, VID_H);
+      const imgData = camCtx2d.getImageData(0, 0, VID_W, VID_H).data;
+      const pixels = [];
+      for (let i = 0; i < imgData.length; i += 4) {
+        pixels.push((0.299 * imgData[i] + 0.587 * imgData[i+1] + 0.114 * imgData[i+2]) / 255);
+      }
+      state.ws.send(JSON.stringify({
+        action: 'visual_learn',
+        pixels,
+        transcript: lastTranscript,
+      }));
+    }, 200);
+    return true;
+  } catch (e) { console.warn('[CAMERA]', e); return false; }
+}
+
+function stopCamera() {
+  if (camIntervalId) { clearInterval(camIntervalId); camIntervalId = null; }
+  if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
+  camVideo = null; camCanvas = null; camCtx2d = null;
+}
+
+$vid.addEventListener('click', async () => {
+  if (!state.ws || state.ws.readyState !== 1) return;
+  camOn = !camOn;
+  $vid.classList.toggle('cam-on', camOn);
+  state.ws.send(JSON.stringify({ action: 'toggle_sensor', sensor: 'video', active: camOn }));
+  if (camOn) { await startCamera(); }
+  else { stopCamera(); }
+});
+
+// ═══════════════════════════════════════════════════════
+// LISTEN — microfone sempre aberto (modo contínuo)
+// ═══════════════════════════════════════════════════════
+state.listenOn = false;
+document.getElementById('btn-listen').addEventListener('click', async () => {
+  if (!state.ws || state.ws.readyState !== 1) return;
+  state.listenOn = !state.listenOn;
+  document.getElementById('btn-listen').classList.toggle('listen-on', state.listenOn);
+  if (state.listenOn) {
+    const ok = await initAudioCapture();
+    if (ok && state.recognition) {
+      try { state.recognition.start(); state.recording = true; } catch(_) {}
+    }
+  } else {
+    if (state.recognition && state.recording) state.recognition.stop();
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// SCREEN SHARE — compartilha tela (vídeo + áudio)
+// ═══════════════════════════════════════════════════════
+let screenStream = null, screenVideo = null, screenCanvas = null, screenCtx2d = null;
+let screenFrameId = null, screenAudioCtx = null, screenAnalyser = null, screenAudioId = null;
+let screenOn = false;
+
+async function startScreenShare() {
+  try {
+    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    screenVideo = document.createElement('video');
+    screenVideo.srcObject = screenStream;
+    screenVideo.muted = true;
+    screenVideo.playsInline = true;
+    await screenVideo.play();
+    screenCanvas = document.createElement('canvas');
+    screenCanvas.width = VID_W; screenCanvas.height = VID_H;
+    screenCtx2d = screenCanvas.getContext('2d');
+    screenFrameId = setInterval(() => {
+      if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+      screenCtx2d.drawImage(screenVideo, 0, 0, VID_W, VID_H);
+      const imgData = screenCtx2d.getImageData(0, 0, VID_W, VID_H).data;
+      const pixels = [];
+      for (let i = 0; i < imgData.length; i += 4) {
+        pixels.push((0.299 * imgData[i] + 0.587 * imgData[i+1] + 0.114 * imgData[i+2]) / 255);
+      }
+      state.ws.send(JSON.stringify({ action: 'visual_learn', pixels, transcript: lastTranscript }));
+    }, 200);
+    const audioTracks = screenStream.getAudioTracks();
+    if (audioTracks.length > 0) {
+      screenAudioCtx = new AudioContext({ sampleRate: 16000 });
+      const src = screenAudioCtx.createMediaStreamSource(new MediaStream(audioTracks));
+      screenAnalyser = screenAudioCtx.createAnalyser();
+      screenAnalyser.fftSize = 256;
+      src.connect(screenAnalyser);
+      screenAudioId = setInterval(() => {
+        if (!state.ws || state.ws.readyState !== WebSocket.OPEN || !lastTranscript) return;
+        const bands = calcBands32(screenAnalyser, screenAudioCtx.sampleRate);
+        state.ws.send(JSON.stringify({ action: 'audio_learn', transcript: lastTranscript, bands }));
+      }, 500);
+    }
+    screenStream.getVideoTracks()[0].addEventListener('ended', stopScreenShare);
+    return true;
+  } catch (e) { console.warn('[SCREEN]', e); return false; }
+}
+
+function stopScreenShare() {
+  if (screenFrameId) { clearInterval(screenFrameId); screenFrameId = null; }
+  if (screenAudioId) { clearInterval(screenAudioId); screenAudioId = null; }
+  if (screenStream)  { screenStream.getTracks().forEach(t => t.stop()); screenStream = null; }
+  if (screenAudioCtx){ screenAudioCtx.close(); screenAudioCtx = null; }
+  screenVideo = null; screenCanvas = null; screenCtx2d = null; screenAnalyser = null;
+  screenOn = false;
+  document.getElementById('btn-screen').classList.remove('screen-on');
+}
+
+document.getElementById('btn-screen').addEventListener('click', async () => {
+  if (!state.ws || state.ws.readyState !== 1) return;
+  screenOn = !screenOn;
+  document.getElementById('btn-screen').classList.toggle('screen-on', screenOn);
+  if (screenOn) {
+    const ok = await startScreenShare();
+    if (!ok) { screenOn = false; document.getElementById('btn-screen').classList.remove('screen-on'); }
+  } else { stopScreenShare(); }
+});
+
+// ═══════════════════════════════════════════════════════
+// TTS — Voz da Selene (Web Speech API)
+// ═══════════════════════════════════════════════════════
+const VOZES_PREFERIDAS = [
+  'Microsoft Francisca Online (Natural)',
+  'Microsoft Thalita Online (Natural)',
+  'Google português do Brasil',
+  'Luciana',
+];
+let vozSelene = null;
+let ttsAtivo = true;
+
+function initTTS() {
+  const vozes = speechSynthesis.getVoices();
+  for (const nome of VOZES_PREFERIDAS) {
+    const v = vozes.find(v => v.name.includes(nome));
+    if (v) { vozSelene = v; break; }
+  }
+  if (!vozSelene) {
+    vozSelene = vozes.find(v => v.lang === 'pt-BR') || vozes.find(v => v.lang.startsWith('pt')) || null;
+  }
+}
+
+function falar(texto) {
+  if (!ttsAtivo || !texto || !window.speechSynthesis) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(texto);
+  if (vozSelene) u.voice = vozSelene;
+  u.lang = 'pt-BR'; u.pitch = 1.15; u.rate = 0.93; u.volume = 0.90;
+  speechSynthesis.speak(u);
+}
+
+if (typeof speechSynthesis !== 'undefined') {
+  speechSynthesis.onvoiceschanged = initTTS;
+  initTTS();
+}
+
+document.getElementById('btn-tts').addEventListener('click', () => {
+  ttsAtivo = !ttsAtivo;
+  document.getElementById('btn-tts').classList.toggle('muted', !ttsAtivo);
+  if (!ttsAtivo) speechSynthesis.cancel();
+});
+
+// ═══════════════════════════════════════════════════════
+// PREVENT ZOOM DOUBLE TAP (Android)
+// ═══════════════════════════════════════════════════════
+let lastTap = 0;
+document.addEventListener('touchend', e => {
+  const n = Date.now();
+  if (n - lastTap < 300) e.preventDefault();
+  lastTap = n;
+}, { passive: false });
+
+// ═══════════════════════════════════════════════════════
+// TRAINING SYSTEM
+// ═══════════════════════════════════════════════════════
+const PRESETS = {
+  rapido:  { epochs: 3,  batch: 64, ltp: 0.012, ltd: 0.003, sw: 1.15, lr: 0.002 },
+  padrao:  { epochs: 6,  batch: 32, ltp: 0.012, ltd: 0.003, sw: 1.15, lr: 0.001 },
+  profundo:{ epochs: 20, batch: 16, ltp: 0.018, ltd: 0.005, sw: 1.25, lr: 0.0005 },
+  custom: null,
+};
+
+document.querySelectorAll('.preset-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const p = PRESETS[btn.dataset.preset];
+    if (p) {
+      document.getElementById('p-epochs').value = p.epochs;
+      document.getElementById('p-batch').value  = p.batch;
+      document.getElementById('p-ltp').value    = p.ltp;
+      document.getElementById('p-ltd').value    = p.ltd;
+      document.getElementById('p-sw').value     = p.sw;
+      document.getElementById('p-lr').value     = p.lr;
+    }
+  });
+});
+
+const $trainModal    = document.getElementById('train-modal');
+const $btnTrainCancel= document.getElementById('btn-train-modal-cancel');
+const $btnTrainGo    = document.getElementById('btn-train-go');
+
+$btnTrain.addEventListener('click', () => {
+  if (!state.connected) { appendMessage('selene', '⚠️ Conecte-se à Selene antes de treinar.'); return; }
+  $trainModal.classList.remove('hidden');
+});
+$btnTrainCancel.addEventListener('click', () => $trainModal.classList.add('hidden'));
+$trainModal.addEventListener('click', e => { if (e.target === $trainModal) $trainModal.classList.add('hidden'); });
+
+let trainCardEl = null;
+
+function createTrainCard(epochs) {
+  const card = document.createElement('div');
+  card.className = 'train-card';
+  card.innerHTML = `
+    <div class="train-card-header">
+      <div class="train-card-title"><div class="train-spinner" id="tc-spinner"></div> TREINAMENTO STDP</div>
+      <div class="train-status-badge" id="tc-badge">INICIANDO</div>
+    </div>
+    <div class="train-progress-label"><span>PROGRESSO</span><span id="tc-pct">0%</span></div>
+    <div class="train-progress-track"><div class="train-progress-fill" id="tc-bar" style="width:0%"></div></div>
+    <div class="train-metrics">
+      <div class="train-metric-cell"><div class="train-metric-key">ÉPOCA</div><div class="train-metric-val tv-epoch" id="tc-epoch">0/${epochs}</div></div>
+      <div class="train-metric-cell"><div class="train-metric-key">LOSS</div><div class="train-metric-val tv-loss" id="tc-loss">--</div></div>
+      <div class="train-metric-cell"><div class="train-metric-key">ACC</div><div class="train-metric-val tv-acc" id="tc-acc">--</div></div>
+    </div>
+    <div class="train-log" id="tc-log"></div>
+    <button class="btn-abort" id="tc-abort">⛔ ABORTAR TREINAMENTO</button>
+  `;
+  $chat.appendChild(card);
+  $chat.scrollTop = $chat.scrollHeight;
+  trainCardEl = card;
+  document.getElementById('tc-abort').addEventListener('click', abortTraining);
+  return card;
+}
+
+function trainLog(msg, type='') {
+  const log = document.getElementById('tc-log');
+  if (!log) return;
+  const line = document.createElement('div');
+  line.className = `log-line ${type}`;
+  line.textContent = `[${new Date().toLocaleTimeString('pt-BR')}] ${msg}`;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+
+function updateTrainProgress(epoch, total, loss, acc) {
+  const pct = Math.round((epoch / total) * 100);
+  const bar = document.getElementById('tc-bar');
+  if (bar) bar.style.width = pct + '%';
+  const el = id => document.getElementById(id);
+  if (el('tc-pct'))   el('tc-pct').textContent   = pct + '%';
+  if (el('tc-epoch')) el('tc-epoch').textContent  = `${epoch}/${total}`;
+  if (el('tc-loss'))  el('tc-loss').textContent   = loss != null ? loss.toFixed(4) : '--';
+  if (el('tc-acc'))   el('tc-acc').textContent    = acc  != null ? (acc*100).toFixed(1)+'%' : '--';
+}
+
+function finishTrainCard(ok, msg) {
+  const spinner = document.getElementById('tc-spinner');
+  const badge   = document.getElementById('tc-badge');
+  const abort   = document.getElementById('tc-abort');
+  if (spinner) spinner.style.display = 'none';
+  if (badge)   { badge.textContent = ok ? 'CONCLUÍDO' : 'ERRO'; badge.className = `train-status-badge ${ok ? 'done' : 'err'}`; }
+  if (abort)   abort.classList.add('hidden');
+  if (ok) { const b = document.getElementById('tc-bar'); if (b) b.style.width = '100%'; }
+  trainLog(msg, ok ? 'ok' : 'err');
+  $btnTrain.classList.remove('training');
+  state.trainRunning = false;
+}
+
+function abortTraining() {
+  finishTrainCard(false, 'Treinamento abortado pelo usuário.');
+}
+
+// ═══════════════════════════════════════════════════════
+// NEURAL CANVAS — nuvem de partículas neuronais
+// ═══════════════════════════════════════════════════════
+const ncCanvas = document.getElementById('neural-canvas');
+const ncCtx    = ncCanvas.getContext('2d');
+const NC_PARTS = 90;
+let ncNeuro  = [];
+let ncLinks  = [];
+let ncActive = 0;
+
+function ncResize() {
+  const rect = ncCanvas.getBoundingClientRect();
+  const dpr  = window.devicePixelRatio || 1;
+  ncCanvas.width  = rect.width  * dpr;
+  ncCanvas.height = rect.height * dpr;
+  ncCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ncBuild(rect.width, rect.height);
+}
+
+function ncBuild(W, H) {
+  // Distribui partículas em forma de nuvem (elipse)
+  ncNeuro = Array.from({ length: NC_PARTS }, () => {
+    const angle = Math.random() * Math.PI * 2;
+    const r     = Math.cbrt(Math.random()); // cubo para distribuição uniforme
+    return {
+      x:   W / 2 + W * 0.43 * r * Math.cos(angle) * (0.75 + 0.25 * Math.random()),
+      y:   H / 2 + H * 0.38 * r * Math.sin(angle) * (0.75 + 0.25 * Math.random()),
+      sz:  0.8 + Math.random() * 1.5,
+      phi: Math.random() * Math.PI * 2,
+      active: false,
+    };
+  });
+
+  // Pré-calcula sinapses (vizinhos mais próximos)
+  const maxDist = Math.min(W, H) * 0.28;
+  ncLinks = [];
+  const seen = new Set();
+  for (let i = 0; i < ncNeuro.length; i++) {
+    const nearby = [];
+    for (let j = 0; j < ncNeuro.length; j++) {
+      if (i === j) continue;
+      const dx = ncNeuro[i].x - ncNeuro[j].x;
+      const dy = ncNeuro[i].y - ncNeuro[j].y;
+      const d  = Math.sqrt(dx * dx + dy * dy);
+      if (d < maxDist) nearby.push({ j, d });
+    }
+    nearby.sort((a, b) => a.d - b.d);
+    for (let k = 0; k < Math.min(2, nearby.length); k++) {
+      const key = i < nearby[k].j ? `${i}-${nearby[k].j}` : `${nearby[k].j}-${i}`;
+      if (!seen.has(key)) { seen.add(key); ncLinks.push([i, nearby[k].j]); }
+    }
+  }
+
+  ncUpdateActive(ncActive);
+}
+
+function ncUpdateActive(count) {
+  ncActive = count;
+  // Mapeia contagem real → fração visual (escala logarítmica suave)
+  const frac = count > 0 ? Math.min(0.55, Math.sqrt(count / 250)) : 0;
+  ncNeuro.forEach(n => { n.active = Math.random() < frac; });
+}
+
+function ncDraw() {
+  const W = ncCanvas.width  / (window.devicePixelRatio || 1);
+  const H = ncCanvas.height / (window.devicePixelRatio || 1);
+  const t = Date.now() * 0.001;
+
+  ncCtx.clearRect(0, 0, W, H);
+
+  // Sinapses (linhas ultra-finas)
+  for (const [i, j] of ncLinks) {
+    const a = ncNeuro[i], b = ncNeuro[j];
+    ncCtx.beginPath();
+    ncCtx.moveTo(a.x, a.y);
+    ncCtx.lineTo(b.x, b.y);
+    ncCtx.strokeStyle = (a.active || b.active)
+      ? 'rgba(200,45,55,0.17)'
+      : 'rgba(55,15,100,0.28)';
+    ncCtx.lineWidth = 0.35;
+    ncCtx.stroke();
+  }
+
+  // Neurônios
+  for (const n of ncNeuro) {
+    const pulse = 0.84 + 0.16 * Math.sin(t * 1.7 + n.phi);
+    if (n.active) {
+      // Brilho vermelho
+      const g = ncCtx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.sz * 5 * pulse);
+      g.addColorStop(0,    'rgba(255,80,80,0.92)');
+      g.addColorStop(0.42, 'rgba(220,25,45,0.32)');
+      g.addColorStop(1,    'rgba(200,15,35,0)');
+      ncCtx.fillStyle = g;
+      ncCtx.beginPath();
+      ncCtx.arc(n.x, n.y, n.sz * 5 * pulse, 0, Math.PI * 2);
+      ncCtx.fill();
+      // Núcleo
+      ncCtx.beginPath();
+      ncCtx.arc(n.x, n.y, n.sz * pulse, 0, Math.PI * 2);
+      ncCtx.fillStyle = 'rgba(255,155,155,0.95)';
+      ncCtx.fill();
+    } else {
+      // Roxo escuro inativo
+      ncCtx.beginPath();
+      ncCtx.arc(n.x, n.y, n.sz * 0.88, 0, Math.PI * 2);
+      ncCtx.fillStyle = 'rgba(75,18,115,0.62)';
+      ncCtx.fill();
+    }
+  }
+
+  requestAnimationFrame(ncDraw);
+}
+
+window.addEventListener('resize', ncResize);
+setTimeout(() => { ncResize(); ncDraw(); }, 100);
+
+$btnTrainGo.addEventListener('click', () => {
+  const params = {
+    epochs: parseInt(document.getElementById('p-epochs').value) || 6,
+    batch:  parseInt(document.getElementById('p-batch').value)  || 32,
+    ltp:    parseFloat(document.getElementById('p-ltp').value)  || 0.012,
+    ltd:    parseFloat(document.getElementById('p-ltd').value)  || 0.003,
+    sw:     parseFloat(document.getElementById('p-sw').value)   || 1.15,
+    lr:     parseFloat(document.getElementById('p-lr').value)   || 0.001,
+  };
+  $trainModal.classList.add('hidden');
+  state.trainRunning = true;
+  $btnTrain.classList.add('training');
+  createTrainCard(params.epochs);
+  trainLog(`Enviando para Selene: ${params.epochs} épocas · ltp=${params.ltp} · ltd=${params.ltd}`, 'ok');
+
+  // Envia via WebSocket (action: train)
+  state.ws.send(JSON.stringify({
+    action: 'train',
+    epochs: params.epochs,
+    batch_size: params.batch,
+    ltp: params.ltp,
+    ltd: params.ltd,
+    sw_neg: params.sw,
+    learning_rate: params.lr,
+  }));
+});
+</script>
+<script>
+// ═══════════════════════════════════════════════════════
+// PWA — Registra Service Worker para instalação na tela inicial
+// ═══════════════════════════════════════════════════════
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
+</script>
+</body>
+</html>
