@@ -1,6 +1,6 @@
 # Selene Brain V2 — Sistema Neural Bio-Inspirado
 
-> **Simulação de cérebro artificial em Rust com neurônios Izhikevich (7 tipos), precisão mista FP32/FP16/INT8/INT4, STDP assimétrico, 14 regiões cerebrais, neuroquímica dinâmica, templates cognitivos com loop de treinamento completo e aprendizado preditivo via motor de hipóteses.**
+> **Simulação de cérebro artificial em Rust com 17 tipos neuronais Izhikevich + biológicos, precisão mista FP32/FP16/INT8/INT4, STDP assimétrico, 14 regiões cerebrais, 11 neurotransmissores dinâmicos, 19 templates cognitivos e aprendizado preditivo via motor de hipóteses.**
 
 ---
 
@@ -10,19 +10,19 @@
 2. [Estado Atual](#estado-atual)
 3. [Arquitetura do Sistema](#arquitetura-do-sistema)
 4. [Núcleo Neural — synaptic_core](#núcleo-neural--synaptic_core)
-5. [Tipos de Neurônio Implementados](#tipos-de-neurônio-implementados)
-6. [Tipos de Neurônio Faltando](#tipos-de-neurônio-faltando)
+5. [Tipos de Neurônio (17 implementados)](#tipos-de-neurônio-17-implementados)
+6. [Tipos de Neurônio Ainda Faltando](#tipos-de-neurônio-ainda-faltando)
 7. [Precisão Mista](#precisão-mista)
 8. [Regiões Cerebrais (14)](#regiões-cerebrais)
-9. [Neuroquímica](#neuroquímica)
+9. [Neuroquímica (11 moléculas)](#neuroquímica-11-moléculas)
 10. [Sistema de Templates Cognitivos](#sistema-de-templates-cognitivos)
 11. [Aprendizado Coerente (CLS)](#aprendizado-coerente-cls)
 12. [Memória e Storage](#memória-e-storage)
 13. [Motor de Hipóteses](#motor-de-hipóteses)
 14. [Interface WebSocket](#interface-websocket)
-15. [Como Compilar e Rodar](#como-compilar-e-rodar)
-16. [Estrutura de Arquivos](#estrutura-de-arquivos)
-17. [Inconsistências Conhecidas](#inconsistências-conhecidas)
+15. [Interface Neural (Desktop/Mobile)](#interface-neural-desktopmobile)
+16. [Como Compilar e Rodar](#como-compilar-e-rodar)
+17. [Estrutura de Arquivos](#estrutura-de-arquivos)
 18. [Roadmap](#roadmap)
 
 ---
@@ -31,17 +31,17 @@
 
 Selene é uma simulação de sistema nervoso artificial que replica aspectos centrais da neurobiologia computacional moderna:
 
-- **7 tipos neuronais Izhikevich** com 7 camadas biológicas por neurônio (HH, canais iônicos, STP, Ca²⁺, STDP 3 fatores, ACh)
+- **17 tipos neuronais** (7 Izhikevich originais + 6 adicionais + 4 subtipos biológicos) com 7 camadas biológicas por neurônio
 - **Precisão mista** (FP32/FP16/INT8/INT4) por neurônio — economia de ~60% de memória
-- **STDP assimétrico** — LTP quando pré dispara ANTES de pós (causal), LTD quando pós dispara ANTES de pré (anti-causal)
+- **STDP assimétrico** — LTP quando pré dispara ANTES de pós (causal), LTD caso contrário
 - **14 regiões cerebrais** com composição neuronal específica por área
-- **Neuroquímica dinâmica** (dopamina, serotonina, noradrenalina, cortisol, acetilcolina, ocitocina, D1/D2)
+- **11 neurotransmissores dinâmicos** — dopamina, serotonina, noradrenalina, cortisol, acetilcolina, ocitocina, histamina, adenosina, endocanabinoide, D1, D2
 - **Memória hierárquica** L1→L4 (RAM → NVMe → SwapManager → SurrealDB)
 - **Interface WebSocket** em `ws://127.0.0.1:3030/selene`
-- **Ciclo de sono N1–N4** com consolidação, poda, REM semântico e backup
+- **Ciclo de sono N1–N4** com consolidação, poda, REM semântico e backup; acionável via interface
 - **Motor de hipóteses preditivo** com feedback STDP e aprendizado causal
 - **Linguagem bidirecional** com Broca (produção) e Wernicke (compreensão)
-- **19 templates cognitivos** com loop de treinamento completo (reconhecer → scaffoldar → usar → histórico de slots)
+- **19 templates cognitivos** com loop de treinamento completo
 - **PatternEngine** integrado ao loop neural (episódios visuais, auditivos e de pensamento)
 - **Plasticidade homeostática** (synaptic scaling, ~20% esparsidade alvo)
 - **Replay reverso no REM** (causalidade bidirecional hipocampal)
@@ -87,6 +87,7 @@ Sensores → Tálamo → Regiões Cerebrais → Neuroquímica → Memória → W
 | Grounding semântico dinâmico | ✅ acumula por co-ocorrência sensorial |
 | Narrativa nas respostas | ✅ estado emocional colore o vocabulário |
 | Ciclo sono N1–N4 com replay reverso | ✅ consolidação + REM causal |
+| Sono forçado via interface (30 min) | ✅ botão SONO 30MIN no header |
 | n_neurons dinâmico por RAM disponível | ✅ clamped [1024, 8192] |
 | Filtro Go/NoGo de fala | ✅ Selene decide quando falar |
 | GPU (wgpu, feature "gpu") | ✅ opcional, shader Izhikevich |
@@ -95,11 +96,15 @@ Sensores → Tálamo → Regiões Cerebrais → Neuroquímica → Memória → W
 | Integração multimodal AV | ✅ predição cruzada + Hebbian AV |
 | Amígdala BLA+CeA | ✅ one-shot learning, condicionamento |
 | Script de treinamento de templates | ✅ `treinar_templates.py` |
+| 17 tipos neuronais (Izhikevich + biológicos) | ✅ PS, PB, AC, BI, DAP, IIS, PV, SST, VIP, DA_N |
+| 11 neurotransmissores dinâmicos | ✅ + histamina, adenosina, endocanabinoide |
+| STP calibrado para todos 17 tipos | ✅ Tsodyks-Markram por tipo |
+| W_MAX alinhado entre módulos (2.5) | ✅ inter_lobe.rs = swap_manager.rs |
 
 ### Limitações conhecidas
-- Respostas ainda podem soar como "frases empilhadas" — o graph-walk semântico não tem gramática; templates mitigam mas ainda são jovens
+- Respostas podem soar como "frases empilhadas" — o graph-walk semântico não tem gramática; templates mitigam mas ainda são jovens
 - Doctests em `rl.rs` e `sensors/hardware.rs` precisam atualização
-- `W_MAX = 3.0` em `inter_lobe.rs` conflita com `PESO_MAX_CONCEITO = 2.5` em `swap_manager.rs` — ver [Inconsistências Conhecidas](#inconsistências-conhecidas)
+- `#[allow(dead_code)]` global em 31 arquivos suprime detecção automática de código morto
 
 ---
 
@@ -122,8 +127,8 @@ Sensores → Tálamo → Regiões Cerebrais → Neuroquímica → Memória → W
 │  └──────────────────────────────┬──────────────────────────────────────┘ │
 │                                 │                                         │
 │  ┌──────────────────────────────┴──────────────────────────────────────┐ │
-│  │              SYNAPTIC CORE — NeuronioHibrido (7 camadas)           │ │
-│  │   Izhikevich │ HH │ Canais Iônicos │ STP │ Ca²⁺ │ STDP-3f │ ACh   │ │
+│  │         SYNAPTIC CORE — NeuronioHibrido (7 camadas, 17 tipos)      │ │
+│  │   Izhikevich │ HhV3 │ Canais Iônicos │ STP │ Ca²⁺ │ STDP-3f │ ACh │ │
 │  └──────────────────────────────┬──────────────────────────────────────┘ │
 │                                 │                                         │
 │  ┌──────────────────────────────┴──────────────────────────────────────┐ │
@@ -146,10 +151,10 @@ Cada neurônio em Selene é um `NeuronioHibrido` com 7 camadas biológicas:
 
 | Camada | Mecanismo | Referência |
 |--------|-----------|-----------|
-| 1 | Izhikevich (todos os tipos) | Izhikevich 2003 |
-| 2 | Hodgkin-Huxley + I_T Ca²⁺ (TC e RZ) | Destexhe et al. 1994 |
-| 3 | Canais iônicos: I_NaP, I_M, I_A, I_BK | Adams 1982, Connor 1971 |
-| 4 | Short-Term Plasticity (Tsodyks-Markram) | Tsodyks & Markram 1997 |
+| 1 | Izhikevich (todos os 17 tipos) | Izhikevich 2003 |
+| 2 | Hodgkin-Huxley (HhV3) + I_T Ca²⁺ (TC e RZ) | Destexhe et al. 1994 |
+| 3 | Canais iônicos: I_NaP, I_M, I_A, I_T, I_BK | Adams 1982, Connor 1971 |
+| 4 | Short-Term Plasticity (Tsodyks-Markram, calibrado por tipo) | Tsodyks & Markram 1997 |
 | 5 | Ca²⁺ dual: AHP (SK) + NMDA (LTP trigger) | — |
 | 6 | STDP 3 fatores (dopamina como gate) | Frémaux & Gerstner 2016 |
 | 7 | ACh como 4º neuromodulador | — |
@@ -174,68 +179,76 @@ Cada neurônio em Selene é um `NeuronioHibrido` com 7 camadas biológicas:
 
 ---
 
-## Tipos de Neurônio Implementados
+## Tipos de Neurônio (17 implementados)
 
-**7 tipos Izhikevich** definidos em `src/synaptic_core.rs`:
+Definidos em `src/synaptic_core.rs` com parâmetros Izhikevich (a, b, c, d), condutâncias iônicas (g_nap, g_m, g_a, g_t, g_bk) e STP específicos por tipo.
+
+### Tipos Originais (7)
 
 | Tipo | Nome Completo | Comportamento | Onde Predomina | HH |
 |------|--------------|---------------|----------------|-----|
 | **RS** | Regular Spiking | Disparo tônico sustentado, adaptação lenta | Córtex, frontal, hipocampo | ❌ |
 | **IB** | Intrinsic Bursting | Burst inicial seguido de regular | ACC conflict, amígdala BLA | ❌ |
-| **CH** | Chattering | Bursts rápidos repetitivos (V2/V3) | Wernicke, temporal, visual | ❌ |
+| **CH** | Chattering | Bursts rápidos repetitivos | Wernicke, temporal, visual V2/V3 | ❌ |
 | **FS** | Fast Spiking | Interneurônio GABAérgico inibitório rápido | Broca, límbico, ACC regulation | ❌ |
 | **LT** | Low-Threshold | Interneurônio limiar baixo, disparo suave | Tálamo sensorial, inibidor | ❌ |
 | **TC** | Thalamo-Cortical | Burst (sono) ↔ tônico (vigília) | LGN, MGN, VPM, NRT | ✅ |
 | **RZ** | Resonator/Purkinje | Ressoa em frequências, rebound bursting | Cerebelo, giro dentado | ✅ |
 
-TC e RZ recebem automaticamente `ModeloDinamico::IzhikevichHH` — Hodgkin-Huxley completo com I_T Ca²⁺.
+### Tipos Izhikevich Adicionais (6)
+
+| Tipo | Nome Completo | Comportamento | Papel Funcional |
+|------|--------------|---------------|-----------------|
+| **PS** | Phasic Spiking | Dispara APENAS no onset do estímulo | Detecção de mudança, córtex sensorial L4 |
+| **PB** | Phasic Bursting | Burst único na borda de subida | Sinalização de novidade sensorial |
+| **AC** | Accommodating | Adapta progressivamente até silêncio total | Habituação local (barril cortical, colículo) |
+| **BI** | Bistable | Dois estados estáveis (ON/OFF) com histerese | Working memory de curto prazo |
+| **DAP** | Depolarizing Afterpotential | Rebound despolarizante após spike | Trato olfatório, interneurônios hipocampais |
+| **IIS** | Inhibition-Induced Spiking | Dispara quando a inibição é REMOVIDA | Rebound burst talâmico, desinibição basal |
+
+### Subtipos Biológicos (4)
+
+| Tipo | Nome Completo | Comportamento | Papel Funcional |
+|------|--------------|---------------|-----------------|
+| **PV** | Parvalbumin | FS de alta precisão, Ca²⁺-buffered | Ritmo gamma (40 Hz), inibição perisomal |
+| **SST** | Somatostatin (Martinotti) | Adapting, facilitante, inibição dendrítica | Controla janela de plasticidade apical |
+| **VIP** | VIP interneuron | Desinibidor — inibe SST e PV | Gating atencional top-down, modulação ACh |
+| **DA_N** | Dopaminergic neuron | Pacemaker lento ~4 Hz, AHP prolongado | VTA e SNc — fonte real do sinal dopaminérgico |
+
+> TC e RZ usam `ModeloDinamico::IzhikevichHH` (HhV3 completo com I_T Ca²⁺). Os demais usam `ModeloDinamico::Izhikevich`.
 
 ---
 
-## Tipos de Neurônio Faltando
+## Tipos de Neurônio Ainda Faltando
 
-Izhikevich (2003) catalogou ~20 tipos funcionais. Biologicamente, um cérebro real possui dezenas de subtipos distintos. Abaixo o que ainda falta:
-
-### Tipos Izhikevich Faltando (~13 tipos)
+### Tipos Izhikevich Restantes (~7 tipos)
 
 | Tipo | Comportamento | Importância |
 |------|--------------|-------------|
-| **Phasic Spiking** | Dispara apenas no onset do estímulo | Detecção de mudança |
-| **Phasic Bursting** | Burst único na borda de subida | Eventos sensoriais |
-| **Accommodating** | Adapta e para completamente | Habituação local |
-| **Inhibition-Induced Spiking** | Dispara com remoção de inibição | Rebound disinibição |
 | **Inhibition-Induced Bursting** | Burst por remoção de inibição | Tálamo wake-up |
-| **Bistable** | Dois estados estáveis (ON/OFF) | Memória de trabalho |
-| **DAP** | Depolarizing Afterpotential | Persistência de disparo |
-| **Subthreshold Oscillations** | Oscila sem disparar | Ritmo theta/gamma |
-| **Resonator (puro)** | Responde seletivo a frequência | Seletividade espectral |
-| **Integrator** | Acumula até threshold (Class 1) | Decisão lenta |
+| **Subthreshold Oscillations** | Oscila sem disparar | Ritmo theta/gamma sub-limiar |
+| **Resonator puro (Class 2)** | Responde seletivo a frequência | Seletividade espectral |
+| **Integrator (Class 1)** | Acumula até threshold | Decisão lenta |
 | **Mixed Mode** | Alterna tônico e burst | Plasticidade dinâmica |
-| **Spike Latency** | Atrasa 1º spike proporcionalmente | Codificação temporal |
+| **Spike Latency** | Atraso proporcional no 1º spike | Codificação temporal |
 | **Class 2 Excitability** | Curva f-I com descontinuidade | Bifurcação Hopf |
 
 ### Tipos Biológicos Estruturalmente Distintos Faltando
 
-| Tipo | Localização Real | O que adicionaria |
-|------|-----------------|-------------------|
-| **Neurônios dopaminérgicos (VTA/SNc)** | Mesencéfalo | Fonte real do sinal DA (hoje DA é modulador externo) |
+| Tipo | Localização | O que adicionaria |
+|------|------------|-------------------|
 | **Neurônios serotonérgicos (Raphe)** | Tronco encefálico | Fonte real do 5HT |
 | **Neurônios noradrenérgicos (LC)** | Locus Coeruleus | Fonte real do NA/arousal |
 | **Neurônios colinérgicos (BF)** | Prosencéfalo basal | Fonte real da ACh/plasticidade |
 | **Células granulares (cerebelo)** | Cerebelo | 50% de todos neurônios do cérebro |
 | **Células de Purkinje completas** | Cerebelo | Dendrito extenso com 200k sinapses |
-| **Interneurônios PV (parvalbumin)** | Córtex global | Subdivisão do FS atual — ritmo gamma |
-| **Interneurônios SST (somatostatin)** | Córtex global | Martinotti — inibição dendrítica |
-| **Interneurônios VIP** | Córtex global | Desinibição (inibem os inibidores) |
 | **Células de lugar (Place cells)** | Hipocampo CA1 | Navegação espacial e episódica |
 | **Células de grade (Grid cells)** | Entorhinal cortex | Mapa cognitivo do espaço |
 | **Neurônios de Von Economo** | ACC, ínsula | Cognição social, autoconsciência |
-| **Células mitrais** | Bulbo olfatório | Olfato (não implementado) |
-| **Neurônios motores alfa** | Medula espinhal | Controle motor real |
 | **Células estreladas espinhosas** | Córtex sensorial L4 | Input talâmico cortical |
 | **Pirâmides L5 (corticospinais)** | Córtex motor | Axônio longo, saída motora |
 
-**Resumo:** Selene implementa 7/~20 tipos Izhikevich funcionais e ~5/~30 classes biológicas estruturalmente distintas relevantes.
+**Resumo:** Selene implementa 17/~27 tipos funcionais catalogados e ~9/~30 classes biológicas relevantes.
 
 ---
 
@@ -315,24 +328,28 @@ Distribuição por região otimizada para economizar ~60% de memória vs FP32 pu
 
 ---
 
-## Neuroquímica
+## Neuroquímica (11 moléculas)
 
-| Neurotransmissor | Função | Range |
-|------------------|--------|-------|
-| Dopamina | Recompensa, RPE, motivação, D1/D2 | 0.0–2.0 |
-| Serotonina | Humor, regulação social, latência calosa | 0.0–1.5 |
-| Noradrenalina | Atenção, arousal, LC drive | 0.0–1.5 |
-| Cortisol | Estresse, memória de medo, threshold Na⁺ | 0.0–1.0 |
-| Acetilcolina | Aprendizado, bloqueia I_M, amplifica Ca²⁺ NMDA | 0.0–1.5 |
-| Ocitocina | Vínculo social, trust; cresce com RPE > 0 | 0.0–1.0 |
-| D1 (receptor) | Alta dopamina → excitação PFC | 0.0–1.0 |
-| D2 (receptor) | Baixa dopamina → filtragem estriatal | 0.0–1.0 |
+| Neurotransmissor | Função | Range | Dinâmica |
+|------------------|--------|-------|----------|
+| **Dopamina** | Recompensa, RPE, motivação | 0.0–2.0 | RAM usage → target |
+| **Serotonina** | Humor, regulação social | 0.0–1.5 | Jitter + context switches |
+| **Noradrenalina** | Atenção, arousal | 0.0–1.6 | CPU temp → target |
+| **Cortisol** | Estresse, threshold Na⁺ | 0.0–1.0 | Delta temp |
+| **Acetilcolina** | Aprendizado, atenção, bloqueia I_M | 0.0–1.2 | Arousal − adenosina × 0.3 |
+| **Ocitocina** | Vínculo social, trust | 0.0–1.5 | Cresce com RPE > 0 |
+| **Histamina** | Arousal, vigília, anti-sono | 0.1–1.2 | Inversamente à adenosina |
+| **Adenosina** | Pressão de sono acumulada | 0.0–1.0 | Sobe com carga (jitter + RAM) |
+| **Endocanabinoide** | Homeostase sináptica, supressão retrógrada | 0.0–1.0 | Dopamina × 0.4 + cortisol × 0.3 |
+| **D1 (receptor)** | Alta dopamina → excitação PFC | 0.0–1.0 | Sigmoide: satura acima dopa ≈ 1.0 |
+| **D2 (receptor)** | Baixa dopamina → filtragem estriatal | 0.0–1.0 | Alta afinidade, ativa com dopa baixa |
 
 ```
 RPE > 0.2   → dopamina↑ → D1↑ → PFC boost + oxytocina↑
 RPE < −0.2  → cortisol↑ → ACC.registrar_rejeicao() + social_pain↑
 conflito > 0.45 → ACC → noradrenaline_drive() → NA↑ → atenção↑
-rACC ativo  → amygdala_inhibition() → BLA↓
+adenosina alta → histamina↓ + ACh↓ → sonolência
+dopamina alta → endocanabinoide↑ → supressão de excitação excessiva
 ```
 
 ---
@@ -467,6 +484,8 @@ Interface mobile: `http://127.0.0.1:3030/mobile`
 | `learn_frase` | `{"action":"learn_frase","words":["eu","sinto"]}` | Padrão de frase |
 | `train_template` | `{"type":"train_template","nome":"...","slots":{...},"validado":true}` | Treino manual de template |
 | `reward` | `{"type":"reward","value":0.5}` | Sinal de recompensa |
+| `force_sleep` | `{"action":"force_sleep","duration_min":30}` | Força ciclo de sono por N min |
+| `toggle_sensor` | `{"action":"toggle_sensor","sensor":"video","active":true}` | Liga/desliga câmera ou microfone |
 | `ping` | `{"type":"ping"}` | Heartbeat |
 
 ### Mensagens de Saída
@@ -480,6 +499,30 @@ Interface mobile: `http://127.0.0.1:3030/mobile`
 | `sono` / `despertar` | Início e fim do ciclo de sono |
 | `template_trained` | Confirmação de treinamento de template |
 | `voz_params` | Parâmetros de síntese de voz (formantes) |
+| `sensor_ack` | Confirmação de toggle de sensor |
+
+---
+
+## Interface Neural (Desktop/Mobile)
+
+### Desktop (`neural_interface.html`)
+
+Acessar em `http://127.0.0.1:3030/`
+
+| Elemento | Função |
+|----------|--------|
+| **Grafo Mental** | D3 force-directed — nós = conceitos, arestas = associações. Nós pequenos (~2–4px) para melhor visualização de redes densas |
+| **Constelação Neural** | Canvas 2D — 55 neurônios primitivos (35 fonemas + 20 visuais) com pulsos em tempo real |
+| **Métricas** | Neuroquímica, ondas cerebrais, espectro visual, personalidade, step |
+| **Chat** | Área de diálogo com feedback positivo/negativo por mensagem |
+| **Painel de Visão** | Feed ao vivo da webcam (funciona sem WebSocket) + overlay 64×32px do que a Selene processa |
+| **Botão SONO 30MIN** | Força ciclo de consolidação N1–N4 por 30 minutos; despertar automático ao fim |
+| **Botão CÂMERA** | Liga webcam sem precisar estar conectado |
+| **Modo Ambiente** | Selene ouve tudo e foca quando relevante (score ≥ 0.40) |
+
+### Mobile (`selene_mobile_ui.html`)
+
+Acessar em `http://127.0.0.1:3030/mobile`
 
 ---
 
@@ -528,10 +571,10 @@ cargo run --bin system_test --release
 Selene_Brain_2.0/
 ├── src/
 │   ├── main.rs                          Loop principal (~200Hz adaptivo)
-│   ├── neurochem.rs                     Neuroquímica (8 moléculas)
+│   ├── neurochem.rs                     Neuroquímica (11 moléculas)
 │   ├── config.rs                        Configuração global
 │   ├── sleep_cycle.rs                   Ciclo de sono N1–N4 + replay reverso
-│   ├── synaptic_core.rs                 NeuronioHibrido (7 camadas), 7 tipos
+│   ├── synaptic_core.rs                 NeuronioHibrido (7 camadas), 17 tipos
 │   ├── brain_zones/
 │   │   ├── frontal.rs                   Working memory, decisão
 │   │   ├── parietal.rs                  Atenção, integração sensorial
@@ -559,7 +602,7 @@ Selene_Brain_2.0/
 │   │   ├── attention.rs                 Atenção seletiva
 │   │   └── curriculo.rs                 Currículo fonético PT-BR
 │   ├── storage/
-│   │   ├── swap_manager.rs              Grafo causal + TemplateStore + LRU
+│   │   ├── swap_manager.rs              Grafo causal + TemplateStore + LRU (W_MAX=2.5)
 │   │   ├── memory_graph.rs              Grafo sináptico persistente
 │   │   ├── checkpoint.rs                Checkpoints periódicos
 │   │   └── episodic.rs                  Memória episódica
@@ -574,7 +617,7 @@ Selene_Brain_2.0/
 │   ├── interoception/                   Estados internos homeostáticos
 │   ├── gpu/                             Feature "gpu" (wgpu 0.19)
 │   └── websocket/
-│       ├── server.rs                    Handler WebSocket, chat, templates
+│       ├── server.rs                    Handler WebSocket, chat, templates, sono
 │       └── bridge.rs                    BrainState, trigrama_cache, LRU
 ├── treinar_templates.py                 Script de treinamento offline
 ├── neural_interface.html                Interface desktop
@@ -585,33 +628,17 @@ Selene_Brain_2.0/
 
 ---
 
-## Inconsistências Conhecidas
-
-Auditoria completa realizada em 2026-04-20. Problemas identificados e priorizados:
-
-| Severidade | Arquivo | Linha | Problema |
-|-----------|---------|-------|---------|
-| **ALTA** | `learning/inter_lobe.rs` | ~27 | `W_MAX = 3.0` conflita com `PESO_MAX_CONCEITO = 2.5` em `swap_manager.rs` — pesos inter-lobo podem ultrapassar o limite conceitual |
-| **ALTA** | `synaptic_core.rs` | ~224 e ~473 | `HH::integrar()` e `HhV3::integrar()` são idênticos — 250+ linhas duplicadas |
-| **MÉDIA** | 31 arquivos | topo | `#[allow(dead_code)]` global suprime detecção automática de código morto |
-| **MÉDIA** | `learning/chunking.rs` | ~126 | `para_conexao_sinaptica()` é síncrono mas output precisa de persistência async |
-| **MÉDIA** | `websocket/server.rs` | ~92 | Falha silenciosa em escrita de log JSONL (`let _ = writeln!`) |
-| **BAIXA** | `bin/intensive_benchmark.rs` | 282,319,439,532,545,608,698 | Variáveis de estatística calculadas mas nunca lidas |
-| **BAIXA** | `bin/test_neuron_v3.rs` | 30 | Função `neuronio_rs()` nunca chamada |
-| **BAIXA** | `rl.rs`, `sensors/hardware.rs` | — | 6 doctests desatualizados |
-
----
-
 ## Roadmap
 
 ### V2.x (implementado)
-- [x] 7 tipos neuronais Izhikevich com 7 camadas biológicas
+- [x] 17 tipos neuronais (7 originais + 6 Izhikevich adicionais + 4 subtipos biológicos)
 - [x] Precisão mista FP32/FP16/INT8/INT4
 - [x] STDP assimétrico (LTP causal + LTD anti-causal)
 - [x] Plasticidade homeostática (synaptic scaling)
 - [x] Sparse coding L1 (~20% esparsidade)
 - [x] 14 regiões cerebrais
-- [x] Neuroquímica dinâmica (8 moléculas)
+- [x] 11 neurotransmissores dinâmicos (+ histamina, adenosina, endocanabinoide)
+- [x] STP Tsodyks-Markram calibrado por tipo neuronal
 - [x] ACC, OFC, Broca/Wernicke, Amígdala BLA+CeA
 - [x] One-shot learning, graph versioning, embeddings 32d
 - [x] Tálamo (LGN/MGN/VPM/NRT), Gânglios da Base (D1/D2 Go/NoGo)
@@ -625,16 +652,18 @@ Auditoria completa realizada em 2026-04-20. Problemas identificados e priorizado
 - [x] n_neurons dinâmico por RAM disponível
 - [x] Script de treinamento de templates (`treinar_templates.py`)
 - [x] GPU opcional (wgpu 0.19)
+- [x] Botão SONO 30MIN na interface neural com despertar automático
+- [x] Webcam funciona sem WebSocket (modo offline)
+- [x] W_MAX alinhado entre todos os módulos (2.5)
+- [x] Duplicação HH/HhV3 eliminada — apenas HhV3 ativo
 
-### V4 (próximo)
-- [ ] Unificar `HH` e `HhV3` em estrutura única — eliminar duplicação
-- [ ] Centralizar `W_MAX` / `PESO_MAX_CONCEITO` em `config.rs`
-- [ ] Adicionar tipos Izhikevich faltantes: Phasic, Accommodating, Bistable
-- [ ] Neurônios dopaminérgicos/serotonérgicos como fonte real (não moduladores externos)
-- [ ] Interneurônios PV/SST/VIP como subdivisões do FS/LT atual
-- [ ] Migração completa brain_zones para neurônio V3
+### V3 (próximo)
+- [ ] Migração completa brain_zones para neurônio V3 (usar novos tipos PV/SST/VIP/DA_N nas regiões)
+- [ ] Neurônios serotonérgicos/noradrenérgicos como fonte real de 5HT/NA
+- [ ] Tipos Izhikevich restantes: Mixed Mode, Subthreshold Oscillations, Integrator
 - [ ] Correção dos doctests desatualizados (rl.rs, hardware.rs)
-- [ ] Botão "Iniciar Sono" na interface neural
+- [ ] Centralizar W_MAX / PESO_MAX_CONCEITO em `config.rs`
+- [ ] Resolver `#[allow(dead_code)]` global — auditar código morto real
 
 ---
 
