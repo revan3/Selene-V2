@@ -85,7 +85,7 @@ impl Hipotese {
 
     /// Hipótese confiável: ≥10 testes e taxa > 65%.
     pub fn e_confiavel(&self) -> bool {
-        self.n_testes >= 10 && self.taxa_acerto() > 0.65
+        self.n_testes >= 5 && self.taxa_acerto() > 0.65
     }
 
     /// Hipótese descartável: ≥5 testes e taxa < 20%.

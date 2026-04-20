@@ -220,7 +220,7 @@ impl MemoryTierV2 {
         let esquecidas: Vec<_> = self.grafo_completo.conexoes
             .values()
             .filter(|c| {
-                c.ultimo_uso.map(|u| u < current_time() - 86400.0).unwrap_or(false)
+                c.ultimo_uso.map(|u| u < current_time() - 86400.0).unwrap_or(true)
             })
             .cloned()
             .collect();

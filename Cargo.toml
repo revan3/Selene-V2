@@ -29,6 +29,7 @@ futures-util = "0.3"
 futures = "0.3"
 sysinfo = "0.30"
 nokhwa = { version = "0.10", features = ["input-native"] }   # input-native = WinRT no Windows
+base64 = "0.22"
 # Mantemos o windows APENAS para timeBeginPeriod/timeEndPeriod
 windows = { version = "0.52", features = ["Win32_Media"] }
 

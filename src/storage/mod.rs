@@ -21,6 +21,7 @@ pub mod tipos;
 pub mod spike_store;
 pub mod episodic;
 pub mod ondas;
+pub mod checkpoint;
 
 // Re-exportações
 pub use memory_graph::ConexaoSinaptica;
@@ -501,36 +502,54 @@ impl From<NeuralEnactiveMemory> for NeuralEnactiveMemoryV2 {
 /// Contém vocabulário (palavra→valência), grafo de associações e padrões de frase.
 /// Este arquivo é o "cérebro linguístico" — independente do estado neural (RocksDB).
 pub fn exportar_linguagem(
-    vocabulario: &HashMap<String, f32>,
-    associacoes: &HashMap<String, Vec<(String, f32)>>,
-    frases: &[Vec<String>],
+    vocabulario:     &HashMap<String, f32>,
+    associacoes:     &HashMap<String, Vec<(String, f32)>>,
+    frases:          &[Vec<String>],
+    grafo_causal:    &HashMap<String, Vec<(String, f32)>>,
+    grounding:       &HashMap<String, f32>,
+    emocao_palavras: &HashMap<String, f32>,
+    auto_learn:      &HashMap<String, u32>,
+    neural_context:  &[String],
 ) -> String {
     let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
     let n_associacoes: usize = associacoes.values().map(|v| v.len()).sum();
+    let n_causal: usize = grafo_causal.values().map(|v| v.len()).sum();
 
-    // Converte associacoes para formato JSON [[w2, peso], ...]
-    let assoc_json: HashMap<&String, Vec<serde_json::Value>> = associacoes.iter()
-        .map(|(w1, vizinhos)| {
-            let pares: Vec<serde_json::Value> = vizinhos.iter()
-                .map(|(w2, peso)| serde_json::json!([w2, peso]))
-                .collect();
-            (w1, pares)
-        })
-        .collect();
+    fn assoc_to_json(
+        mapa: &HashMap<String, Vec<(String, f32)>>,
+    ) -> HashMap<&String, Vec<serde_json::Value>> {
+        mapa.iter()
+            .map(|(w1, vizinhos)| {
+                let pares = vizinhos.iter()
+                    .map(|(w2, peso)| serde_json::json!([w2, peso]))
+                    .collect::<Vec<_>>();
+                (w1, pares)
+            })
+            .collect()
+    }
+
+    let assoc_json   = assoc_to_json(associacoes);
+    let causal_json  = assoc_to_json(grafo_causal);
 
     let payload = serde_json::json!({
         "selene_linguagem_v1": {
             "metadata": {
-                "versao":          "1.0",
+                "versao":          "2.0",
                 "criado_em":       timestamp,
                 "n_palavras":      vocabulario.len(),
                 "n_associacoes":   n_associacoes,
+                "n_causal":        n_causal,
                 "n_frases_padrao": frases.len(),
                 "descricao":       "Modelo de linguagem emergente da Selene Brain 2.0"
             },
-            "vocabulario":    vocabulario,
-            "associacoes":    assoc_json,
-            "frases_padrao":  frases
+            "vocabulario":       vocabulario,
+            "associacoes":       assoc_json,
+            "frases_padrao":     frases,
+            "grafo_causal":      causal_json,
+            "grounding":         grounding,
+            "emocao_palavras":   emocao_palavras,
+            "auto_learn":        auto_learn,
+            "neural_context":    neural_context,
         }
     });
 

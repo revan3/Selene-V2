@@ -996,10 +996,12 @@ fn test_grounding_rem_replay() -> usize {
     let mut bs = BrainState::new(swap, &cfg, flags);
 
     // Pré-popula grafo com associações
-    bs.grafo_associacoes.insert("amor".to_string(), vec![
-        ("carinho".to_string(), 0.5),
-    ]);
-    bs.grafo_associacoes.insert("carinho".to_string(), vec![]);
+    if let Ok(mut sw) = bs.swap_manager.try_lock() {
+        sw.importar_causal(vec![
+            ("amor".to_string(), "carinho".to_string(), 0.5),
+        ]);
+        sw.aprender_conceito("carinho", 0.3);
+    }
 
     // Injeta evento episódico rico com padrão visual ativo
     let visual_ativo: [u64; 8] = [0xAAAA_AAAA_AAAA_AAAAu64; 8];
