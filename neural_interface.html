@@ -141,15 +141,21 @@ header::after {
 #eye-live {
   width: 100%;
   flex: 1;
+  min-height: 0;
   object-fit: cover;
   display: none;
   background: #000;
 }
 #eye-processed {
-  width: 100%;
+  position: absolute;
+  bottom: 52px; right: 4px;  /* sobreposto no canto inf-dir do painel */
+  width: 64px; height: 32px; /* 32×16 escalado 2× */
   image-rendering: pixelated;
   display: none;
   background: #000;
+  border: 1px solid rgba(0,212,255,0.3);
+  border-radius: 3px;
+  opacity: 0.85;
 }
 .eye-off-msg {
   flex: 1;
@@ -683,6 +689,12 @@ header::after {
       </svg>
       CONECTAR
     </button>
+    <button class="hbtn" id="btn-sleep" style="display:none;border-color:rgba(123,79,255,0.5);color:var(--accent2)" title="Iniciar sono de consolidação por 30 minutos">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+      SONO 30MIN
+    </button>
     <button class="hbtn danger" id="btn-shutdown" style="display:none">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
@@ -1044,7 +1056,7 @@ header::after {
   window.addEventListener('resize', fit);
   new ResizeObserver(fit).observe(panel);
 
-  function rN(d) { return 2 + Math.sqrt(Math.max(0, d.weight)) * 14; }
+  function rN(d) { return 1.5 + Math.sqrt(Math.max(0, d.weight)) * 5; }
   function cN(d) {
     if (d._flash) return '#f9a8d4';
     return d.weight > 0.012 ? '#a78bfa' : '#38bdf8';
@@ -1455,6 +1467,7 @@ function setConnected(v) {
   lbl.textContent = v ? `ONLINE · ${state.host}` : 'DESCONECTADO';
   document.getElementById('btn-send').disabled = !v;
   document.getElementById('btn-shutdown').style.display = v ? 'flex' : 'none';
+  document.getElementById('btn-sleep').style.display = v ? 'flex' : 'none';
 }
 
 function schedPing() {
@@ -2129,18 +2142,19 @@ let _eyeFps = 0, _eyeFpsT = performance.now();
 
 async function startCamera() {
   try {
-    camStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
 
     // Feed ao vivo no painel esquerdo
     const eyeLive = document.getElementById('eye-live');
-    eyeLive.srcObject = camStream;
-    // Exibe o vídeo assim que o stream tiver dimensões reais
-    eyeLive.onloadedmetadata = () => {
+    // Set handler BEFORE assigning srcObject to avoid race condition
+    eyeLive.addEventListener('loadedmetadata', function onMeta() {
+      eyeLive.removeEventListener('loadedmetadata', onMeta);
       document.getElementById('eye-off').style.display = 'none';
       eyeLive.style.display = 'block';
       document.getElementById('eye-processed').style.display = 'block';
-    };
-    eyeLive.play().catch(() => {});
+      eyeLive.play().catch(() => {});
+    });
+    eyeLive.srcObject = camStream;
 
     // Canvas de processamento interno (32×16)
     camVideo = eyeLive;
@@ -2205,13 +2219,13 @@ document.getElementById('btn-vid').addEventListener('click', async () => {
       state.ws.send(JSON.stringify({ action: 'toggle_sensor', sensor: 'video', active: false }));
     return;
   }
-  // Ligar requer WebSocket e não pode estar já iniciando
+  // Ligar — câmera funciona com ou sem WebSocket (mostra feed mesmo offline)
   if (_camStarting) return;
-  if (!state.ws || state.ws.readyState !== 1) return;
   _camStarting = true;
   state.camOn = true;
   document.getElementById('btn-vid').classList.add('cam-on');
-  state.ws.send(JSON.stringify({ action: 'toggle_sensor', sensor: 'video', active: true }));
+  if (state.ws?.readyState === 1)
+    state.ws.send(JSON.stringify({ action: 'toggle_sensor', sensor: 'video', active: true }));
   const ok = await startCamera();
   _camStarting = false;
   if (!ok) {
@@ -2487,6 +2501,24 @@ document.getElementById('btn-tts').addEventListener('click', () => {
   ttsAtivo = !ttsAtivo;
   document.getElementById('btn-tts').classList.toggle('muted', !ttsAtivo);
   if (!ttsAtivo) speechSynthesis.cancel();
+});
+
+// ════════════════════════════════════════════════
+// SONO FORÇADO
+// ════════════════════════════════════════════════
+document.getElementById('btn-sleep').addEventListener('click', () => {
+  if (!state.ws || state.ws.readyState !== 1) return;
+  const btn = document.getElementById('btn-sleep');
+  // Toggle: se Selene já está dormindo, acorda; caso contrário, dorme
+  const overlay = document.getElementById('sleep-overlay');
+  if (overlay.style.display === 'flex') {
+    // Está dormindo — acorda
+    state.ws.send(JSON.stringify({ type: 'chat', message: 'acorde' }));
+    return;
+  }
+  state.ws.send(JSON.stringify({ action: 'force_sleep', duration_min: 30 }));
+  btn.style.opacity = '0.5';
+  setTimeout(() => btn.style.opacity = '', 2000);
 });
 
 // ════════════════════════════════════════════════

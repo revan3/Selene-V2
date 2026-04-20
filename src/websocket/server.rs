@@ -1099,6 +1099,47 @@ pub async fn handle_connection(
                                     let _ = ws_tx.send(Message::text(ack)).await;
                                 }
 
+                                Some("force_sleep") => {
+                                    let duration_min = json["duration_min"].as_u64().unwrap_or(30);
+                                    {
+                                        let mut st = brain.lock().await;
+                                        if !st.dormindo {
+                                            st.dormindo = true;
+                                            st.fase_sono = "N1 - Consolidação".to_string();
+                                            fase_n1_consolidar(&mut st);
+                                        }
+                                    }
+                                    let ev = serde_json::json!({
+                                        "event": "sono",
+                                        "fase": "N1 - Consolidação",
+                                        "msg": format!("dormindo por {} minutos... boa noite.", duration_min),
+                                    }).to_string();
+                                    println!("💤 [SONO] Forçado pela interface — {} min.", duration_min);
+                                    let _ = sleep_tx.send(ev.clone());
+                                    let _ = ws_tx.send(Message::text(ev)).await;
+
+                                    // Agenda despertar automático
+                                    let brain_wake = brain.clone();
+                                    let sleep_tx_wake = sleep_tx.clone();
+                                    tokio::spawn(async move {
+                                        tokio::time::sleep(
+                                            tokio::time::Duration::from_secs(duration_min * 60)
+                                        ).await;
+                                        let mut st = brain_wake.lock().await;
+                                        if st.dormindo {
+                                            st.dormindo = false;
+                                            st.fase_sono = String::new();
+                                            st.aresta_contagem.clear();
+                                            let wake_ev = serde_json::json!({
+                                                "event": "despertar",
+                                                "msg": "despertei... descansada e pronta.",
+                                            }).to_string();
+                                            println!("🔆 [SONO] Despertar após {} min.", duration_min);
+                                            let _ = sleep_tx_wake.send(wake_ev);
+                                        }
+                                    });
+                                }
+
                                 Some("toggle_sensor") => {
                                     let sensor  = json["sensor"].as_str().unwrap_or("");
                                     let active  = json["active"].as_bool().unwrap_or(false);
