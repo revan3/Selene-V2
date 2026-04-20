@@ -29,7 +29,7 @@ use rand::{Rng, thread_rng};
 const TAU_INTER_MS:    f32 = 35.0;
 const LTP_INTER:       f32 = 0.006;  // potenciação inter-lobe (mais lenta que local)
 const LTD_INTER:       f32 = 0.003;  // depressão inter-lobe
-const W_MAX:           f32 = 3.0;
+const W_MAX:           f32 = 2.5;
 const W_MIN:           f32 = -2.0;   // projeções inibitórias têm peso negativo
 const SPIKE_THRESHOLD: f32 = 0.45;   // firing rate mínimo para ser tratado como spike
 

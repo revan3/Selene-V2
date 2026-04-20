@@ -68,12 +68,17 @@ use crate::compressor::salient::{SalientPoint, SalientCompressor};
 // SEÇÃO 1 — TIPO NEURONAL
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Tipos funcionais de neurônios baseados em Izhikevich (2003).
+/// Tipos funcionais de neurônios baseados em Izhikevich (2003) + subtipos biológicos.
 ///
-/// TC e RZ recebem automaticamente `ModeloDinamico::IzhikevichHH` no construtor.
+/// TC e RZ usam `ModeloDinamico::IzhikevichHH` (Hodgkin-Huxley completo).
 /// Os demais usam `ModeloDinamico::Izhikevich` puro.
+///
+/// Tipos originais (7): RS, IB, CH, FS, LT, TC, RZ
+/// Izhikevich adicionais (6): PS, PB, AC, BI, DAP, IIS
+/// Subtipos biológicos (4): PV, SST, VIP, DA_N
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum TipoNeuronal {
+    // ── Tipos originais ────────────────────────────────────────────────────────
     /// Regular Spiking — neurônio piramidal excitatório padrão do córtex.
     RS,
     /// Intrinsic Bursting — burst inicial seguido de disparo regular.
@@ -88,6 +93,40 @@ pub enum TipoNeuronal {
     TC,
     /// Resonator / Purkinje — células do cerebelo e giro dentado.
     RZ,
+
+    // ── Tipos Izhikevich adicionais ────────────────────────────────────────────
+    /// Phasic Spiking — dispara APENAS no onset do estímulo; silencia depois.
+    /// Detectores de mudança. Córtex sensorial camada 4.
+    PS,
+    /// Phasic Bursting — burst único na borda de subida do estímulo.
+    /// Sinaliza início de eventos sensoriais novos.
+    PB,
+    /// Accommodating — adapta progressivamente até silêncio total.
+    /// Modela habituação local (barril cortical, colículo).
+    AC,
+    /// Bistable — dois estados estáveis (ON/OFF) com histerese.
+    /// Working memory de curto prazo; pode ser "setado" por input breve.
+    BI,
+    /// Depolarizing Afterpotential — rebound despolarizante após spike.
+    /// Células do trato olfatório e alguns interneurônios hipocampais.
+    DAP,
+    /// Inhibition-Induced Spiking — dispara quando a inibição é REMOVIDA.
+    /// Base do rebound burst talâmico; desinibição dos gânglios da base.
+    IIS,
+
+    // ── Subtipos biológicos ────────────────────────────────────────────────────
+    /// Parvalbumin interneuron — FS de alta precisão, Ca²⁺-buffered.
+    /// Gera ritmo gamma (40 Hz), sincronização cortical, inibição perisomal.
+    PV,
+    /// Somatostatin interneuron (Martinotti) — adapting, inibição dendrítica.
+    /// Inibe compartimento apical de pirâmides; controla janela de plasticidade.
+    SST,
+    /// VIP interneuron — disinhibitory; inibe SST e PV, desinibe pirâmides.
+    /// Fundamental para gating atencional top-down e modulação colinérgica.
+    VIP,
+    /// Dopaminergic neuron — pacemaker lento ~4 Hz, AHP prolongado.
+    /// VTA e SNc; fonte real do sinal dopaminérgico de recompensa.
+    DA_N,
 }
 
 impl TipoNeuronal {
@@ -95,13 +134,26 @@ impl TipoNeuronal {
     #[inline]
     pub fn parametros(&self) -> (f32, f32, f32, f32) {
         match self {
-            TipoNeuronal::RS => (0.02, 0.20, -65.0,  8.0),
-            TipoNeuronal::IB => (0.02, 0.20, -55.0,  4.0),
-            TipoNeuronal::CH => (0.02, 0.20, -50.0,  2.0),
-            TipoNeuronal::FS => (0.10, 0.20, -65.0,  2.0),
-            TipoNeuronal::LT => (0.02, 0.25, -65.0,  2.0),
-            TipoNeuronal::TC => (0.02, 0.25, -65.0,  0.05),
-            TipoNeuronal::RZ => (0.10, 0.26, -65.0,  2.0),
+            // Originais
+            TipoNeuronal::RS  => (0.02,  0.20, -65.0,  8.0),
+            TipoNeuronal::IB  => (0.02,  0.20, -55.0,  4.0),
+            TipoNeuronal::CH  => (0.02,  0.20, -50.0,  2.0),
+            TipoNeuronal::FS  => (0.10,  0.20, -65.0,  2.0),
+            TipoNeuronal::LT  => (0.02,  0.25, -65.0,  2.0),
+            TipoNeuronal::TC  => (0.02,  0.25, -65.0,  0.05),
+            TipoNeuronal::RZ  => (0.10,  0.26, -65.0,  2.0),
+            // Izhikevich adicionais
+            TipoNeuronal::PS  => (0.02,  0.25, -65.0,  6.0),
+            TipoNeuronal::PB  => (0.02,  0.25, -55.0,  0.05),
+            TipoNeuronal::AC  => (0.02,  1.00, -55.0,  4.0),
+            TipoNeuronal::BI  => (0.10,  0.26, -60.0,  0.0),
+            TipoNeuronal::DAP => (1.00,  0.20, -60.0, -21.0),
+            TipoNeuronal::IIS => (0.02, -1.00, -60.0,  8.0),
+            // Subtipos biológicos
+            TipoNeuronal::PV  => (0.10,  0.20, -67.0,  2.0),
+            TipoNeuronal::SST => (0.02,  0.27, -65.0,  2.0),
+            TipoNeuronal::VIP => (0.05,  0.20, -65.0,  8.0),
+            TipoNeuronal::DA_N=> (0.006, 0.14, -65.0,  8.0),
         }
     }
 
@@ -118,7 +170,9 @@ impl TipoNeuronal {
     /// Verdadeiro para tipos GABAérgicos (usados na inibição lateral).
     #[inline]
     pub fn e_inibitorico(&self) -> bool {
-        matches!(self, TipoNeuronal::FS | TipoNeuronal::LT)
+        matches!(self,
+            TipoNeuronal::FS | TipoNeuronal::LT |
+            TipoNeuronal::PV | TipoNeuronal::SST | TipoNeuronal::VIP)
     }
 
     /// Verdadeiro para tipos que usam o modelo Hodgkin-Huxley.
@@ -131,13 +185,23 @@ impl TipoNeuronal {
     #[inline]
     pub fn tau_ca_ms(&self) -> f32 {
         match self {
-            TipoNeuronal::RS => 80.0,
-            TipoNeuronal::IB => 90.0,
-            TipoNeuronal::CH => 120.0,
-            TipoNeuronal::FS => 20.0,
-            TipoNeuronal::LT => 50.0,
-            TipoNeuronal::TC => 60.0,
-            TipoNeuronal::RZ => 60.0,
+            TipoNeuronal::RS  => 80.0,
+            TipoNeuronal::IB  => 90.0,
+            TipoNeuronal::CH  => 120.0,
+            TipoNeuronal::FS  => 20.0,
+            TipoNeuronal::LT  => 50.0,
+            TipoNeuronal::TC  => 60.0,
+            TipoNeuronal::RZ  => 60.0,
+            TipoNeuronal::PS  => 70.0,
+            TipoNeuronal::PB  => 85.0,
+            TipoNeuronal::AC  => 100.0,
+            TipoNeuronal::BI  => 75.0,
+            TipoNeuronal::DAP => 40.0,
+            TipoNeuronal::IIS => 55.0,
+            TipoNeuronal::PV  => 15.0,  // Ca²⁺-buffered — muito rápido
+            TipoNeuronal::SST => 60.0,
+            TipoNeuronal::VIP => 70.0,
+            TipoNeuronal::DA_N=> 150.0, // AHP prolongado — Ca²⁺ lento
         }
     }
 
@@ -145,13 +209,23 @@ impl TipoNeuronal {
     #[inline]
     pub fn bcm_theta(&self) -> f32 {
         match self {
-            TipoNeuronal::RS => 0.10,
-            TipoNeuronal::IB => 0.08,
-            TipoNeuronal::CH => 0.15,
-            TipoNeuronal::FS => 0.25,
-            TipoNeuronal::LT => 0.07,
-            TipoNeuronal::TC => 0.05,
-            TipoNeuronal::RZ => 0.12,
+            TipoNeuronal::RS  => 0.10,
+            TipoNeuronal::IB  => 0.08,
+            TipoNeuronal::CH  => 0.15,
+            TipoNeuronal::FS  => 0.25,
+            TipoNeuronal::LT  => 0.07,
+            TipoNeuronal::TC  => 0.05,
+            TipoNeuronal::RZ  => 0.12,
+            TipoNeuronal::PS  => 0.03,  // onset-only → atividade muito baixa
+            TipoNeuronal::PB  => 0.04,
+            TipoNeuronal::AC  => 0.06,
+            TipoNeuronal::BI  => 0.10,
+            TipoNeuronal::DAP => 0.08,
+            TipoNeuronal::IIS => 0.06,
+            TipoNeuronal::PV  => 0.30,  // alta taxa de disparo (gamma)
+            TipoNeuronal::SST => 0.08,
+            TipoNeuronal::VIP => 0.12,
+            TipoNeuronal::DA_N=> 0.04,  // pacemaker lento ~4 Hz
         }
     }
 
@@ -217,59 +291,6 @@ impl EstadoHH {
 }
 
 const HH_SCALE: f32 = 0.008;
-
-/// Motor de cálculo HH base (Hodgkin & Huxley, 1952).
-struct HH;
-
-impl HH {
-    #[inline]
-    fn alpha_m(v: f32) -> f32 {
-        let dv = v + 40.0;
-        if dv.abs() < 1e-4 { 1.0 }
-        else { 0.1 * dv / (1.0 - (-dv / 10.0_f32).exp()) }
-    }
-    #[inline] fn beta_m(v: f32) -> f32 { 4.0 * (-(v + 65.0) / 18.0_f32).exp() }
-    #[inline] fn alpha_h(v: f32) -> f32 { 0.07 * (-(v + 65.0) / 20.0_f32).exp() }
-    #[inline] fn beta_h(v: f32) -> f32 { 1.0 / (1.0 + (-(v + 35.0) / 10.0_f32).exp()) }
-    #[inline]
-    fn alpha_n(v: f32) -> f32 {
-        let dv = v + 55.0;
-        if dv.abs() < 1e-4 { 0.1 }
-        else { 0.01 * dv / (1.0 - (-dv / 10.0_f32).exp()) }
-    }
-    #[inline] fn beta_n(v: f32) -> f32 { 0.125 * (-(v + 65.0) / 80.0_f32).exp() }
-
-    pub fn integrar(estado: &mut EstadoHH, params: &ParametrosHH, v: f32, dt_ms: f32) -> f32 {
-        let n_sub = ((dt_ms / 0.1).ceil() as usize).max(1).min(50);
-        let dt_sub = dt_ms / n_sub as f32;
-        let mut m = estado.m; let mut h = estado.h; let mut n = estado.n;
-
-        for _ in 0..n_sub {
-            let am = Self::alpha_m(v); let bm = Self::beta_m(v);
-            let ah = Self::alpha_h(v); let bh = Self::beta_h(v);
-            let an = Self::alpha_n(v); let bn = Self::beta_n(v);
-            m += dt_sub * (am * (1.0 - m) - bm * m);
-            h += dt_sub * (ah * (1.0 - h) - bh * h);
-            n += dt_sub * (an * (1.0 - n) - bn * n);
-            m = m.clamp(0.0, 1.0); h = h.clamp(0.0, 1.0); n = n.clamp(0.0, 1.0);
-        }
-        estado.m = m; estado.h = h; estado.n = n;
-
-        let i_na = params.g_na * estado.g_na_mod * m.powi(3) * h * (v - params.e_na);
-        let i_k  = params.g_k  * estado.g_k_mod  * n.powi(4)     * (v - params.e_k);
-        let i_l  = params.g_l  * estado.g_l_mod                  * (v - params.e_l);
-
-        let i_h = if params.g_h > 0.0 {
-            let alpha_q = 0.001 * (-0.1 * (v + 75.0)).exp().min(10.0);
-            let beta_q  = 0.001 * (0.1  * (v + 75.0)).exp().min(10.0);
-            let q_new = estado.q_ih + dt_sub * (alpha_q * (1.0 - estado.q_ih) - beta_q * estado.q_ih);
-            estado.q_ih = q_new.clamp(0.0, 1.0);
-            params.g_h * estado.q_ih * (v - (-30.0))
-        } else { 0.0 };
-
-        i_na + i_k + i_l + i_h
-    }
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SEÇÃO 3 — MODELO DINÂMICO
@@ -416,6 +437,16 @@ impl TipoNeuronalV3 for TipoNeuronal {
             TipoNeuronal::LT  => 1.2,
             TipoNeuronal::TC  => 0.8,
             TipoNeuronal::RZ  => 1.5,
+            TipoNeuronal::PS  => 0.8,
+            TipoNeuronal::PB  => 1.0,
+            TipoNeuronal::AC  => 0.5,
+            TipoNeuronal::BI  => 2.5,
+            TipoNeuronal::DAP => 3.0,
+            TipoNeuronal::IIS => 0.5,
+            TipoNeuronal::PV  => 0.2,
+            TipoNeuronal::SST => 1.0,
+            TipoNeuronal::VIP => 0.8,
+            TipoNeuronal::DA_N=> 1.2,
         }
     }
 
@@ -428,6 +459,16 @@ impl TipoNeuronalV3 for TipoNeuronal {
             TipoNeuronal::LT  => 3.0,
             TipoNeuronal::TC  => 1.5,
             TipoNeuronal::RZ  => 1.0,
+            TipoNeuronal::PS  => 5.0,  // forte adaptação = phasic
+            TipoNeuronal::PB  => 4.0,
+            TipoNeuronal::AC  => 8.0,  // muito adaptante
+            TipoNeuronal::BI  => 1.0,
+            TipoNeuronal::DAP => 0.5,
+            TipoNeuronal::IIS => 0.2,
+            TipoNeuronal::PV  => 0.2,
+            TipoNeuronal::SST => 4.0,
+            TipoNeuronal::VIP => 2.0,
+            TipoNeuronal::DA_N=> 1.5,
         }
     }
 
@@ -440,6 +481,16 @@ impl TipoNeuronalV3 for TipoNeuronal {
             TipoNeuronal::LT  => 20.0,
             TipoNeuronal::TC  => 8.0,
             TipoNeuronal::RZ  => 4.0,
+            TipoNeuronal::PS  => 6.0,
+            TipoNeuronal::PB  => 5.0,
+            TipoNeuronal::AC  => 4.0,
+            TipoNeuronal::BI  => 3.0,
+            TipoNeuronal::DAP => 2.0,
+            TipoNeuronal::IIS => 15.0, // grande A para rebound
+            TipoNeuronal::PV  => 0.3,
+            TipoNeuronal::SST => 12.0,
+            TipoNeuronal::VIP => 8.0,
+            TipoNeuronal::DA_N=> 6.0,
         }
     }
 
@@ -447,6 +498,8 @@ impl TipoNeuronalV3 for TipoNeuronal {
         match self {
             TipoNeuronal::TC  => 8.0,
             TipoNeuronal::LT  => 10.0,
+            TipoNeuronal::IIS => 6.0,  // T-type Ca para rebound
+            TipoNeuronal::DA_N=> 3.0,
             _                 => 0.0,
         }
     }
@@ -460,6 +513,16 @@ impl TipoNeuronalV3 for TipoNeuronal {
             TipoNeuronal::LT  => 2.0,
             TipoNeuronal::TC  => 2.0,
             TipoNeuronal::RZ  => 5.0,
+            TipoNeuronal::PS  => 1.5,
+            TipoNeuronal::PB  => 2.0,
+            TipoNeuronal::AC  => 1.0,
+            TipoNeuronal::BI  => 1.5,
+            TipoNeuronal::DAP => 0.5,
+            TipoNeuronal::IIS => 1.0,
+            TipoNeuronal::PV  => 3.0,  // forte BK para precisão temporal
+            TipoNeuronal::SST => 1.5,
+            TipoNeuronal::VIP => 1.0,
+            TipoNeuronal::DA_N=> 4.0,  // grande AHP via BK
         }
     }
 }
@@ -559,6 +622,44 @@ impl SinapseSTP {
             TipoNeuronal::RZ => Self {
                 x: 1.0, u_stp: 0.50, u0: 0.50, tau_rec: 400.0, tau_fac: 0.0,
                 tipo: TipoSTP::Depression,
+            },
+            // Izhikevich adicionais
+            TipoNeuronal::PS | TipoNeuronal::PB => Self {
+                x: 1.0, u_stp: 0.60, u0: 0.60, tau_rec: 700.0, tau_fac: 0.0,
+                tipo: TipoSTP::Depression, // depleta rápido — silencia após onset
+            },
+            TipoNeuronal::AC => Self {
+                x: 1.0, u_stp: 0.40, u0: 0.40, tau_rec: 900.0, tau_fac: 0.0,
+                tipo: TipoSTP::Depression,
+            },
+            TipoNeuronal::BI => Self {
+                x: 1.0, u_stp: 0.20, u0: 0.20, tau_rec: 200.0, tau_fac: 300.0,
+                tipo: TipoSTP::Facilitation, // biestável: facilita até ligar
+            },
+            TipoNeuronal::DAP => Self {
+                x: 1.0, u_stp: 0.35, u0: 0.35, tau_rec: 400.0, tau_fac: 80.0,
+                tipo: TipoSTP::Mixed,
+            },
+            TipoNeuronal::IIS => Self {
+                x: 1.0, u_stp: 0.10, u0: 0.10, tau_rec: 1000.0, tau_fac: 0.0,
+                tipo: TipoSTP::Depression,
+            },
+            // Subtipos biológicos
+            TipoNeuronal::PV => Self {
+                x: 1.0, u_stp: 0.30, u0: 0.30, tau_rec: 500.0, tau_fac: 0.0,
+                tipo: TipoSTP::Depression,
+            },
+            TipoNeuronal::SST => Self {
+                x: 1.0, u_stp: 0.10, u0: 0.10, tau_rec: 200.0, tau_fac: 500.0,
+                tipo: TipoSTP::Facilitation, // fortemente facilitante
+            },
+            TipoNeuronal::VIP => Self {
+                x: 1.0, u_stp: 0.20, u0: 0.20, tau_rec: 300.0, tau_fac: 200.0,
+                tipo: TipoSTP::Facilitation,
+            },
+            TipoNeuronal::DA_N => Self {
+                x: 1.0, u_stp: 0.15, u0: 0.15, tau_rec: 1500.0, tau_fac: 0.0,
+                tipo: TipoSTP::Depression, // pacemaker lento, recuperação lenta
             },
         }
     }
@@ -1109,13 +1210,23 @@ impl CamadaHibrida {
                 PrecisionType::INT4 => s.int4 += 1,
             }
             match n.tipo {
-                TipoNeuronal::RS => s.tipo_rs += 1,
-                TipoNeuronal::IB => s.tipo_ib += 1,
-                TipoNeuronal::CH => s.tipo_ch += 1,
-                TipoNeuronal::FS => s.tipo_fs += 1,
-                TipoNeuronal::LT => s.tipo_lt += 1,
-                TipoNeuronal::TC => s.tipo_tc += 1,
-                TipoNeuronal::RZ => s.tipo_rz += 1,
+                TipoNeuronal::RS  => s.tipo_rs  += 1,
+                TipoNeuronal::IB  => s.tipo_ib  += 1,
+                TipoNeuronal::CH  => s.tipo_ch  += 1,
+                TipoNeuronal::FS  => s.tipo_fs  += 1,
+                TipoNeuronal::LT  => s.tipo_lt  += 1,
+                TipoNeuronal::TC  => s.tipo_tc  += 1,
+                TipoNeuronal::RZ  => s.tipo_rz  += 1,
+                TipoNeuronal::PS  => s.tipo_ps  += 1,
+                TipoNeuronal::PB  => s.tipo_pb  += 1,
+                TipoNeuronal::AC  => s.tipo_ac  += 1,
+                TipoNeuronal::BI  => s.tipo_bi  += 1,
+                TipoNeuronal::DAP => s.tipo_dap += 1,
+                TipoNeuronal::IIS => s.tipo_iis += 1,
+                TipoNeuronal::PV  => s.tipo_pv  += 1,
+                TipoNeuronal::SST => s.tipo_sst += 1,
+                TipoNeuronal::VIP => s.tipo_vip += 1,
+                TipoNeuronal::DA_N=> s.tipo_dan += 1,
             }
             if n.tipo.usa_hh() { s.hh += 1; }
             s.bytes_total += std::mem::size_of::<NeuronioHibrido>();
@@ -1167,6 +1278,18 @@ pub struct CamadaStats {
     pub tipo_lt:     usize,
     pub tipo_tc:     usize,
     pub tipo_rz:     usize,
+    // Izhikevich adicionais
+    pub tipo_ps:     usize,
+    pub tipo_pb:     usize,
+    pub tipo_ac:     usize,
+    pub tipo_bi:     usize,
+    pub tipo_dap:    usize,
+    pub tipo_iis:    usize,
+    // Subtipos biológicos
+    pub tipo_pv:     usize,
+    pub tipo_sst:    usize,
+    pub tipo_vip:    usize,
+    pub tipo_dan:    usize,
     pub hh:          usize,
 }
 
@@ -1177,7 +1300,10 @@ impl CamadaStats {
     }
     pub fn prop_inibitorios(&self) -> f32 {
         if self.total == 0 { 0.0 }
-        else { (self.tipo_fs + self.tipo_lt) as f32 / self.total as f32 }
+        else {
+            (self.tipo_fs + self.tipo_lt + self.tipo_pv + self.tipo_sst + self.tipo_vip)
+                as f32 / self.total as f32
+        }
     }
     pub fn prop_hh(&self) -> f32 {
         if self.total == 0 { 0.0 }

@@ -24,6 +24,24 @@ pub struct NeuroChem {
     /// Biologicamente: analgesia social, apego, cooperação.
     pub oxytocin: f32,
 
+    /// Histamina — neuromodulador do arousal e ciclo vigília/sono.
+    /// Produzida pelo núcleo tuberomamilar do hipotálamo.
+    /// Alta histamina = vigília, atenção, supressão de sono.
+    /// Baixa histamina = sonolência (antihistamínicos causam sedação).
+    pub histamine: f32,
+
+    /// Adenosina — marcador de pressão de sono acumulada.
+    /// Acumula durante vigília (catabolismo de ATP); limpa durante sono.
+    /// Alta adenosina = cansaço, reduz ACh, bloqueia histamina.
+    /// Biologicamente: cafeína bloqueia receptores A1/A2A de adenosina.
+    pub adenosine: f32,
+
+    /// Endocanabinoide (eCB) — neuromodulador retrógrado local.
+    /// Liberado pelo neurônio pós-sináptico; inibe liberação pré-sináptica (DSI/DSE).
+    /// Alta eCB: supressão de entrada sensorial excessiva, homeostase sináptica.
+    /// Modulado por dopamina (recompensa amplifica eCB no estriado).
+    pub endocannabinoid: f32,
+
     /// Sinal do receptor D1 dopaminérgico [0.0, 1.0].
     /// D1 é ionotrópico excitatório no PFC/córtex — fortalece Working Memory.
     /// Alto D1 = dopamina alta → PFC excitado → mais capacidade de WM e planejamento.
@@ -92,10 +110,13 @@ impl NeuroChem {
             dopamine: 1.0,
             cortisol: 0.0,
             noradrenaline: 0.5,
-            acetylcholine: 0.7, // baseline saudável de ACh
-            oxytocin: 0.5,       // baseline neutro — cresce com interações positivas
-            d1_signal: 0.5,      // derivado de dopamina (via update)
-            d2_signal: 0.5,      // derivado de dopamina (via update)
+            acetylcholine: 0.7,    // baseline saudável de ACh
+            oxytocin: 0.5,         // baseline neutro — cresce com interações positivas
+            histamine: 0.7,        // vigília ativa por padrão
+            adenosine: 0.2,        // baixo no início (sem pressão de sono acumulada)
+            endocannabinoid: 0.3,  // baseline moderado
+            d1_signal: 0.5,        // derivado de dopamina (via update)
+            d2_signal: 0.5,        // derivado de dopamina (via update)
             last_temp: 0.0,
         }
     }
@@ -141,12 +162,28 @@ impl NeuroChem {
             ModoOperacao::Insano => (temp / 65.0).clamp(1.0, 1.6),
         };
 
-        // Acetilcolina — modulada por fadiga (adenosina inibe ACh no tálamo/hipocampo)
-        // e por noradrenalina (arousal alto libera mais ACh no córtex).
-        // Alta RAM (processamento intenso) → mais demanda colinérgica → degrada levemente.
-        let adenosina_proxy = (jitter / 5.0).clamp(0.0, 1.0); // jitter alto ≈ sistema estressado
-        let target_ach = (0.8 - adenosina_proxy * 0.4 + self.noradrenaline * 0.2)
-            .clamp(0.2, 1.2);
+        // Adenosina — acumula com carga computacional (jitter + RAM); limpa lentamente.
+        // Proxy biológico: uso intenso de ATP → acúmulo de adenosina.
+        let adenosine_load = (jitter / 4.0 * 0.6 + ram_usage / 100.0 * 0.4).clamp(0.0, 1.0);
+        let target_adenosine = (0.1 + adenosine_load * 0.8).clamp(0.0, 1.0);
+        self.adenosine += (target_adenosine - self.adenosine) * decay_rate * 0.5; // acumula lento
+
+        // Histamina — inversamente proporcional à adenosina; alta em arousal ativo.
+        // Noradrenalina alta também eleva histamina (ambos são pró-vigília).
+        let target_hist = (0.9 - self.adenosine * 0.6 + self.noradrenaline * 0.1)
+            .clamp(0.1, 1.2);
+        self.histamine += (target_hist - self.histamine) * decay_rate;
+
+        // Endocanabinoide — sobe com dopamina alta (recompensa) e cortisol alto (estresse).
+        // Biologicamente: eCB é sinal de homeostase — suprime excitação excessiva.
+        let target_ecb = (self.dopamine * 0.4 + self.cortisol * 0.3).clamp(0.0, 1.0);
+        self.endocannabinoid += (target_ecb - self.endocannabinoid) * decay_rate;
+
+        // Acetilcolina — adenosina alta reduz ACh (fadiga colinérgica)
+        let adenosina_proxy = (jitter / 5.0).clamp(0.0, 1.0);
+        let ach_adenosine_penalty = self.adenosine * 0.3; // novo: adenosina inibe ACh
+        let target_ach = (0.8 - adenosina_proxy * 0.4 + self.noradrenaline * 0.2
+            - ach_adenosine_penalty).clamp(0.2, 1.2);
         self.acetylcholine += (target_ach - self.acetylcholine) * decay_rate;
 
         // D1 signal: excitatório no PFC — escala com dopamina alta.
