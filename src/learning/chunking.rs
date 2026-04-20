@@ -51,9 +51,8 @@ use crate::brain_zones::RegionType;
 // =============================================================================
 
 /// Co-ativações para promover padrão a chunk (LTP early-phase).
-/// Reduzido de 5 para 3: inputs reais (0..1) geram menos spikes que o benchmark
-/// usava (2.0), então exigir menos co-ativações garante chunks emergem na prática.
-const CHUNK_THRESHOLD: u32 = 3;
+/// 5 = mínimo estatisticamente significativo — reduz ruído de chunks espúrios.
+const CHUNK_THRESHOLD: u32 = 5;
 
 /// trace_pre mínimo médio para aceitar o chunk.
 /// Reduzido de 0.4 para 0.05: trace_pre acumula lentamente com inputs fracos.
@@ -255,9 +254,11 @@ impl ChunkingEngine {
             soma_peso: 0.0,
         });
 
-        // Verifica janela temporal (proporcional ao número de neurônios)
+        // Janela temporal: sqrt(n) evita crescimento linear com neurônios co-ativos.
+        // Biologicamente: binding cortical (~50ms gamma) não escala linearmente com N.
+        let janela_dinamica = JANELA_MS * (ativos.len() as f64).sqrt().ceil() as u64;
         let dentro_janela = reg.ultimo_disparo.elapsed()
-            < Duration::from_millis(JANELA_MS * ativos.len() as u64);
+            < Duration::from_millis(janela_dinamica);
 
         if dentro_janela || reg.trace > 0.1 {
             reg.contagem += 1;

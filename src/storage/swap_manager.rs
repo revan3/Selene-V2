@@ -111,6 +111,10 @@ const I_BASE_CONCEITO:   f32 = 12.0;  // corrente base para spike RS (pA)
 /// leve o suficiente para rodar em hardware de consumidor.
 const POPULACAO_N: usize = 20;
 
+/// Limite máximo de sinapses conceituais em memória (LRU eviction acima disso).
+/// Previne crescimento ilimitado de sinapses_conceito — ~160 MB estimado.
+const SINAPSES_CAP: usize = 500_000;
+
 pub struct SwapManager {
     // RAM: neurônios ativos
     pub ram: HashMap<Uuid, NeuronioHibrido>,
@@ -175,6 +179,19 @@ pub struct SwapManager {
     /// Representação vetorial de 32 dimensões por conceito.
     /// Permite busca por similaridade semântica (cosine similarity).
     pub embeddings: HashMap<String, [f32; 32]>,
+
+    /// Ticks consecutivos sem spike — usado para coasting (pular STDP quando ocioso).
+    ticks_sem_spike: u32,
+
+    /// Templates cognitivos — padrões relacionais com slots efêmeros.
+    /// A topologia (relações entre slots) persiste; o conteúdo dos slots é efêmero.
+    pub template_store: crate::learning::templates::TemplateStore,
+
+    // ── Cache de grafo_palavras ───────────────────────────────────────────
+    /// Cache do grafo de palavras — reconstruído apenas quando sinapses mudam.
+    grafo_cache: Option<HashMap<String, Vec<(String, f32)>>>,
+    /// Sinaliza que sinapses mudaram e o cache precisa ser reconstruído.
+    grafo_dirty: bool,
 }
 
 impl SwapManager {
@@ -207,6 +224,10 @@ impl SwapManager {
             fast_weights: HashMap::new(),
             snapshots: std::collections::VecDeque::with_capacity(MAX_SNAPSHOTS),
             embeddings: HashMap::new(),
+            ticks_sem_spike: 0,
+            template_store: crate::learning::templates::TemplateStore::novo(),
+            grafo_cache: None,
+            grafo_dirty: true,
         }
     }
     
@@ -524,6 +545,22 @@ impl SwapManager {
             }
         }
         self.ultimo_conceito_pop = Some(populacao.clone());
+        self.grafo_dirty = true;
+
+        // LRU eviction: remove sinapses mais fracas quando acima do cap
+        if self.sinapses_conceito.len() > SINAPSES_CAP {
+            let mut pesos: Vec<((Uuid, Uuid), f32)> = self.sinapses_conceito
+                .iter()
+                .map(|(&k, &v)| (k, v))
+                .collect();
+            pesos.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            // Remove os 5% mais fracos
+            let n_remover = SINAPSES_CAP / 20;
+            for (k, _) in pesos.iter().take(n_remover) {
+                self.sinapses_conceito.remove(k);
+            }
+            self.grafo_dirty = true;
+        }
 
         populacao
     }
@@ -564,7 +601,12 @@ impl SwapManager {
     /// Substitui o antigo grafo_associacoes (HashMap de strings) — a fonte de
     /// verdade é agora o STDP entre populações neurais, não co-ocorrência textual.
     /// Filtro mínimo: apenas palavras com ≥2 chars entram no grafo.
-    pub fn grafo_palavras(&self) -> HashMap<String, Vec<(String, f32)>> {
+    pub fn grafo_palavras(&mut self) -> HashMap<String, Vec<(String, f32)>> {
+        if !self.grafo_dirty {
+            if let Some(ref cache) = self.grafo_cache {
+                return cache.clone();
+            }
+        }
         let id_to_word = self.id_para_palavra();
         let mut grafo: HashMap<String, Vec<(String, f32)>> = HashMap::new();
         for (&(pre, post), &peso) in &self.sinapses_conceito {
@@ -574,10 +616,11 @@ impl SwapManager {
                 }
             }
         }
-        // Ordena vizinhos por peso decrescente (facilitates walk greedy selection)
         for vizinhos in grafo.values_mut() {
             vizinhos.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         }
+        self.grafo_cache = Some(grafo.clone());
+        self.grafo_dirty = false;
         grafo
     }
 
@@ -588,6 +631,24 @@ impl SwapManager {
         self.palavra_para_id.keys()
             .filter_map(|p| self.valencia_populacao(p).map(|v| (p.clone(), v)))
             .collect()
+    }
+
+    /// Retorna uma sequência de palavras-guia baseada no template que melhor
+    /// corresponde aos conceitos fornecidos. Os slots do template são preenchidos
+    /// com as palavras mais frequentes no histórico de cada slot (restrição emergente).
+    /// Retorna (tokens_scaffold, Some(uuid)) se há match útil, ou (vec![], None) caso contrário.
+    pub fn template_scaffold(&self, conceitos: &[String]) -> (Vec<String>, Option<uuid::Uuid>) {
+        let matches = self.template_store.reconhecer(conceitos);
+        if let Some((id, score)) = matches.first() {
+            if *score < 0.3 { return (Vec::new(), None); }
+            if let Some(template) = self.template_store.templates.get(id) {
+                let scaffold: Vec<String> = template.slots.iter()
+                    .flat_map(|s| s.restricao_emergente(1).into_iter().next())
+                    .collect();
+                if scaffold.len() >= 2 { return (scaffold, Some(*id)); }
+            }
+        }
+        (Vec::new(), None)
     }
 
     /// Injeta uma lista de pares causais (causa, efeito, peso) como sinapses
@@ -601,6 +662,7 @@ impl SwapManager {
                 *entry = (*entry + peso * 0.5).clamp(0.0, PESO_MAX_CONCEITO);
             }
         }
+        self.grafo_dirty = true;
     }
 
     /// Retorna os N conceitos mais ativados no momento (por fração da população excitada).
@@ -622,6 +684,12 @@ impl SwapManager {
     /// 2. STDP inter-conceito opera APENAS entre canônicos (pop[0]) → O(vocab²), não O((vocab×N)²)
     /// 3. Propagação sináptica vai do canônico pré para o canônico pós (sinapses já registradas)
     pub fn tick_semantico(&mut self, dt_s: f32, current_time_ms: f32) {
+        // Coasting: pula STDP completo quando ocioso (sem correntes e sem spikes recentes)
+        let tem_corrente = !self.correntes.is_empty();
+        if !tem_corrente && self.ticks_sem_spike >= 15 {
+            return;
+        }
+
         // Todos os neurônios conceituais (população completa)
         let ids: Vec<Uuid> = self.palavra_para_id.values()
             .flat_map(|pop| pop.iter().copied())
@@ -641,8 +709,12 @@ impl SwapManager {
             }
         }
 
-        // STDP inter-conceito: opera apenas entre canônicos para eficiência
-        // post dispara (e é canônico) → fortalece sinapse com pre canônico recente
+        // STDP inter-conceito assimétrico (biologicamente correto):
+        // LTP: pre disparou ANTES de post → pré→post fortalece (causal)
+        // LTD: pre disparou DEPOIS de post → pré→post enfraquece (anti-causal)
+        const LTD_CONCEITO: f32 = LTP_CONCEITO * 0.7; // LTD menor que LTP — net potentiação
+
+        // LTP: post dispara agora, pre tem trace (disparou antes)
         for &post_id in spikes.iter().filter(|id| canonicos.contains(id)) {
             for &pre_id in &canonicos {
                 if pre_id == post_id { continue; }
@@ -650,6 +722,22 @@ impl SwapManager {
                 if pre_trace > 0.15 {
                     let peso = self.sinapses_conceito.entry((pre_id, post_id)).or_insert(0.0);
                     *peso = (*peso + LTP_CONCEITO * pre_trace).clamp(0.0, PESO_MAX_CONCEITO);
+                    self.grafo_dirty = true;
+                }
+            }
+        }
+
+        // LTD: pre dispara agora, post tem trace (disparou antes → pre chegou tarde → anti-causal)
+        for &pre_id in spikes.iter().filter(|id| canonicos.contains(id)) {
+            for &post_id in &canonicos {
+                if pre_id == post_id { continue; }
+                let post_trace = self.ram.get(&post_id).map(|n| n.trace_pos).unwrap_or(0.0);
+                if post_trace > 0.15 {
+                    // Enfraquece sinapse pre→post (pré chegou depois — não causou o spike de post)
+                    if let Some(peso) = self.sinapses_conceito.get_mut(&(pre_id, post_id)) {
+                        *peso = (*peso - LTD_CONCEITO * post_trace).max(0.0);
+                        self.grafo_dirty = true;
+                    }
                 }
             }
         }
@@ -669,6 +757,47 @@ impl SwapManager {
         for v in self.correntes.values_mut() {
             *v *= 0.88;
             if *v < 0.3 { *v = 0.0; }
+        }
+
+        if spikes.is_empty() {
+            self.ticks_sem_spike = self.ticks_sem_spike.saturating_add(1);
+        } else {
+            self.ticks_sem_spike = 0;
+        }
+
+        // P4.2 — Plasticidade homeostática (synaptic scaling): a cada 100 ticks.
+        // Conceitos silenciosos aumentam sua sensibilidade global; conceitos muito ativos
+        // reduzem — mantém ativação média da população em nível biológico (~20%).
+        // Turrigiano (2008): sem homeostase há runaway excitation ou silêncio total.
+        const HOMEOSTASE_ALVO: f32 = 0.20; // 20% dos neurônios da população ativos
+        const HOMEOSTASE_TAXA: f32 = 0.001;
+        if self.ticks_sem_spike == 0 && ids.len() > 0 {
+            let ativacao_atual = spikes.len() as f32 / ids.len().max(1) as f32;
+            let delta_escala = (HOMEOSTASE_ALVO - ativacao_atual) * HOMEOSTASE_TAXA;
+            if delta_escala.abs() > 1e-6 {
+                for &id in &ids {
+                    if let Some(n) = self.ram.get_mut(&id) {
+                        if let crate::synaptic_core::PesoNeuronio::FP32(ref mut v) = n.peso {
+                            *v = (*v + delta_escala).clamp(0.1, 2.5);
+                        }
+                    }
+                }
+            }
+        }
+
+        // P4.3 — Sparse coding (L1 regularization): a cada 50 ticks.
+        // Suprime neurônios muito ativos (>80% disparando) — mantém ~20% de esparsidade.
+        // Yamins (2021): representações esparsas reduzem interferência entre conceitos.
+        const SPARSE_REG: f32 = 0.003; // taxa de supressão
+        if self.ticks_sem_spike == 0 && spikes.len() > ids.len() * 4 / 5 {
+            // Mais de 80% da população disparando → aplica L1 (reduz pesos)
+            for &id in &spikes {
+                if let Some(n) = self.ram.get_mut(&id) {
+                    if let crate::synaptic_core::PesoNeuronio::FP32(ref mut v) = n.peso {
+                        *v = (*v * (1.0 - SPARSE_REG)).max(0.1);
+                    }
+                }
+            }
         }
     }
 
@@ -1108,7 +1237,7 @@ impl SwapManager {
 
     /// Inclui vizinhos semânticos no grafo retornado.
     /// Usado para enriquecer o graph_walk com similaridade vetorial.
-    pub fn grafo_com_semantica(&self, top_k: usize, threshold: f32) -> HashMap<String, Vec<(String, f32)>> {
+    pub fn grafo_com_semantica(&mut self, top_k: usize, threshold: f32) -> HashMap<String, Vec<(String, f32)>> {
         let mut grafo = self.grafo_palavras();
         // Para cada palavra, adiciona vizinhos semânticos com peso 0.3×similaridade
         let palavras: Vec<String> = self.embeddings.keys().cloned().collect();

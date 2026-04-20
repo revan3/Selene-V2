@@ -394,8 +394,10 @@ fn benchmark_spikes() {
 fn benchmark_resposta(state: &BrainState) {
     secao("C — GERAÇÃO DE RESPOSTAS (GRAFO DE ASSOCIAÇÕES)");
 
-    let grafo    = &state.grafo_associacoes;
-    let valencias = &state.palavra_valencias;
+    let mut sw_guard = state.swap_manager.try_lock().expect("swap lock held");
+    let grafo    = sw_guard.grafo_palavras();
+    let valencias = sw_guard.valencias_palavras();
+    drop(sw_guard);
     let frases   = &state.frases_padrao;
 
     subsecao("C1 — Estatísticas do grafo carregado");
@@ -855,16 +857,20 @@ fn benchmark_capacidade(state: &BrainState) {
     secao("F — CAPACIDADE DO SISTEMA");
 
     subsecao("F1 — Vocabulário e grafo atual");
-    let n_vocab    = state.palavra_valencias.len();
-    let n_nos      = state.grafo_associacoes.len();
-    let n_arestas: usize = state.grafo_associacoes.values().map(|v| v.len()).sum();
+    let mut sw_f = state.swap_manager.try_lock().expect("swap lock held");
+    let grafo_f    = sw_f.grafo_palavras();
+    let valencias_f = sw_f.valencias_palavras();
+    drop(sw_f);
+    let n_vocab    = valencias_f.len();
+    let n_nos      = grafo_f.len();
+    let n_arestas: usize = grafo_f.values().map(|v: &Vec<(String, f32)>| v.len()).sum();
     let n_frases   = state.frases_padrao.len();
     let n_helix    = state.spike_vocab.len();
 
     let distribuicao_valencas = {
-        let positivas = state.palavra_valencias.values().filter(|&&v| v > 0.1).count();
-        let neutras   = state.palavra_valencias.values().filter(|&&v| v.abs() <= 0.1).count();
-        let negativas = state.palavra_valencias.values().filter(|&&v| v < -0.1).count();
+        let positivas = valencias_f.values().filter(|&&v| v > 0.1).count();
+        let neutras   = valencias_f.values().filter(|&&v| v.abs() <= 0.1).count();
+        let negativas = valencias_f.values().filter(|&&v| v < -0.1).count();
         (positivas, neutras, negativas)
     };
 

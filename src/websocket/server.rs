@@ -176,6 +176,7 @@ fn gerar_resposta_emergente(
     valencias: &HashMap<String, f32>,
     grafo: &HashMap<String, Vec<(String, f32)>>,
     frases_padrao: &[Vec<String>],
+    indice_prefixo: &HashMap<String, Vec<usize>>,
     evitar: &[Vec<String>],
     contexto_extra: &[String],
     caminho_out: &mut Vec<String>,
@@ -185,8 +186,9 @@ fn gerar_resposta_emergente(
     grafo_causal: &HashMap<String, Vec<(String, f32)>>,
     qvalores: &HashMap<String, f32>,
     ancora_out: &mut Option<String>,
-    // P4: estado corporal [DA, 5HT, NA, ACh, cortisol] — modula seleção de palavras
     estado_corpo: &[f32; 5],
+    template_scaffold: &[String],
+    trigrama_cache: &HashMap<(String, String), Vec<String>>,
 ) -> String {
     // P4: extrai sinalizadores do estado corporal
     // noradrenalina (idx 2) alta → arousal → prefere grounding
@@ -279,11 +281,14 @@ fn gerar_resposta_emergente(
         .collect();
 
     let prefixo: Vec<String> = if !frases_padrao.is_empty() {
-        // Pontua todas as frases pelo overlap com o topico_prefixo (sem auto-referências)
-        let scored: Vec<(usize, usize)> = frases_padrao.iter()
-            .enumerate()
-            .map(|(i, frase)| (i, frase.iter().filter(|w| topico_prefixo.contains(w.as_str())).count()))
-            .collect();
+        // Pontua frases via índice invertido: O(topico × hits) ao invés de O(frases × words)
+        let mut contagem: HashMap<usize, usize> = HashMap::new();
+        for palavra in &topico_prefixo {
+            if let Some(indices) = indice_prefixo.get(*palavra) {
+                for &i in indices { *contagem.entry(i).or_insert(0) += 1; }
+            }
+        }
+        let scored: Vec<(usize, usize)> = contagem.into_iter().collect();
 
         let max_overlap = scored.iter().map(|(_, c)| *c).max().unwrap_or(0);
 
@@ -313,6 +318,11 @@ fn gerar_resposta_emergente(
         let prefixo_sel = frases_padrao[idx].clone();
         *prefixo_usado_out = prefixo_sel.clone();
         prefixo_sel
+    } else if !template_scaffold.is_empty() {
+        // Sem frases_padrao mas com scaffold de template: usa padrão cognitivo aprendido
+        let scaffold_vec = template_scaffold.to_vec();
+        *prefixo_usado_out = scaffold_vec.clone();
+        scaffold_vec
     } else {
         Vec::new()
     };
@@ -353,20 +363,9 @@ fn gerar_resposta_emergente(
     // Walk começa da última palavra do prefixo se disponível, senão da âncora semântica
     let mut atual = prefixo_last.unwrap_or(inicio);
 
-    // Coerência sintática: pré-computa quais (word_a, word_b) → word_c aparecem nas frases_padrao.
-    // Durante o walk, damos bonus de score quando a próxima palavra segue um trigrama conhecido.
-    // Isso implementa um modelo de linguagem bigrama/trigrama emergente dos padrões aprendidos.
-    let trigrama_bonus: std::collections::HashMap<(String, String), Vec<String>> = {
-        let mut mapa: std::collections::HashMap<(String, String), Vec<String>> = std::collections::HashMap::new();
-        for frase in frases_padrao {
-            for w in frase.windows(3) {
-                mapa.entry((w[0].clone(), w[1].clone()))
-                    .or_default()
-                    .push(w[2].clone());
-            }
-        }
-        mapa
-    };
+    // Coerência sintática: usa cache pré-computado de trigramas (BrainState.trigrama_cache).
+    // Evita reconstrução O(frases×trigramas) a cada resposta.
+    let trigrama_bonus = trigrama_cache;
 
     for _ in 0..n_passos {
         if visitados.contains(&atual) { break; }
@@ -672,6 +671,12 @@ fn fase_n2_podar(state: &mut crate::websocket::bridge::BrainState) {
 
 /// N3 — REM: replay hipocampal + fechamento transitivo via swap_manager.
 fn fase_n3_rem(state: &mut crate::websocket::bridge::BrainState) {
+    // Tenta o REM semântico completo (replay episódico + atalhos + STDP)
+    let (_novas, relato) = state.rem_semantico();
+    if let Some(r) = relato {
+        println!("   💭 Sonho: {}", r);
+    }
+    // Fallback legado — só executa se rem_semantico não gerou relato (sem episódios)
     use crate::encoding::spike_codec::is_active;
 
     let episodios: Vec<crate::websocket::bridge::EventoEpisodico> = state.historico_episodico
@@ -679,6 +684,7 @@ fn fase_n3_rem(state: &mut crate::websocket::bridge::BrainState) {
         .filter(|ev| ev.emocao.abs() > 0.35)
         .cloned()
         .collect();
+    if !episodios.is_empty() { return; }
 
     let mut replay = 0usize;
     let mut novas = 0usize;
@@ -763,7 +769,7 @@ fn fase_n3_rem(state: &mut crate::websocket::bridge::BrainState) {
 
 /// N4 — Backup: persiste linguagem em JSON (vocabulário/grafo do swap).
 fn fase_n4_backup(state: &crate::websocket::bridge::BrainState) {
-    let (vocabulario, grafo) = if let Ok(sw) = state.swap_manager.try_lock() {
+    let (vocabulario, grafo) = if let Ok(mut sw) = state.swap_manager.try_lock() {
         (sw.valencias_palavras(), sw.grafo_palavras())
     } else {
         (std::collections::HashMap::<String,f32>::new(),
@@ -921,10 +927,16 @@ pub async fn handle_connection(
                 if let Ok(mut state) = brain.try_lock() {
                     // Clona o Arc do swap antes de usar state (evita lifetime entanglement)
                     let swap_arc_esp = state.swap_manager.clone();
-                    let (grafo_snap, valencias_snap) = if let Ok(sw) = swap_arc_esp.try_lock() {
-                        (sw.grafo_palavras(), sw.valencias_palavras())
+                    let (grafo_snap, valencias_snap, scaffold_esp) = if let Ok(mut sw) = swap_arc_esp.try_lock() {
+                        let tokens_input: Vec<String> = estimulo.to_lowercase()
+                            .split(|c: char| !c.is_alphanumeric())
+                            .filter(|t| t.len() > 1)
+                            .map(|t| t.to_string())
+                            .collect();
+                        let (scaffold, _) = sw.template_scaffold(&tokens_input);
+                        (sw.grafo_palavras(), sw.valencias_palavras(), scaffold)
                     } else {
-                        (HashMap::new(), HashMap::new())
+                        (HashMap::new(), HashMap::new(), Vec::new())
                     };
                     let causal_vazio: HashMap<String, Vec<(String, f32)>> = HashMap::new();
                     if !state.dormindo && !grafo_snap.is_empty() {
@@ -953,6 +965,7 @@ pub async fn handle_connection(
                             &valencias_snap,
                             &grafo_snap,
                             &state.frases_padrao,
+                            &state.indice_prefixo,
                             &state.ultimos_prefixos.iter().cloned().collect::<Vec<_>>(),
                             &ctx_esp,
                             &mut caminho_esp,
@@ -963,6 +976,8 @@ pub async fn handle_connection(
                             &state.palavra_qvalores,
                             &mut ancora_esp,
                             &state.ultimo_estado_corpo,
+                            &scaffold_esp,
+                            &state.trigrama_cache,
                         );
                         if !reply.is_empty() {
                             let event_type = if e_curiosidade { "curiosidade_espontanea" } else { "pensamento_espontaneo" };
@@ -1036,7 +1051,7 @@ pub async fn handle_connection(
                                 // Envia snapshot do grafo neural para visualização
                                 Some("vocab_request") => {
                                     let swap_arc_vr = brain.lock().await.swap_manager.clone();
-                                    let (valencias, grafo) = if let Ok(sw) = swap_arc_vr.try_lock() {
+                                    let (valencias, grafo) = if let Ok(mut sw) = swap_arc_vr.try_lock() {
                                         (sw.valencias_palavras(), sw.grafo_palavras())
                                     } else {
                                         (HashMap::new(), HashMap::new())
@@ -1142,9 +1157,15 @@ pub async fn handle_connection(
                                             let tmp = brain.lock().await;
                                             tmp.swap_manager.clone()
                                         };
-                                        let (grafo_neural, valencias_neural) = {
-                                            let s = swap_arc_chat.lock().await;
-                                            (s.grafo_palavras(), s.valencias_palavras())
+                                        let (grafo_neural, valencias_neural, scaffold_chat, scaffold_id_chat) = {
+                                            let mut s = swap_arc_chat.lock().await;
+                                            let tokens_msg: Vec<String> = mensagem.to_lowercase()
+                                                .split(|c: char| !c.is_alphanumeric())
+                                                .filter(|t| t.len() > 1)
+                                                .map(|t| t.to_string())
+                                                .collect();
+                                            let (scaffold, scaffold_id) = s.template_scaffold(&tokens_msg);
+                                            (s.grafo_palavras(), s.valencias_palavras(), scaffold, scaffold_id)
                                         };
                                         let causal_vazio_chat: HashMap<String, Vec<(String, f32)>> = HashMap::new();
                                         let mut state = brain.lock().await;
@@ -1542,6 +1563,14 @@ pub async fn handle_connection(
                                             ctx.extend(state.frontal_goal_words.iter().cloned());
                                             // P1-A: conceitos neuralmente ativos entram no contexto
                                             ctx.extend(conceitos_ativos_ctx.iter().cloned());
+                                            // P3.4: estado emocional narrativo como cor do vocabulário
+                                            {
+                                                let (d_n, s_n, nor_n) = state.neurotransmissores;
+                                                let cor_n = state.ultimo_estado_corpo[4];
+                                                let estado_n = narrativa::traduzir_estado(
+                                                    d_n, s_n, nor_n, cor_n, emocao_resposta);
+                                                ctx.push(estado_n.como_palavra().to_string());
+                                            }
                                             ctx
                                         };
                                         let reply = gerar_resposta_emergente(
@@ -1551,6 +1580,7 @@ pub async fn handle_connection(
                                             &valencias_neural,
                                             &grafo_neural,
                                             &state.frases_padrao,
+                                            &state.indice_prefixo,
                                             &state.ultimos_prefixos.iter().cloned().collect::<Vec<_>>(),
                                             &{
                                                 let mut ctx = ctx_para_log.clone();
@@ -1569,6 +1599,8 @@ pub async fn handle_connection(
                                             &state.palavra_qvalores,
                                             &mut ancora_log,
                                             &state.ultimo_estado_corpo,
+                                            &scaffold_chat,
+                                            &state.trigrama_cache,
                                         );
 
                                         // ── LOG DE AJUSTE FINO ──────────────────────────────
@@ -1599,6 +1631,30 @@ pub async fn handle_connection(
                                                 &qbias_top,
                                                 state.ultimo_rpe,
                                             );
+                                        }
+
+                                        // ── Template feedback loop ──────────────────────────
+                                        // Reforça o template que gerou o scaffold com os tokens
+                                        // reais da resposta — fecha o ciclo de aprendizado:
+                                        // reconhecer → scaffoldar → usar → histórico de slots.
+                                        if !reply.is_empty() {
+                                            if let Some(tid) = scaffold_id_chat {
+                                                let reply_tokens: HashMap<usize, String> = reply
+                                                    .to_lowercase()
+                                                    .split(|c: char| !c.is_alphanumeric())
+                                                    .filter(|t| t.len() > 1)
+                                                    .map(|t| t.to_string())
+                                                    .enumerate()
+                                                    .take(8)
+                                                    .collect();
+                                                let t_tmpl = std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .unwrap_or_default()
+                                                    .as_secs_f64();
+                                                if let Ok(mut sw) = state.swap_manager.try_lock() {
+                                                    sw.template_store.usar(tid, &reply_tokens, true, t_tmpl);
+                                                }
+                                            }
                                         }
 
                                         state.ultimos_prefixos.push_back(prefixo_buf);
@@ -1653,6 +1709,12 @@ pub async fn handle_connection(
                                                     *w = (*w * 0.995).max(0.01);
                                                 }
                                                 sw.sinapses_conceito.retain(|_, p| *p > 0.01);
+                                                // Decai e poda templates inativos
+                                                let t_decay = std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .unwrap_or_default()
+                                                    .as_secs_f64();
+                                                sw.template_store.tick_decay(t_decay);
                                             }
                                         }
 
@@ -1731,7 +1793,7 @@ pub async fn handle_connection(
                                                 c
                                             };
                                             let swap_arc_hyp = state.swap_manager.clone();
-                                            let (grafo_ref, val_ref) = if let Ok(sw) = swap_arc_hyp.try_lock() {
+                                            let (grafo_ref, val_ref) = if let Ok(mut sw) = swap_arc_hyp.try_lock() {
                                                 (sw.grafo_palavras(), sw.valencias_palavras())
                                             } else { (HashMap::new(), HashMap::new()) };
                                             state.hypothesis_engine.formular(
@@ -1871,7 +1933,7 @@ pub async fn handle_connection(
                                         // curiosity_threshold deriva do traço "curiosa": 0.55–0.75
                                         let curiosidade_disparada = state.curiosity_level > curiosity_threshold && dopa > 0.55;
                                         let pergunta_autonoma: Option<String> = if curiosidade_disparada {
-                                            let (grafo_lac, val_lac) = if let Ok(sw) = state.swap_manager.try_lock() {
+                                            let (grafo_lac, val_lac) = if let Ok(mut sw) = state.swap_manager.try_lock() {
                                                 (sw.grafo_palavras(), sw.valencias_palavras())
                                             } else { (HashMap::new(), HashMap::new()) };
                                             let lacunas = detectar_lacunas(
@@ -1957,7 +2019,7 @@ pub async fn handle_connection(
                                                 if !state.spike_vocab.contains_key(&chave) {
                                                     let bands_sh = texto_para_bandas_fft(palavra, dop2, ser2, nor2);
                                                     let pat_sh = bands_to_spike_pattern(&bands_sh);
-                                                    state.spike_vocab.insert(chave.clone(), pat_sh);
+                                                    state.inserir_spike_vocab(chave.clone(), pat_sh);
                                                     if let Some(ref mut helix) = state.helix {
                                                         let _ = helix.insert(&chave, &pat_sh);
                                                     }
@@ -1967,6 +2029,26 @@ pub async fn handle_connection(
                                             if n_novas_sh > 0 {
                                                 log::debug!("[SelfHear] {} palavras novas no spike_vocab", n_novas_sh);
                                             }
+                                        }
+
+                                        // Registra episódio de chat no PatternEngine
+                                        {
+                                            use crate::learning::pattern_engine::FonteEpisodio;
+                                            let t_s = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap_or_default()
+                                                .as_secs_f64();
+                                            let neuro = [dop2, ser2, nor2, 0.5, 0.0];
+                                            let ctx_ep: Vec<String> = state.neural_context.iter().cloned().collect();
+                                            state.pattern_engine.gravar(
+                                                t_s,
+                                                FonteEpisodio::Chat,
+                                                ctx_ep,
+                                                mensagem.to_lowercase(),
+                                                if reply.is_empty() { None } else { Some(reply.clone()) },
+                                                emocao_resposta,
+                                                neuro,
+                                            );
                                         }
 
                                         // Snapshots para persistência (clonados antes de liberar o lock)
@@ -2099,7 +2181,7 @@ pub async fn handle_connection(
                                         // Armazena assinatura auditiva de cada palavra
                                         for palavra in &palavras {
                                             let chave = format!("audio:{}", palavra);
-                                            state.spike_vocab.insert(chave.clone(), audio_pat);
+                                            state.inserir_spike_vocab(chave.clone(), audio_pat);
                                             if let Some(ref mut helix) = state.helix {
                                                 let _ = helix.insert(&chave, &audio_pat);
                                             }
@@ -2347,7 +2429,7 @@ pub async fn handle_connection(
                                         // Armazena assinatura visual de cada palavra
                                         for palavra in &palavras {
                                             let chave = format!("visual:{}", palavra);
-                                            state.spike_vocab.insert(chave.clone(), visual_pat);
+                                            state.inserir_spike_vocab(chave.clone(), visual_pat);
                                             if let Some(ref mut helix) = state.helix {
                                                 let _ = helix.insert(&chave, &visual_pat);
                                             }
@@ -2540,7 +2622,7 @@ pub async fn handle_connection(
                                         // ── SPIKE ENCODING (Helix) ─────────────────────
                                         // Codifica a palavra em padrão spike e persiste no HelixStore.
                                         let spike_pat = spike_encode(&texto_lower);
-                                        state.spike_vocab.insert(texto_lower.clone(), spike_pat);
+                                        state.inserir_spike_vocab(texto_lower.clone(), spike_pat);
                                         if let Some(ref mut helix) = state.helix {
                                             let _ = helix.insert(&texto_lower, &spike_pat);
                                         }
@@ -2565,6 +2647,27 @@ pub async fn handle_connection(
                                             swap.aprender_conceito(&texto_lower, valence);
                                         }
 
+                                        // Registra episódio no PatternEngine
+                                        {
+                                            use crate::learning::pattern_engine::FonteEpisodio;
+                                            let t_s = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap_or_default()
+                                                .as_secs_f64();
+                                            let (da, ht, na) = state.neurotransmissores;
+                                            let neuro = [da, ht, na, 0.5, 0.0];
+                                            let contexto_ep = state.neural_context.iter().cloned().collect::<Vec<_>>();
+                                            state.pattern_engine.gravar(
+                                                t_s,
+                                                FonteEpisodio::Aprendizado,
+                                                contexto_ep,
+                                                texto_lower.clone(),
+                                                Some(context.clone()),
+                                                valence,
+                                                neuro,
+                                            );
+                                        }
+
                                         // Registra pensamento no ego
                                         let pensamento = format!("[{}] {} (val={:.2})", context, texto, valence);
                                         if state.ego.pensamentos_recentes.len() >= 10 {
@@ -2587,6 +2690,69 @@ pub async fn handle_connection(
                                         drop(state);
                                         let _ = ws_tx.send(Message::text(ack)).await;
                                         log::debug!("[LEARN] '{}' val={:.2} ctx={}", texto, valence, context);
+                                    }
+                                }
+
+                                // ── TEMPLATE_USE ──────────────────────────────────────
+                                // Treina um template cognitivo preenchendo seus slots.
+                                // Payload: { "action": "template_use",
+                                //            "template_name": "relacao_causal",
+                                //            "slots": { "0": "calor", "2": "fogo" },
+                                //            "validado": true }
+                                Some("template_use") => {
+                                    let nome = json["template_name"].as_str().unwrap_or("").to_string();
+                                    let validado = json["validado"].as_bool().unwrap_or(true);
+                                    let t_atual_s = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs_f64();
+
+                                    // Constrói mapa de slots: {"0": "palavra"} → {0usize: "palavra"}
+                                    let slots_map: std::collections::HashMap<usize, String> =
+                                        if let Some(obj) = json["slots"].as_object() {
+                                            obj.iter()
+                                                .filter_map(|(k, v)| {
+                                                    k.parse::<usize>().ok()
+                                                        .zip(v.as_str().map(|s| s.to_string()))
+                                                })
+                                                .collect()
+                                        } else {
+                                            std::collections::HashMap::new()
+                                        };
+
+                                    if !nome.is_empty() && !slots_map.is_empty() {
+                                        let mut state = brain.lock().await;
+                                        state.ws_atividade = 1.0;
+                                        let ack = if let Ok(mut sw) = state.swap_manager.try_lock() {
+                                            // Encontra template pelo nome
+                                            let tid = sw.template_store.templates.iter()
+                                                .find(|(_, t)| t.nome.as_deref() == Some(nome.as_str()))
+                                                .map(|(&id, _)| id);
+
+                                            if let Some(id) = tid {
+                                                let result = sw.template_store.usar(id, &slots_map, validado, t_atual_s);
+                                                let (n_val, forca, estado) = sw.template_store.templates.get(&id)
+                                                    .map(|t| (t.n_validacoes, t.forca, format!("{:?}", t.estado)))
+                                                    .unwrap_or((0, 0.0, "?".into()));
+                                                serde_json::json!({
+                                                    "event": "template_trained",
+                                                    "template": nome,
+                                                    "completo": result.map(|(_, tipo)| tipo == crate::learning::templates::TipoUso::Completo).unwrap_or(false),
+                                                    "n_validacoes": n_val,
+                                                    "forca": forca,
+                                                    "estado": estado,
+                                                }).to_string()
+                                            } else {
+                                                serde_json::json!({
+                                                    "event": "template_not_found",
+                                                    "template": nome,
+                                                }).to_string()
+                                            }
+                                        } else {
+                                            serde_json::json!({"event": "template_lock_failed"}).to_string()
+                                        };
+                                        drop(state);
+                                        let _ = ws_tx.send(Message::text(ack)).await;
                                     }
                                 }
 
@@ -2796,7 +2962,7 @@ pub async fn handle_connection(
                                         let swap_arc_cc = state.swap_manager.clone();
                                         drop(state);
 
-                                        let (edge_fwd, edge_rev) = if let Ok(sw) = swap_arc_cc.try_lock() {
+                                        let (edge_fwd, edge_rev) = if let Ok(mut sw) = swap_arc_cc.try_lock() {
                                             let grafo = sw.grafo_palavras();
                                             let fwd = grafo.get(&w1_low).and_then(|v| v.iter().find(|(w,_)| w == &w2_low)).map(|(_,p)| *p);
                                             let rev = grafo.get(&w2_low).and_then(|v| v.iter().find(|(w,_)| w == &w1_low)).map(|(_,p)| *p);
@@ -2884,6 +3050,7 @@ pub async fn handle_connection(
                                                 let ja_existe = state.frases_padrao.iter().any(|f| f == &palavras);
                                                 if !ja_existe {
                                                     state.frases_padrao.push(palavras.clone());
+                                                    state.reconstruir_trigrama_cache();
                                                 }
                                                 let n_frases = state.frases_padrao.len();
                                                 drop(state);
@@ -2943,7 +3110,7 @@ pub async fn handle_connection(
                                         let tmp = brain.lock().await;
                                         tmp.swap_manager.clone()
                                     };
-                                    let (valencias_ex, grafo_ex) = if let Ok(sw) = swap_arc_ex.try_lock() {
+                                    let (valencias_ex, grafo_ex) = if let Ok(mut sw) = swap_arc_ex.try_lock() {
                                         (sw.valencias_palavras(), sw.grafo_palavras())
                                     } else {
                                         (HashMap::new(), HashMap::new())
@@ -3148,7 +3315,7 @@ pub async fn handle_connection(
                                         //
                                         // 1. Garante que grafema e letras existem no vocabulário
                                         // Spike vocab save
-                                        state.spike_vocab.insert(format!("audio:{}", &grafema), apad);
+                                        state.inserir_spike_vocab(format!("audio:{}", &grafema), apad);
 
                                         // Grafema <-> letras + bigrams -> swap sinapses
                                         let swap_arc_gr = state.swap_manager.clone();
@@ -3257,9 +3424,15 @@ pub async fn handle_connection(
                                     let tmp = brain.lock().await;
                                     tmp.swap_manager.clone()
                                 };
-                                let (grafo_neural_s, valencias_neural_s) = {
-                                    let s = swap_arc_s.lock().await;
-                                    (s.grafo_palavras(), s.valencias_palavras())
+                                let (grafo_neural_s, valencias_neural_s, scaffold_s) = {
+                                    let mut s = swap_arc_s.lock().await;
+                                    let tokens_s: Vec<String> = text.to_lowercase()
+                                        .split(|c: char| !c.is_alphanumeric())
+                                        .filter(|t| t.len() > 1)
+                                        .map(|t| t.to_string())
+                                        .collect();
+                                    let (scaffold, _) = s.template_scaffold(&tokens_s);
+                                    (s.grafo_palavras(), s.valencias_palavras(), scaffold)
                                 };
                                 let causal_vazio_s: HashMap<String, Vec<(String, f32)>> = HashMap::new();
                                 let mut state = brain.lock().await;
@@ -3294,6 +3467,7 @@ pub async fn handle_connection(
                                     &valencias_neural_s,
                                     &grafo_neural_s,
                                     &state.frases_padrao,
+                                    &state.indice_prefixo,
                                     &state.ultimos_prefixos.iter().cloned().collect::<Vec<_>>(),
                                     &ctx_log2,
                                     &mut caminho_q,
@@ -3304,6 +3478,8 @@ pub async fn handle_connection(
                                     &state.palavra_qvalores,
                                     &mut ancora_log2,
                                     &state.ultimo_estado_corpo,
+                                    &scaffold_s,
+                                    &state.trigrama_cache,
                                 );
                                 // ── LOG ─────────────────────────────────────────
                                 {

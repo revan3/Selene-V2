@@ -76,6 +76,8 @@ pub struct CicloSono {
     pub grafo: Option<Arc<TokioMutex<MemoryTierV2>>>,
     /// Banco de dados — necessário para persistir mutações sinápticas
     pub db: Option<Arc<BrainStorage>>,
+    /// BrainState compartilhado — necessário para REM semântico real
+    pub brain_state: Option<Arc<TokioMutex<crate::websocket::bridge::BrainState>>>,
 }
 
 impl CicloSono {
@@ -89,6 +91,7 @@ impl CicloSono {
             versao_sistema: env!("CARGO_PKG_VERSION").to_string(),
             grafo: None,
             db: None,
+            brain_state: None,
         }
     }
 
@@ -99,6 +102,11 @@ impl CicloSono {
 
     pub fn with_db(mut self, db: Arc<BrainStorage>) -> Self {
         self.db = Some(db);
+        self
+    }
+
+    pub fn with_brain_state(mut self, bs: Arc<TokioMutex<crate::websocket::bridge::BrainState>>) -> Self {
+        self.brain_state = Some(bs);
         self
     }
 
@@ -244,6 +252,57 @@ impl CicloSono {
             }
         } else {
             println!("   ⚠️  Grafo sináptico não conectado ao ciclo REM");
+        }
+
+        // REM semântico: replay episódico + atalhos no grafo de palavras
+        if let Some(bs_arc) = &self.brain_state {
+            if let Ok(mut bs) = bs_arc.try_lock() {
+                let (novas, relato) = bs.rem_semantico();
+                if novas > 0 { println!("   🧠 REM semântico: {} novas sinapses", novas); }
+                if let Some(r) = relato { println!("   💭 Sonho: {}", r); }
+
+                // P4.1 — Replay reverso: reforça caminhos causais de trás para frente.
+                // Biologicamente: hippocampus replay é tanto forward quanto reverse.
+                // Reverse replay propaga recompensas de volta à causa — aprende causalidade.
+                let n_reverso = {
+                    let episodios_rev: Vec<_> = bs.historico_episodico
+                        .iter()
+                        .filter(|ep| ep.emocao.abs() > 0.5)
+                        .rev()
+                        .take(20)
+                        .flat_map(|ep| ep.palavras.iter().rev().cloned())
+                        .collect();
+                    let mut n_rev = 0usize;
+                    // Cria atalhos reversos: se B→A não existe e emocao alta, cria com peso menor
+                    for w in episodios_rev.windows(2) {
+                        if let [a, b] = w {
+                            if a != b && a.len() >= 2 && b.len() >= 2 {
+                                // arc reverso (recompensa → causa) com peso reduzido
+                                if let Ok(mut sw) = bs.swap_manager.try_lock() {
+                                    sw.importar_causal(vec![(b.clone(), a.clone(), 0.05)]);
+                                }
+                                n_rev += 1;
+                            }
+                        }
+                    }
+                    n_rev
+                };
+                if n_reverso > 0 {
+                    println!("   ↩️  Replay reverso: {} atalhos causais revertidos", n_reverso);
+                }
+
+                // PatternEngine — extração e consolidação de padrões durante REM
+                let t_s = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64();
+                let novos_candidatos = bs.pattern_engine.extrair_padroes(t_s);
+                let novos_consolidados = bs.pattern_engine.consolidar(t_s);
+                if novos_candidatos > 0 || novos_consolidados > 0 {
+                    println!("   🔍 PatternEngine: +{} candidatos, +{} consolidados",
+                        novos_candidatos, novos_consolidados);
+                }
+            }
         }
     }
 

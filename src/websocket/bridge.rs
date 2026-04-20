@@ -15,6 +15,7 @@ use crate::encoding::spike_codec::SpikePattern;
 use crate::encoding::helix_store::HelixStore;
 use crate::brain_zones::occipital::OccipitalLobe;
 use crate::learning::hypothesis::HypothesisEngine;
+use crate::learning::pattern_engine::PatternEngine;
 use crate::sensors::audio::WordAccumulator;
 
 /// Evento episódico rico — registra um momento de experiência com contexto perceptual completo.
@@ -307,6 +308,18 @@ pub struct BrainState {
     /// Traço de extinção da amígdala [0.0, 1.0].
     /// Alto = medo suprimido por experiências seguras / sono → Selene mais à vontade.
     pub amygdala_extinction: f32,
+
+    /// Índice invertido de frases_padrao: palavra → índices de frases que contêm essa palavra.
+    /// Permite scoring O(topico × hits) ao invés de O(frases × words).
+    pub indice_prefixo: HashMap<String, Vec<usize>>,
+
+    /// Cache de trigramas: (w1, w2) → [w3, ...] extraído de frases_padrao.
+    /// Evita reconstrução a cada resposta — rebuild via reconstruir_trigrama_cache().
+    pub trigrama_cache: HashMap<(String, String), Vec<String>>,
+
+    /// Motor de reconhecimento e predição de padrões (3 camadas: episódica → extração → consolidação).
+    /// Grave episódios via `pattern_engine.gravar()`; extração + consolidação ocorre no sono N3.
+    pub pattern_engine: PatternEngine,
 }
 
 pub struct EgoVoiceState {
@@ -401,7 +414,7 @@ impl BrainState {
                     // associacoes (palavra→[(palavra, peso)]) — as chaves CORRETAS do formato v1.
                     // Carrega ambos no swap independente de swap_state.json já existir —
                     // garante que a memória linguística persistida nunca se perca.
-                    let sem_grafo = swap.try_lock().map_or(true, |sw| sw.grafo_palavras().is_empty());
+                    let sem_grafo = swap.try_lock().map_or(true, |mut sw| sw.grafo_palavras().is_empty());
 
                     if let Ok(mut sw) = swap.try_lock() {
                         // 1. vocabulario → aprender_conceito (valência inicial de cada palavra)
@@ -516,7 +529,7 @@ impl BrainState {
                 .map(VecDeque::from)
                 .unwrap_or_default();
 
-        Self {
+        let mut state = Self {
             swap_manager: swap,
             config: cfg.clone(),
             neurotransmissores: (0.5, 0.5, 0.5),
@@ -590,7 +603,230 @@ impl BrainState {
             oxytocin_level: 0.5,
             amygdala_fear: 0.0,
             amygdala_extinction: 0.3,
+            indice_prefixo: HashMap::new(),
+            trigrama_cache: HashMap::new(),
+            pattern_engine: PatternEngine::novo(),
+        };
+        state.reconstruir_indice_prefixo();
+        state.reconstruir_trigrama_cache();
+        state
+    }
+
+    /// Reconstrói o índice invertido de frases_padrao.
+    /// Deve ser chamado após carregar/adicionar frases.
+    pub fn reconstruir_indice_prefixo(&mut self) {
+        self.indice_prefixo.clear();
+        for (i, frase) in self.frases_padrao.iter().enumerate() {
+            for palavra in frase {
+                self.indice_prefixo
+                    .entry(palavra.clone())
+                    .or_default()
+                    .push(i);
+            }
         }
+    }
+
+    /// Reconstrói o cache de trigramas de frases_padrao.
+    /// Deve ser chamado após reconstruir_indice_prefixo().
+    pub fn reconstruir_trigrama_cache(&mut self) {
+        self.trigrama_cache.clear();
+        for frase in &self.frases_padrao {
+            for w in frase.windows(3) {
+                self.trigrama_cache
+                    .entry((w[0].clone(), w[1].clone()))
+                    .or_default()
+                    .push(w[2].clone());
+            }
+        }
+    }
+
+    /// Insere padrão spike no vocab com evicção LRU quando acima do cap.
+    pub fn inserir_spike_vocab(&mut self, chave: String, pat: crate::encoding::spike_codec::SpikePattern) {
+        const SPIKE_VOCAB_CAP: usize = 50_000;
+        self.spike_vocab.insert(chave, pat);
+        if self.spike_vocab.len() > SPIKE_VOCAB_CAP {
+            let n_remover = self.spike_vocab.len() - SPIKE_VOCAB_CAP;
+            let keys: Vec<String> = self.spike_vocab.keys().take(n_remover).cloned().collect();
+            for k in keys { self.spike_vocab.remove(&k); }
+        }
+    }
+
+    /// REM semântico: replay episódico + ligações cruzadas + atalhos no grafo.
+    /// Retorna (n_novas_sinapses, relato_do_sonho).
+    pub fn rem_semantico(&mut self) -> (usize, Option<String>) {
+        use rand::seq::SliceRandom;
+        use rand::seq::IteratorRandom;
+        use rand::Rng;
+        use crate::encoding::spike_codec::is_active;
+
+        let mut rng = rand::thread_rng();
+
+        let mut episodios: Vec<EventoEpisodico> = self.historico_episodico
+            .iter()
+            .filter(|ev| ev.emocao.abs() > 0.25)
+            .cloned()
+            .collect();
+        episodios.shuffle(&mut rng);
+
+        if episodios.is_empty() {
+            return (0, None);
+        }
+
+        let mut causal_pairs: Vec<(String, String, f32)> = Vec::new();
+        let mut novas_cruzadas = 0usize;
+
+        // Reforço intra-episódio
+        for ev in &episodios {
+            let bonus = ev.emocao.abs() * 0.06;
+            for i in 0..ev.palavras.len().saturating_sub(1) {
+                let wa = &ev.palavras[i];
+                let wb = &ev.palavras[i + 1];
+                if wa.chars().count() >= 3 && wb.chars().count() >= 3 {
+                    causal_pairs.push((wa.clone(), wb.clone(), (0.35 + bonus).min(0.65)));
+                }
+            }
+            let visual_ativo = is_active(&ev.padrao_visual);
+            let audio_ativo  = is_active(&ev.padrao_audio);
+            for w in &ev.palavras {
+                let entry = self.emocao_palavras.entry(w.clone()).or_insert(0.0);
+                *entry = (*entry * 0.90 + ev.emocao * 0.10).clamp(-1.0, 1.0);
+                let g = self.grounding.entry(w.clone()).or_insert(0.0);
+                if visual_ativo { *g = (*g + bonus * 0.4).min(1.0); }
+                if audio_ativo  { *g = (*g + bonus * 0.25).min(1.0); }
+                *g = (*g + bonus * 0.15).min(1.0);
+            }
+        }
+
+        // Ligações cruzadas entre episódios de valência similar
+        let n_ep = episodios.len();
+        if n_ep >= 2 {
+            for i in 0..n_ep {
+                for j in (i + 1)..n_ep.min(i + 4) {
+                    let ei = &episodios[i];
+                    let ej = &episodios[j];
+                    let valence_similar = ei.emocao.signum() == ej.emocao.signum()
+                        && (ei.emocao - ej.emocao).abs() < 0.4;
+                    if !valence_similar { continue; }
+                    let wa_opt = ei.palavras.iter().filter(|w| w.chars().count() >= 3).choose(&mut rng);
+                    let wb_opt = ej.palavras.iter().filter(|w| w.chars().count() >= 3).choose(&mut rng);
+                    if let (Some(wa), Some(wb)) = (wa_opt, wb_opt) {
+                        if wa != wb {
+                            let peso = ((ei.emocao.abs() + ej.emocao.abs()) * 0.5 * 0.4).clamp(0.15, 0.50);
+                            causal_pairs.push((wa.clone(), wb.clone(), peso));
+                            novas_cruzadas += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Walk com atalhos semânticos A→B→C → A→C
+        let mut sonho_chain: Vec<String> = Vec::new();
+        let mut novas_atalho = 0usize;
+
+        let (grafo_inicial, atalhos) = if let Ok(mut sw) = self.swap_manager.try_lock() {
+            sw.importar_causal(causal_pairs.clone());
+            let grafo = sw.grafo_palavras();
+            let valencias = sw.valencias_palavras();
+
+            let ancora: String = episodios.first()
+                .and_then(|ep| ep.palavras.iter()
+                    .filter(|w| w.chars().count() >= 3)
+                    .max_by(|a, b| {
+                        let va = valencias.get(*a).map(|v| v.abs()).unwrap_or(0.0);
+                        let vb = valencias.get(*b).map(|v| v.abs()).unwrap_or(0.0);
+                        va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .cloned())
+                .unwrap_or_else(|| "eu".to_string());
+
+            sonho_chain.push(ancora.clone());
+            let mut atual = ancora;
+            let mut atalhos_novos: Vec<(String, String, f32)> = Vec::new();
+
+            for passo in 0..8usize {
+                let vizinhos_b: Vec<(String, f32)> = grafo.get(&atual)
+                    .map(|v| v.iter().filter(|(w, _)| w.chars().count() >= 3).cloned().collect())
+                    .unwrap_or_default();
+                if vizinhos_b.is_empty() { break; }
+
+                let total_peso: f32 = vizinhos_b.iter().map(|(_, p)| p.abs()).sum();
+                let mut alvo = rng.gen::<f32>() * total_peso.max(0.001);
+                let mut proximo_b = vizinhos_b[0].0.clone();
+                for (w, p) in &vizinhos_b {
+                    alvo -= p.abs();
+                    if alvo <= 0.0 { proximo_b = w.clone(); break; }
+                }
+
+                let vizinhos_c: Vec<(String, f32)> = grafo.get(&proximo_b)
+                    .map(|v| v.iter().filter(|(w, _)| w.chars().count() >= 3 && w != &atual).cloned().collect())
+                    .unwrap_or_default();
+
+                if let Some((proximo_c, peso_bc)) = vizinhos_c.choose(&mut rng) {
+                    let ja_existe_ac = grafo.get(&atual)
+                        .map(|v| v.iter().any(|(w, _)| w == proximo_c))
+                        .unwrap_or(false);
+                    if !ja_existe_ac && passo % 2 == 0 {
+                        let peso_atalho = (peso_bc * 0.6).clamp(0.20, 0.55);
+                        atalhos_novos.push((atual.clone(), proximo_c.clone(), peso_atalho));
+                        novas_atalho += 1;
+                    }
+                    sonho_chain.push(proximo_b.clone());
+                    sonho_chain.push(proximo_c.clone());
+                    atual = proximo_c.clone();
+                } else {
+                    sonho_chain.push(proximo_b.clone());
+                    atual = proximo_b;
+                }
+            }
+            sonho_chain.dedup();
+            (grafo, atalhos_novos)
+        } else {
+            return (0, None);
+        };
+        let _ = grafo_inicial;
+
+        if !atalhos.is_empty() {
+            if let Ok(mut sw) = self.swap_manager.try_lock() {
+                sw.importar_causal(atalhos);
+            }
+        }
+
+        // STDP noturno
+        if let Ok(mut sw) = self.swap_manager.try_lock() {
+            let valencias = sw.valencias_palavras();
+            if !valencias.is_empty() {
+                let dt_s = 1.0_f32 / 200.0;
+                for _ in 0..3 { sw.treinar_semantico(300, dt_s, &valencias); }
+            }
+        }
+
+        // Hipóteses confiáveis → sinapses
+        let confiaveis = self.hypothesis_engine.hipoteses_confiaveis();
+        if !confiaveis.is_empty() {
+            let pares: Vec<(String, String, f32)> = confiaveis.iter()
+                .flat_map(|h| h.premissas.iter()
+                    .map(|p| (p.clone(), h.conclusao.clone(), h.confianca * 0.4))
+                    .collect::<Vec<_>>())
+                .collect();
+            if let Ok(mut sw) = self.swap_manager.try_lock() {
+                sw.importar_causal(pares);
+            }
+        }
+
+        let total_novas = novas_cruzadas + novas_atalho;
+        println!("   ✨ [rem_semantico] {} cruzadas + {} atalhos = {} novas sinapses | {} episódios",
+            novas_cruzadas, novas_atalho, total_novas, episodios.len());
+
+        let relato = if sonho_chain.len() >= 3 {
+            let trecho: Vec<&String> = sonho_chain.iter().take(6).collect();
+            Some(format!("sonhei com {}... e depois {}... e então {}",
+                trecho[0],
+                trecho.get(2).map(|s| s.as_str()).unwrap_or("algo distante"),
+                trecho.last().map(|s| s.as_str()).unwrap_or("silêncio")))
+        } else { None };
+
+        (total_novas, relato)
     }
 
     // ── Memória autobiográfica ────────────────────────────────────────────────

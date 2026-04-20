@@ -80,7 +80,8 @@ use storage::swap_manager::SwapManager;
 use storage::checkpoint::CheckpointSystem;
 
 // Imports dos sensores
-use sensors::camera::VisualTransducer;
+use sensors::camera::{DualCameraSystem, novo_frame_buffer};
+use sensors::vision_stream::{VisionBroadcast, iniciar_broadcast, iniciar_servidor_visao};
 use sensors::audio;
 use sensors::hardware::HardwareSensor;
 use sensors::SensorFlags;
@@ -214,7 +215,11 @@ fn main() {
 async fn async_main() {
     let config = Config::new(ModoOperacao::Boost200);
     let dt = config.dt_simulacao;
-    let n_neurons = 1024usize;
+    // Escala neurônios com RAM disponível: mín 1024, máx 8192 (>8k aumenta latência)
+    let n_neurons = {
+        let max_dyn = calcular_max_neurons();
+        max_dyn.min(8192).max(1024)
+    };
     
     println!("\n{}", "=".repeat(60));
     println!("🧠 SELENE BRAIN 2.0 - SISTEMA NEURAL BIO-INSPIRADO");
@@ -276,7 +281,7 @@ async fn async_main() {
     }
 
     // --- 5. SETUP DE COMUNICAÇÃO ---
-    let (tx_vision, rx_vision) = channel();
+
     let (tx_audio, rx_audio) = channel();
     let (tx_feedback, rx_feedback): (Sender<NeuralEnactiveMemory>, Receiver<NeuralEnactiveMemory>) = channel();
 
@@ -369,8 +374,17 @@ async fn async_main() {
     let sensor_flags = SensorFlags::new_desativados();
 
     let video_flag = sensor_flags.video_ativo.clone();
-    let mut camera = VisualTransducer::new(n_neurons, video_flag);
-    thread::spawn(move || camera.run(tx_vision));
+    let estereo_flag = sensor_flags.video_ativo.clone(); // reutiliza mesma flag; câmera 1 inativa por ora
+    let dual_cam = DualCameraSystem::novo(false); // stereo_disponivel=false (1 câmera física)
+    let frame_buf_clone = std::sync::Arc::clone(&dual_cam.frame_buf);
+    let (rx_vision_dual, _rx_estereo) = dual_cam.iniciar(n_neurons, video_flag, estereo_flag);
+    // Vision stream broadcast — envia frames para o visualizador Python
+    let vision_broadcast = VisionBroadcast::novo();
+    let vision_bc_clone  = vision_broadcast.clone();
+    iniciar_broadcast(frame_buf_clone, vision_bc_clone);
+    tokio::spawn(async move { iniciar_servidor_visao(vision_broadcast).await });
+    // Redireciona o canal de visão neural para o receptor do DualCamSystem
+    let rx_vision = rx_vision_dual;
 
     let audio_flag = sensor_flags.audio_ativo.clone();
     let tx_audio_clone = tx_audio.clone();
@@ -451,7 +465,8 @@ async fn async_main() {
     let grafo_sinaptico = Arc::new(TokioMutex::new(MemoryTierV2::new()));
     let mut ciclo_sono = CicloSono::new()
         .with_grafo(Arc::clone(&grafo_sinaptico))
-        .with_db(Arc::clone(&storage_db));
+        .with_db(Arc::clone(&storage_db))
+        .with_brain_state(Arc::clone(&brain_state));
     let mut tempo_acordado = Duration::from_secs(0);
     let dia_duracao = Duration::from_secs(16 * 60 * 60);
 
@@ -1397,6 +1412,22 @@ async fn async_main() {
                             }
                         }
                         log::debug!("[D1→Ctx] {} palavras abstratas injetadas: {:?}", palavras_d1.len(), palavras_d1);
+
+                        // P1.1 — PatternEngine: grava episódio de pensamento espontâneo
+                        if emotion.abs() > 0.15 {
+                            use crate::learning::pattern_engine::FonteEpisodio;
+                            let neuro_snap = [neuro.dopamine, neuro.serotonin, neuro.noradrenaline,
+                                              neuro.acetylcholine, neuro.cortisol];
+                            if let Ok(mut bs) = brain_state.try_lock() {
+                                let tms = current_time * 1000.0;
+                                bs.pattern_engine.gravar(
+                                    tms as f64, FonteEpisodio::Pensamento,
+                                    palavras_d1.clone(),
+                                    format!("pens_step_{}", step),
+                                    None, emotion, neuro_snap,
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -1535,6 +1566,29 @@ async fn async_main() {
                 if !palavras.is_empty() {
                     let tms = current_time * 1000.0;
                     bs.grounding_bind(&palavras, vpad, apad, emotion, atividade_recente, tms as f64);
+
+                    // P1.1 — PatternEngine: grava episódio visual quando há percepção real
+                    use crate::learning::pattern_engine::FonteEpisodio;
+                    let neuro_snap = [neuro.dopamine, neuro.serotonin, neuro.noradrenaline,
+                                      neuro.acetylcholine, neuro.cortisol];
+                    let visual_ativo = bs.sensor_flags.video_ativo.load(std::sync::atomic::Ordering::Relaxed);
+                    let audio_ativo  = bs.sensor_flags.audio_ativo.load(std::sync::atomic::Ordering::Relaxed);
+                    if visual_ativo && emotion.abs() > 0.1 {
+                        let ctx_vis = palavras.clone();
+                        bs.pattern_engine.gravar(
+                            tms as f64, FonteEpisodio::Visual,
+                            ctx_vis, format!("vis_step_{}", step),
+                            None, emotion, neuro_snap,
+                        );
+                    }
+                    if audio_ativo && emotion.abs() > 0.05 {
+                        let ctx_amb = palavras.clone();
+                        bs.pattern_engine.gravar(
+                            tms as f64, FonteEpisodio::Ambiente,
+                            ctx_amb, format!("amb_step_{}", step),
+                            None, emotion, neuro_snap,
+                        );
+                    }
                 }
                 // Propaga RPE ao grounding (predições corretas solidificam o grounding)
                 let rpe_atual = bs.ultimo_rpe;
@@ -1856,7 +1910,7 @@ async fn async_main() {
         // Fonte de verdade: swap_manager (sinapses_conceito) em vez de grafo_associacoes.
         if step % 5000 == 0 && step > 0 {
             // Coleta dados do swap (fora do lock do brain_state)
-            let (valencias_export, grafo_export) = if let Ok(sw) = swap_manager.try_lock() {
+            let (valencias_export, grafo_export) = if let Ok(mut sw) = swap_manager.try_lock() {
                 (sw.valencias_palavras(), sw.grafo_palavras())
             } else {
                 (std::collections::HashMap::<String, f32>::new(),

@@ -60,7 +60,7 @@ async fn ciclo_consciente_tick(brain: &Arc<TokioMutex<BrainState>>) {
     if contexto.is_empty() { return; }
 
     // Phase 2: build swap snapshot — brain lock NOT held
-    let (grafo, valencias) = if let Ok(sw) = swap_arc.try_lock() {
+    let (grafo, valencias) = if let Ok(mut sw) = swap_arc.try_lock() {
         (sw.grafo_palavras(), sw.valencias_palavras())
     } else {
         return;
@@ -301,7 +301,7 @@ async fn ciclo_inconsciente_tick(brain: &Arc<TokioMutex<BrainState>>) {
     };
 
     // Phase 2: swap snapshot + walk (no brain lock)
-    let (grafo, valencias) = if let Ok(sw) = swap_arc.try_lock() {
+    let (grafo, valencias) = if let Ok(mut sw) = swap_arc.try_lock() {
         (sw.grafo_palavras(), sw.valencias_palavras())
     } else {
         return;
@@ -440,7 +440,7 @@ async fn ciclo_curiosidade_tick(brain: &Arc<TokioMutex<BrainState>>) {
     };
 
     // Phase 2: swap snapshot (no brain lock)
-    let (grafo, valencias) = if let Ok(sw) = swap_arc.try_lock() {
+    let (grafo, valencias) = if let Ok(mut sw) = swap_arc.try_lock() {
         (sw.grafo_palavras(), sw.valencias_palavras())
     } else {
         return;
