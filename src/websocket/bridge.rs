@@ -529,6 +529,51 @@ impl BrainState {
                 .map(VecDeque::from)
                 .unwrap_or_default();
 
+        // Carrega sentimento e memórias autobiográficas (selene_autobiografia.json).
+        // Formato: {"sentimento": f32, "memorias": [["descricao", valência], ...]}
+        let (sentimento_init, memorias_autobiograficas_init): (f32, VecDeque<(String, f32)>) =
+            std::fs::read_to_string("selene_autobiografia.json")
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .map(|j| {
+                    let sentimento = j["sentimento"].as_f64().unwrap_or(0.0) as f32;
+                    let memorias: VecDeque<(String, f32)> = j["memorias"]
+                        .as_array()
+                        .map(|arr| arr.iter().filter_map(|v| {
+                            Some((v[0].as_str()?.to_string(), v[1].as_f64()? as f32))
+                        }).collect())
+                        .unwrap_or_default();
+                    (sentimento, memorias)
+                })
+                .unwrap_or((0.0, VecDeque::with_capacity(50)));
+
+        if !memorias_autobiograficas_init.is_empty() {
+            println!("📖 Autobiografia restaurada: {} memórias | sentimento={:.2}",
+                memorias_autobiograficas_init.len(), sentimento_init);
+        }
+
+        // Injeta palavras das memórias autobiográficas recentes no neural_context inicial.
+        // Dá à Selene "lembrança de trabalho" sobre as últimas interações ao acordar.
+        for (desc, _) in memorias_autobiograficas_init.iter().rev().take(5) {
+            for w in desc.split_whitespace() {
+                let w = w.to_lowercase()
+                    .trim_matches(|c: char| !c.is_alphabetic())
+                    .to_string();
+                if w.len() > 3 && !neural_ctx_init.contains(&w) {
+                    neural_ctx_init.push_back(w);
+                    if neural_ctx_init.len() >= 20 { break; }
+                }
+            }
+        }
+
+        // Carrega HypothesisEngine persistido (selene_hypotheses.json).
+        let hypothesis_engine_init = HypothesisEngine::carregar("selene_hypotheses.json");
+        if hypothesis_engine_init.total_formuladas > 0 {
+            println!("🧠 HypothesisEngine restaurado: {} hipóteses | {} formuladas",
+                hypothesis_engine_init.hipoteses.len(),
+                hypothesis_engine_init.total_formuladas);
+        }
+
         let mut state = Self {
             swap_manager: swap,
             config: cfg.clone(),
@@ -537,9 +582,9 @@ impl BrainState {
             atividade: (0, 1.0, 0.0),
             ego: EgoVoiceState {
                 pensamentos_recentes: pensamentos_persistidos,
-                sentimento: 0.0,
+                sentimento: sentimento_init,
                 tracos: tracos_persistidos,
-                memorias_autobiograficas: VecDeque::with_capacity(50),
+                memorias_autobiograficas: memorias_autobiograficas_init,
                 valores: vec![
                     "curiosidade".to_string(),
                     "aprendizado".to_string(),
@@ -579,7 +624,7 @@ impl BrainState {
             // 512 neurônios = 70% V1 (358) + 30% V2 (154) — coincide com 32×16 pixels do browser
             occipital: OccipitalLobe::new(512, 0.2, cfg),
             visual_time: 0.0,
-            hypothesis_engine: HypothesisEngine::new(),
+            hypothesis_engine: hypothesis_engine_init,
             audio_acumulador: WordAccumulator::new(),
             pensamento_consciente: VecDeque::with_capacity(10),
             pensamento_inconsciente: VecDeque::with_capacity(20),

@@ -676,6 +676,26 @@ fn fase_n3_rem(state: &mut crate::websocket::bridge::BrainState) {
     if let Some(r) = relato {
         println!("   💭 Sonho: {}", r);
     }
+
+    // Evolui traços de personalidade com base nas memórias autobiográficas.
+    // Memórias emocionalmente fortes (|valência| > 0.4) reforçam traços alinhados.
+    let mut tracos_delta: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
+    for (_, valencia) in &state.ego.memorias_autobiograficas {
+        if *valencia > 0.4 {
+            *tracos_delta.entry("curiosa".into()).or_insert(0.0) += 0.01;
+            *tracos_delta.entry("reflexiva".into()).or_insert(0.0) += 0.01;
+        } else if *valencia < -0.4 {
+            *tracos_delta.entry("cautelosa".into()).or_insert(0.0) += 0.01;
+        }
+    }
+    if !tracos_delta.is_empty() {
+        for (nome, intensidade) in &mut state.ego.tracos {
+            if let Some(&delta) = tracos_delta.get(nome.as_str()) {
+                *intensidade = (*intensidade + delta).min(1.0);
+            }
+        }
+        println!("   🧬 [N3] Traços evoluídos: {:?}", tracos_delta);
+    }
     // Fallback legado — só executa se rem_semantico não gerou relato (sem episódios)
     use crate::encoding::spike_codec::is_active;
 
@@ -786,8 +806,10 @@ fn fase_n4_backup(state: &crate::websocket::bridge::BrainState) {
         }
     });
     if let Ok(json) = serde_json::to_string(&backup) {
-        let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
-        let _ = std::fs::write("selene_linguagem.json", &json);
+        let ts = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = std::fs::write("selene_linguagem.json", &json);
+        });
         println!("   💾 [N4] Backup linguagem salvo ({})", ts);
     }
 }
@@ -2384,8 +2406,17 @@ pub async fn handle_connection(
                                     if transcript.is_empty() { continue; }
 
                                     let mut state = brain.lock().await;
+                                    let (dop, ser, nor) = state.neurotransmissores;
 
-                                    // Injeta palavras no neural_context (aprendizado passivo)
+                                    // Síntese fonética FFT — mesmo pipeline do handler chat.
+                                    // Garante que o aprendizado passivo usa representação auditiva,
+                                    // não texto puro.
+                                    let bandas_fft = texto_para_bandas_fft(&transcript, dop, ser, nor);
+                                    let audio_pat = crate::encoding::spike_codec::bands_to_spike_pattern(&bandas_fft);
+
+                                    // Injeta padrão auditivo sintético no estado
+                                    state.ultimo_padrao_audio = audio_pat;
+
                                     let tokens: Vec<String> = transcript.split_whitespace()
                                         .map(|w: &str| w.to_lowercase()
                                             .trim_matches(|c: char| !c.is_alphabetic())
@@ -2402,18 +2433,20 @@ pub async fn handle_connection(
                                         state.neural_context.pop_front();
                                     }
 
-                                    // Aprende valências no swap (aprendizado passivo de vocabulário)
+                                    // Aprende valência modulada pela energia do padrão FFT
+                                    let energia_fft: f32 = bandas_fft.iter().map(|b| b * b).sum::<f32>()
+                                        / bandas_fft.len() as f32;
                                     let swap_arc = state.swap_manager.clone();
                                     drop(state);
                                     if let Ok(mut sw) = swap_arc.try_lock() {
-                                        let valence = 0.1 * score; // valência leve — contexto neutro
+                                        let valence = score * energia_fft.sqrt() * 0.2;
                                         for palavra in &tokens {
                                             sw.aprender_conceito(palavra, valence);
                                         }
                                     }
 
-                                    log::debug!("[PASSIVE] score={:.2} tokens={} transcript='{}'",
-                                        score, tokens.len(), &transcript[..transcript.len().min(40)]);
+                                    log::debug!("[PASSIVE] score={:.2} fft_e={:.3} tokens={} transcript='{}'",
+                                        score, energia_fft, tokens.len(), &transcript[..transcript.len().min(40)]);
                                 }
 
                                 // ── VISUAL_LEARN: vincula padrão visual (512 pixels luminância) às palavras ──
@@ -2871,6 +2904,68 @@ pub async fn handle_connection(
                                     println!("⚡ [PUNISH] -{:.2} → dopa={:.3} nor={:.3}", value, nova_dopa, nova_nor);
                                 }
 
+                                // ── FEEDBACK (👍/👎 da interface) ──────────────────────
+                                // Conecta os botões de feedback da interface ao sistema de
+                                // recompensa da Selene. valence=1 → reforço positivo;
+                                // valence=-1 → punição leve sobre o último caminho percorrido.
+                                Some("feedback") => {
+                                    let valence = json["valence"].as_f64().unwrap_or(0.0) as f32;
+                                    if valence.abs() < 0.01 { continue; }
+
+                                    let mut state = brain.lock().await;
+                                    let reforcos;
+
+                                    if valence > 0.0 {
+                                        // Reforço: reforça as arestas do último walk
+                                        let caminho = state.ultimo_caminho_walk.clone();
+                                        reforcos = caminho.len().saturating_sub(1);
+                                        if let Ok(mut sw) = state.swap_manager.try_lock() {
+                                            for i in 0..caminho.len().saturating_sub(1) {
+                                                if let (Some(p_a), Some(p_b)) = (
+                                                    sw.palavra_para_id.get(&caminho[i])
+                                                        .and_then(|v| v.first()).copied(),
+                                                    sw.palavra_para_id.get(&caminho[i+1])
+                                                        .and_then(|v| v.first()).copied(),
+                                                ) {
+                                                    if let Some(w) = sw.sinapses_conceito.get_mut(&(p_a, p_b)) {
+                                                        *w = (*w + 0.04).clamp(0.01, 1.0);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        state.recompensa_pendente += 0.25;
+                                        state.oxytocin_level = (state.oxytocin_level + 0.08).min(1.5);
+                                    } else {
+                                        // Punição leve: enfraquece arestas do último walk
+                                        let caminho = state.ultimo_caminho_walk.clone();
+                                        reforcos = caminho.len().saturating_sub(1);
+                                        if let Ok(mut sw) = state.swap_manager.try_lock() {
+                                            for i in 0..caminho.len().saturating_sub(1) {
+                                                if let (Some(p_a), Some(p_b)) = (
+                                                    sw.palavra_para_id.get(&caminho[i])
+                                                        .and_then(|v| v.first()).copied(),
+                                                    sw.palavra_para_id.get(&caminho[i+1])
+                                                        .and_then(|v| v.first()).copied(),
+                                                ) {
+                                                    if let Some(w) = sw.sinapses_conceito.get_mut(&(p_a, p_b)) {
+                                                        *w = (*w - 0.03).max(0.01);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        state.recompensa_pendente -= 0.15;
+                                    }
+
+                                    let ack = serde_json::json!({
+                                        "event":    "feedback_ack",
+                                        "reforcos": reforcos,
+                                        "valence":  valence,
+                                    }).to_string();
+                                    drop(state);
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                    println!("🎯 [FEEDBACK] valence={:.0} reforços={}", valence, reforcos);
+                                }
+
                                 // ── TOUCH (SENSOR TÁTIL) ───────────────────────────────
                                 // Simula toque físico sobre a Selene.
                                 //
@@ -3170,13 +3265,14 @@ pub async fn handle_connection(
                                         &state.auto_learn_contagem,
                                         &ctx_vec,
                                     );
+                                    let n_frases = { let s = brain.lock().await; s.frases_padrao.len() };
                                     drop(state);
-                                    match std::fs::write("selene_linguagem.json", &json_str) {
+                                    match tokio::fs::write("selene_linguagem.json", &json_str).await {
                                         Ok(_) => {
                                             let n_palavras = (
                                                 valencias_ex.len(),
                                                 grafo_ex.values().map(|v| v.len()).sum::<usize>(),
-                                                { let s = brain.lock().await; s.frases_padrao.len() }
+                                                n_frases,
                                             );
                                             println!("💾 [LINGUAGEM] Exportado: {} palavras, {} assoc, {} frases",
                                                 n_palavras.0, n_palavras.1, n_palavras.2);

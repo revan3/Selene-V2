@@ -1809,22 +1809,16 @@ async fn async_main() {
             }
         }
 
-        // Roda Izhikevich+STDP nos neurônios conceituais aprendidos via WS
-        {
-            let mut swap = swap_manager.lock().await;
+        // Roda Izhikevich+STDP nos neurônios conceituais aprendidos via WS.
+        // try_lock() em vez de lock().await — salta o tick semântico se o chat handler
+        // estiver com o swap. O STDP tolera alguns ticks pulados sem degradação.
+        if let Ok(mut swap) = swap_manager.try_lock() {
             swap.tick_semantico(dt, current_time * 1000.0);
-            // Fix 1: Retroalimenta ativação conceitual no RL.
-            // conceitos_ativos_top() retorna os N conceitos com maior fração de população disparando.
-            // O sinal de dopamina (neuro.dopamine - 1.0) escala o Q-boost:
-            //   dopa > 1.0 → reforça palavras ativas (situação positiva)
-            //   dopa < 1.0 → penaliza levemente (situação negativa)
-            // Sem isso, o RL vê padrões temporais da CamadaHibrida mas nunca a ativação
-            // dos conceitos semânticos — o loop semântico fica desconectado do RL.
             let conceitos_ativos = swap.conceitos_ativos_top(8);
             drop(swap);
             if !conceitos_ativos.is_empty() {
                 if let Ok(mut bs) = brain_state.try_lock() {
-                    let dopa_bias = neuro.dopamine - 1.0; // >0 recompensa, <0 punição
+                    let dopa_bias = neuro.dopamine - 1.0;
                     for (palavra, ativacao) in &conceitos_ativos {
                         let q_boost = dopa_bias * ativacao * 0.05;
                         let entry = bs.palavra_qvalores.entry(palavra.clone()).or_insert(0.0);
@@ -1841,23 +1835,25 @@ async fn async_main() {
                 .map(|sw| sw.palavra_para_id.len()).unwrap_or(0);
             metacognitive.observe(arousal, emotion, n_vocab);
 
-            let swap_guard = swap_manager.lock().await;
             let chunk_stats = chunking.stats();
             println!("🧪 [BIO] Sero: {:.2} | Dop: {:.2} | Cort: {:.2} | Emoção: {} | Onda: {}p",
                 neuro.serotonin, neuro.dopamine, neuro.cortisol,
                 plutchik.dominante(), n_passos_walk,
             );
-            // ram_count() = neurônios em cache quente (RAM swap) — não é "0 disparando".
-            // O contador real de spikes é derivado da atividade recente do temporal.
             let spikes_vivos = temporal.recognition_layer.neuronios.iter()
                 .filter(|n| n.last_spike_ms > 0.0
                     && n.last_spike_ms >= (current_time * 1000.0) - 500.0)
                 .count();
-            // Publica spikes_vivos para a interface via AtomicUsize — sem nenhum lock.
             neuronios_ativos_handle.store(spikes_vivos, std::sync::atomic::Ordering::Relaxed);
+            let (ram_cache, ram_gb) = swap_manager.try_lock()
+                .map(|sw| (sw.ram_count(), 0.0f32))
+                .unwrap_or((0, 0.0));
+            let ram_gb = sensor.try_lock()
+                .map(|s| s.get_ram_usage_gb())
+                .unwrap_or(ram_gb);
             println!("   🧬 Neurônios disparando: {} | RAM cache: {} | Hábitos: {} | Alerta: {:.2} | RAM: {:.1}GB",
-                spikes_vivos, swap_guard.ram_count(), basal_ganglia.stats().num_habitos,
-                brainstem.stats().alertness, sensor.lock().await.get_ram_usage_gb(),
+                spikes_vivos, ram_cache, basal_ganglia.stats().num_habitos,
+                brainstem.stats().alertness, ram_gb,
             );
             println!("   🧠 META: {} | Vocab: {} palavras",
                 metacognitive.descricao(), n_vocab,
@@ -1934,13 +1930,22 @@ async fn async_main() {
                     let tracos_json = serde_json::to_string_pretty(&bs.ego.tracos).ok();
                     let pens: Vec<&String> = bs.ego.pensamentos_recentes.iter().collect();
                     let pens_json = serde_json::to_string_pretty(&pens).ok();
+                    // Autobiografia: sentimento + memorias_autobiograficas
+                    let memorias_vec: Vec<(&str, f32)> = bs.ego.memorias_autobiograficas
+                        .iter().map(|(d, v)| (d.as_str(), *v)).collect();
+                    let autobiografia_json = serde_json::to_string_pretty(&serde_json::json!({
+                        "sentimento": bs.ego.sentimento,
+                        "memorias": memorias_vec,
+                    })).ok();
+                    // HypothesisEngine serializado para escrita fora do lock
+                    let hypotheses_json = serde_json::to_string_pretty(&bs.hypothesis_engine).ok();
                     let stats = (valencias_export.len(), n_assoc, 0usize, bs.grounding.len());
-                    Some((json, tracos_json, pens_json, stats))
+                    Some((json, tracos_json, pens_json, autobiografia_json, hypotheses_json, stats))
                 } else { None }
             } else { None };
 
             // Fase 2: escreve fora do lock — tokio::fs não bloqueia o executor
-            if let Some((json, tracos_json, pens_json, (nv, na, nc, ng))) = export_payload {
+            if let Some((json, tracos_json, pens_json, autobiografia_json, hypotheses_json, (nv, na, nc, ng))) = export_payload {
                 if let Err(e) = tokio::fs::write("selene_linguagem.json", json).await {
                     log::warn!("[AUTO-EXPORT] Falha ao salvar linguagem: {}", e);
                 } else {
@@ -1952,6 +1957,12 @@ async fn async_main() {
                 }
                 if let Some(pj) = pens_json {
                     let _ = tokio::fs::write("selene_memoria_ego.json", pj).await;
+                }
+                if let Some(aj) = autobiografia_json {
+                    let _ = tokio::fs::write("selene_autobiografia.json", aj).await;
+                }
+                if let Some(hj) = hypotheses_json {
+                    let _ = tokio::fs::write("selene_hypotheses.json", hj).await;
                 }
             }
             // Auto-save do estado semântico do swap_manager

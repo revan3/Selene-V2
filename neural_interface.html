@@ -2513,7 +2513,7 @@ document.getElementById('btn-sleep').addEventListener('click', () => {
   const overlay = document.getElementById('sleep-overlay');
   if (overlay.style.display === 'flex') {
     // Está dormindo — acorda
-    state.ws.send(JSON.stringify({ type: 'chat', message: 'acorde' }));
+    state.ws.send(JSON.stringify({ action: 'chat', message: 'acorde' }));
     return;
   }
   state.ws.send(JSON.stringify({ action: 'force_sleep', duration_min: 30 }));

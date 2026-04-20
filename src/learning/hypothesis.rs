@@ -32,14 +32,17 @@
 
 #![allow(dead_code)]
 
+use serde::{Serialize, Deserialize};
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
+
+fn instant_now() -> Instant { Instant::now() }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tipos
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TipoHipotese {
     /// "Dado contexto [A, B], o próximo conceito relevante será C"
     SemanticaContigua,
@@ -53,7 +56,7 @@ pub enum TipoHipotese {
 }
 
 /// Uma predição que Selene mantém em memória de trabalho até ser testada.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hipotese {
     /// Identificador único da hipótese nesta sessão.
     pub id: u64,
@@ -70,7 +73,8 @@ pub struct Hipotese {
     pub refutacoes: u32,
     /// Número total de testes.
     pub n_testes: u32,
-    /// Timestamp de criação.
+    /// Timestamp de criação (não persiste — reiniciado ao carregar).
+    #[serde(skip, default = "instant_now")]
     pub criada_em: Instant,
 }
 
@@ -103,6 +107,7 @@ impl Hipotese {
 // Motor principal
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[derive(Serialize, Deserialize)]
 pub struct HypothesisEngine {
     /// Hipóteses ativas em memória de trabalho (máx 60).
     pub hipoteses: Vec<Hipotese>,
@@ -483,6 +488,21 @@ impl HypothesisEngine {
             self.total_formuladas, self.total_testadas,
             self.taxa_acerto_recente * 100.0
         )
+    }
+
+    // ── Persistência ─────────────────────────────────────────────────────────
+
+    pub fn salvar(&self, path: &str) {
+        if let Ok(json) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+
+    pub fn carregar(path: &str) -> Self {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(Self::new)
     }
 
     // ── Privado ───────────────────────────────────────────────────────────────
