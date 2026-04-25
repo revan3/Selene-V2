@@ -1212,8 +1212,8 @@ async fn async_main() {
                 bs.oxytocin_level  = neuro.oxytocin;
                 bs.amygdala_fear   = amygdala.fear_signal;
                 bs.amygdala_extinction = amygdala.extinction_trace;
-                // Wernicke: consome tokens pendentes injetados pelos handlers WS
-                if let Some(tokens) = bs.pending_wernicke_tokens.take() {
+                // Wernicke: consome um lote da fila FIFO por tick (evita starvation)
+                if let Some(tokens) = bs.pending_wernicke_tokens.pop_front() {
                     let valencias_w = if let Ok(sw) = swap_manager.try_lock() {
                         sw.valencias_palavras()
                     } else {

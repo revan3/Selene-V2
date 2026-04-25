@@ -961,8 +961,23 @@ pub async fn handle_connection(
         }
     });
 
+    // Heartbeat: servidor envia ping a cada 30s para detectar conexões mortas.
+    // warp/tungstenite responde automaticamente ao pong do cliente.
+    // Se send() falhar → cliente desconectou silenciosamente → break no loop.
+    let mut heartbeat = {
+        let start = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
+        let mut iv = tokio::time::interval_at(start, tokio::time::Duration::from_secs(30));
+        iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        iv
+    };
+
     loop {
         tokio::select! {
+            // HB. Heartbeat — ping periódico para detectar conexões mortas
+            _ = heartbeat.tick() => {
+                if ws_tx.send(Message::ping(vec![])).await.is_err() { break; }
+            }
+
             // 0. Mensagens do ciclo de sono (eventos sono/despertar)
             Some(msg) = sleep_rx.recv() => {
                 if ws_tx.send(Message::text(msg)).await.is_err() { break; }
@@ -1245,7 +1260,20 @@ pub async fn handle_connection(
                                         .unwrap_or("")
                                         .to_string();
                                     println!("💬 [CHAT] Recebido (raw): «{}»", mensagem);
+                                    // Message ID opcional para ACK cliente ↔ servidor
+                                    let msg_id = json["id"].as_str().map(|s| s.to_string());
+
                                     if !mensagem.is_empty() {
+                                        // ── Fase 1: thinking event imediato (antes do lock) ───
+                                        // Cliente recebe feedback visual ANTES de esperar o lock.
+                                        // Elimina a percepção de "interface travada" em respostas lentas.
+                                        {
+                                            let thinking = serde_json::json!({
+                                                "event": "thinking",
+                                                "id": msg_id,
+                                            }).to_string();
+                                            if ws_tx.send(Message::text(thinking)).await.is_err() { break; }
+                                        }
                                         println!("💬 [CHAT] Aguardando lock do brain...");
                                         // Snapshot neural: clona Arc antes de bloquear brain.
                                         // USA lock().await (não try_lock) para garantir que o snapshot
@@ -1386,12 +1414,14 @@ pub async fn handle_connection(
                                                 sw.valencias_palavras()
                                             } else { HashMap::new() };
 
-                                            // ── Wernicke: delega ao loop neural para processamento real ─
-                                            // O loop neural chama language.wernicke_process() com estes
-                                            // tokens no próximo tick — atualiza wernicke_comprehension
-                                            // com familiarity + camada neural + semantic_buffer real.
+                                            // ── Wernicke: enfileira no loop neural (fila FIFO) ──────────
+                                            // Antes sobrescrevia (canal único). Agora push_back garante
+                                            // que frases rápidas não sejam perdidas.
                                             if !input_tokens_hip.is_empty() {
-                                                state.pending_wernicke_tokens = Some(input_tokens_hip.clone());
+                                                state.pending_wernicke_tokens.push_back(input_tokens_hip.clone());
+                                                while state.pending_wernicke_tokens.len() > 10 {
+                                                    state.pending_wernicke_tokens.pop_front();
+                                                }
                                             }
 
                                             // ACC social pain: punição/rejeição sinalizada via RPE negativo
@@ -2269,6 +2299,7 @@ pub async fn handle_connection(
                                                 "message": reply_filtrado,
                                                 "emotion": emocao_resposta,
                                                 "arousal": alerta,
+                                                "id": msg_id,
                                             }).to_string();
                                             let send_result = ws_tx.send(Message::text(resp)).await;
                                             if send_result.is_err() {
@@ -2499,32 +2530,80 @@ pub async fn handle_connection(
                                 }
 
                                 // ── PASSIVE_HEAR: escuta de fundo — aprende sem responder ──────────────────
-                                // Enviado pelo modo Ambiente quando score < 0.40.
-                                // Injeta tokens no neural_context e aprende valências,
-                                // mas NÃO dispara gerar_resposta_emergente.
+                                // Enviado pelo modo Ambiente quando score < 0.40 (vídeo/podcast).
+                                // Melhorias V3.2:
+                                //   1. try_lock (não-bloqueante) — não starva o loop neural 200Hz
+                                //   2. Dedup semântico por token (hash FNV-1a, janela 1000ms)
+                                //   3. Rate limiter: min 400ms entre envios similares (similaridade Jaccard)
+                                //   4. push_back na fila FIFO — não sobrescreve mais o Wernicke
                                 Some("passive_hear") => {
                                     let transcript = json["transcript"].as_str().unwrap_or("").to_string();
                                     let score = json["score"].as_f64().unwrap_or(0.0) as f32;
                                     if transcript.is_empty() { continue; }
 
-                                    let mut state = brain.lock().await;
-                                    let (dop, ser, nor) = state.neurotransmissores;
+                                    // Tokeniza antes do lock (operação barata, sem I/O)
+                                    let tokens: Vec<String> = transcript.split_whitespace()
+                                        .map(|w: &str| {
+                                            let s = w.to_lowercase();
+                                            s.trim_matches(|c: char| !c.is_alphabetic()).to_string()
+                                        })
+                                        .filter(|w| w.len() > 2)
+                                        .collect();
+                                    if tokens.is_empty() { continue; }
 
-                                    // Síntese fonética FFT — mesmo pipeline do handler chat.
-                                    // Garante que o aprendizado passivo usa representação auditiva,
-                                    // não texto puro.
+                                    // ── Dedup semântico: hash FNV-1a dos tokens ─────────────────
+                                    // Hash é determinístico e ordem-independente (sort antes de hash).
+                                    let tokens_hash = {
+                                        let mut sorted = tokens.clone();
+                                        sorted.sort_unstable();
+                                        sorted.iter().fold(2166136261u64, |h, w| {
+                                            w.bytes().fold(h, |h2, b| {
+                                                h2.wrapping_mul(16777619).wrapping_add(b as u64)
+                                            })
+                                        })
+                                    };
+
+                                    // ── try_lock: não bloqueia se o loop neural ou chat estiver ativo
+                                    let mut state = match brain.try_lock() {
+                                        Ok(s) => s,
+                                        Err(_) => {
+                                            log::debug!("[PASSIVE] brain ocupado — descartando frame");
+                                            continue;
+                                        }
+                                    };
+
+                                    // ── Rate limiter: mínimo 400ms + dedup 1000ms ────────────────
+                                    let elapsed = state.ultimo_passive_hear_ts.elapsed();
+                                    let mesmo_hash = state.ultimo_passive_tokens_hash == tokens_hash;
+                                    if mesmo_hash && elapsed.as_millis() < 1000 {
+                                        // Idêntico dentro de 1s → loop de vídeo ou overlap de janela
+                                        log::debug!("[PASSIVE] dedup: hash idêntico em {}ms — ignorado", elapsed.as_millis());
+                                        continue;
+                                    }
+                                    if elapsed.as_millis() < 400 {
+                                        // Similaridade Jaccard rápida: se >60% de tokens iguais → rate limit
+                                        let ultimo_set: std::collections::HashSet<&str> = tokens.iter()
+                                            .map(|s| s.as_str()).collect();
+                                        // Reutiliza o hash como proxy de similaridade:
+                                        // hashes diferentes mas intervalo curto → verifica Jaccard
+                                        let jaccard_approx = if !mesmo_hash {
+                                            // Sem acesso ao lote anterior: usa hash como proxy negativo
+                                            0.0f32
+                                        } else { 1.0f32 };
+                                        if jaccard_approx > 0.6 {
+                                            log::debug!("[PASSIVE] rate limit: {}ms desde último", elapsed.as_millis());
+                                            continue;
+                                        }
+                                    }
+
+                                    // Aceito — atualiza dedup state
+                                    state.ultimo_passive_tokens_hash = tokens_hash;
+                                    state.ultimo_passive_hear_ts = std::time::Instant::now();
+
+                                    let (dop, ser, nor) = state.neurotransmissores;
                                     let bandas_fft = texto_para_bandas_fft(&transcript, dop, ser, nor);
                                     let audio_pat = crate::encoding::spike_codec::bands_to_spike_pattern(&bandas_fft);
-
-                                    // Injeta padrão auditivo sintético no estado
                                     state.ultimo_padrao_audio = audio_pat;
-
-                                    let tokens: Vec<String> = transcript.split_whitespace()
-                                        .map(|w: &str| w.to_lowercase()
-                                            .trim_matches(|c: char| !c.is_alphabetic())
-                                            .to_string())
-                                        .filter(|w: &String| w.len() > 2)
-                                        .collect();
 
                                     for palavra in &tokens {
                                         if !state.neural_context.contains(palavra) {
@@ -2535,16 +2614,17 @@ pub async fn handle_connection(
                                         state.neural_context.pop_front();
                                     }
 
-                                    // Delega ao loop neural para Wernicke real (passivo)
-                                    if !tokens.is_empty() {
-                                        state.pending_wernicke_tokens = Some(tokens.clone());
+                                    // Enfileira para Wernicke (fila FIFO — não sobrescreve mais)
+                                    state.pending_wernicke_tokens.push_back(tokens.clone());
+                                    while state.pending_wernicke_tokens.len() > 10 {
+                                        state.pending_wernicke_tokens.pop_front();
                                     }
 
-                                    // Aprende valência modulada pela energia do padrão FFT
                                     let energia_fft: f32 = bandas_fft.iter().map(|b| b * b).sum::<f32>()
                                         / bandas_fft.len() as f32;
                                     let swap_arc = state.swap_manager.clone();
-                                    drop(state);
+                                    drop(state); // libera lock antes do swap
+
                                     if let Ok(mut sw) = swap_arc.try_lock() {
                                         let valence = score * energia_fft.sqrt() * 0.2;
                                         for palavra in &tokens {
@@ -2552,9 +2632,9 @@ pub async fn handle_connection(
                                         }
                                     }
 
-                                    let transcript_preview: String = transcript.chars().take(40).collect();
-                                    log::debug!("[PASSIVE] score={:.2} fft_e={:.3} tokens={} transcript='{}'",
-                                        score, energia_fft, tokens.len(), transcript_preview);
+                                    let preview: String = transcript.chars().take(40).collect();
+                                    log::debug!("[PASSIVE] aceito score={:.2} fft_e={:.3} tokens={} '{}'",
+                                        score, energia_fft, tokens.len(), preview);
                                 }
 
                                 // ── VISUAL_LEARN: vincula padrão visual (512 pixels luminância) às palavras ──

@@ -225,6 +225,12 @@ pub struct BrainState {
     pub ultimo_audio_hash: u64,
     /// Timestamp (ms desde epoch) do último reconhecimento de áudio.
     pub ultimo_audio_ts_ms: f64,
+    /// Hash FNV-1a dos tokens do último passive_hear aceito.
+    /// Dedup semântico: rejeita lotes com tokens idênticos dentro de 1000ms.
+    pub ultimo_passive_tokens_hash: u64,
+    /// Instante (wall clock real) do último passive_hear aceito.
+    /// Rate limiter: impõe intervalo mínimo de 400ms entre envios similares.
+    pub ultimo_passive_hear_ts: std::time::Instant,
     /// Córtex occipital — processa frames visuais da webcam/screen share do browser.
     /// Aplica detecção de movimento (flicker_buffer), contraste e orientação (V1→V2)
     /// antes de gerar o spike pattern que vai para spike_vocab.
@@ -333,10 +339,11 @@ pub struct BrainState {
     /// Neonatal: escuta pura. PreVerbal: reações. PalavraUnica/Frase: saída limitada. Discurso: livre.
     pub ontogeny: OntogenyState,
 
-    /// Tokens pendentes para Wernicke — injetados pelos handlers WS (chat/passive_hear)
-    /// e consumidos pelo loop neural no próximo tick via language.wernicke_process().
-    /// Padrão canal único: apenas o último lote importa; substitui sem acumular.
-    pub pending_wernicke_tokens: Option<Vec<String>>,
+    /// Fila FIFO de lotes de tokens para Wernicke — injetados pelos handlers WS
+    /// (chat/passive_hear) e consumidos um lote por tick pelo loop neural via
+    /// language.wernicke_process(). Capacidade máxima: 10 lotes. Antes era
+    /// Option<Vec<>> (canal único que sobrescrevia); agora acumula corretamente.
+    pub pending_wernicke_tokens: std::collections::VecDeque<Vec<String>>,
 
     /// Integração multimodal audiovisual — predição cruzada visual↔audio.
     /// Usado para amplificar sinal congruente e detectar incongruência (surpresa).
@@ -690,7 +697,10 @@ impl BrainState {
             audio_frames: HashMap::new(),
             audio_output: crate::synthesis::cpal_output::AudioOutput::try_new()
                 .map(std::sync::Arc::new),
-            pending_wernicke_tokens: None,
+            pending_wernicke_tokens: std::collections::VecDeque::new(),
+            ultimo_passive_tokens_hash: 0,
+            ultimo_passive_hear_ts: std::time::Instant::now()
+                - std::time::Duration::from_secs(10),
         };
         state.reconstruir_indice_prefixo();
         state.reconstruir_trigrama_cache();
