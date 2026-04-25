@@ -64,32 +64,93 @@ impl MirrorNeurons {
         // Cada vetor é uma representação esparsa no espaço motor de 32 dimensões.
         let presets: &[(&str, &[usize])] = &[
             // Emoções (ativam dimensões 0-7: sistema límbico-motor)
-            ("alegria",      &[0, 4]),
-            ("feliz",        &[0, 4]),
-            ("tristeza",     &[1, 5]),
-            ("triste",       &[1, 5]),
-            ("medo",         &[2, 6]),
-            ("raiva",        &[3, 7]),
-            ("amor",         &[0, 4, 8]),
-            ("saudade",      &[1, 4, 9]),
+            ("alegria",        &[0, 4]),
+            ("feliz",          &[0, 4]),
+            ("tristeza",       &[1, 5]),
+            ("triste",         &[1, 5]),
+            ("medo",           &[2, 6]),
+            ("raiva",          &[3, 7]),
+            ("amor",           &[0, 4, 8]),
+            ("saudade",        &[1, 4, 9]),
             // Ações físicas (ativam dimensões 8-15: córtex motor primário)
-            ("correr",       &[8, 12]),
-            ("andar",        &[8, 13]),
-            ("pegar",        &[9, 14]),
-            ("jogar",        &[9, 14, 15]),
-            ("falar",        &[10, 16]),
-            ("ouvir",        &[11, 17]),
-            ("ver",          &[11, 18]),
-            ("pensar",       &[10, 19]),
+            ("correr",         &[8, 12]),
+            ("andar",          &[8, 13]),
+            ("pegar",          &[9, 14]),
+            ("jogar",          &[9, 14, 15]),
+            ("falar",          &[10, 16]),
+            ("ouvir",          &[11, 17]),
+            ("ver",            &[11, 18]),
+            ("pensar",         &[10, 19]),
             // Conceitos abstratos de alta frequência (ativam dimensões 16-23: córtex pré-motor)
-            ("aprender",     &[16, 20]),
-            ("criar",        &[17, 21]),
-            ("lembrar",      &[18, 22]),
-            ("esquecer",     &[18, 22, 1]),
-            ("entender",     &[19, 23]),
-            ("ajudar",       &[20, 24]),
-            ("conhecer",     &[21, 25]),
-            ("querer",       &[22, 26]),
+            ("aprender",       &[16, 20]),
+            ("criar",          &[17, 21]),
+            ("lembrar",        &[18, 22]),
+            ("esquecer",       &[18, 22, 1]),
+            ("entender",       &[19, 23]),
+            ("ajudar",         &[20, 24]),
+            ("conhecer",       &[21, 25]),
+            ("querer",         &[22, 26]),
+            // Filosofia e pensamento abstrato (ativam dimensões 24-31: raciocínio de ordem superior)
+            ("consciência",    &[24, 28]),
+            ("consciencia",    &[24, 28]),
+            ("existência",     &[24, 29]),
+            ("existencia",     &[24, 29]),
+            ("ser",            &[24, 25]),
+            ("essência",       &[25, 29]),
+            ("essencia",       &[25, 29]),
+            ("verdade",        &[25, 28]),
+            ("razão",          &[26, 28]),
+            ("razao",          &[26, 28]),
+            ("lógica",         &[26, 27]),
+            ("logica",         &[26, 27]),
+            ("liberdade",      &[27, 30]),
+            ("ética",          &[27, 28]),
+            ("etica",          &[27, 28]),
+            ("tempo",          &[24, 30]),
+            ("espaço",         &[24, 31]),
+            ("espaco",         &[24, 31]),
+            ("infinito",       &[29, 31]),
+            ("mente",          &[24, 26]),
+            ("corpo",          &[8, 25]),
+            ("alma",           &[24, 27]),
+            ("conhecimento",   &[21, 25, 28]),
+            ("beleza",         &[0, 25, 29]),
+            ("bem",            &[0, 27]),
+            ("mal",            &[1, 27]),
+            ("virtude",        &[0, 27, 28]),
+            ("paradoxo",       &[26, 29, 31]),
+            ("limite",         &[26, 30]),
+            ("realidade",      &[24, 25]),
+            ("mundo",          &[24, 31]),
+            ("natureza",       &[11, 25]),
+            ("causa",          &[26, 28]),
+            ("efeito",         &[26, 29]),
+            ("substância",     &[25, 30]),
+            ("substancia",     &[25, 30]),
+            ("forma",          &[17, 25]),
+            ("ideia",          &[21, 26]),
+            ("conceito",       &[21, 26]),
+            ("abstrato",       &[26, 29]),
+            ("concreto",       &[8, 25]),
+            ("universal",      &[29, 31]),
+            ("particular",     &[25, 30]),
+            ("possível",       &[22, 29]),
+            ("possivel",       &[22, 29]),
+            ("necessário",     &[22, 28]),
+            ("necessario",     &[22, 28]),
+            ("contingente",    &[22, 29, 31]),
+            ("filosofia",      &[24, 26, 28]),
+            ("metafísica",     &[24, 29, 31]),
+            ("metafisica",     &[24, 29, 31]),
+            ("ontologia",      &[24, 25, 29]),
+            ("epistemologia",  &[21, 26, 28]),
+            ("fenomenologia",  &[24, 25, 26]),
+            ("dialética",      &[26, 27, 29]),
+            ("dialetica",      &[26, 27, 29]),
+            ("transcendente",  &[29, 30, 31]),
+            ("imanente",       &[24, 25, 30]),
+            ("subjetivo",      &[24, 26]),
+            ("objetivo",       &[25, 28]),
         ];
 
         for (word, dims) in presets {
@@ -123,18 +184,36 @@ impl MirrorNeurons {
         for palavra in palavras {
             let p = palavra.to_lowercase();
             let p = p.trim_matches(|c: char| !c.is_alphabetic());
-            if let Some(padrao) = self.action_map.get(p) {
-                // Acumula ativação: cada palavra adiciona seu padrão motor
-                for (i, &v) in padrao.iter().enumerate() {
-                    nova_ativacao[i] += v;
-                }
-                let forca: f32 = padrao.iter().map(|x| x * x).sum::<f32>().sqrt();
-                if forca > melhor_forca {
-                    melhor_forca = forca;
-                    melhor_palavra = p.to_string();
-                }
-                n_matches += 1;
+            if p.len() < 3 { continue; }
+
+            let padrao_owned: Vec<f32>;
+            let padrao: &Vec<f32> = if let Some(known) = self.action_map.get(p) {
+                known
+            } else {
+                // Padrão fraco derivado do hash da palavra — ativa 2 dimensões esparsas
+                // com intensidade 0.15 (vs 0.7 dos padrões aprendidos). Permite ressonância
+                // mínima para qualquer palavra nova, sem apagamento por ausência de template.
+                let hash = p.bytes().fold(2166136261u32, |h, b| {
+                    h.wrapping_mul(16777619).wrapping_add(b as u32)
+                });
+                let d1 = (hash & 0x1F) as usize;
+                let d2 = ((hash >> 5) & 0x1F) as usize;
+                let mut pat = vec![0.0f32; N_MOTOR_DIMS];
+                pat[d1] = 0.15;
+                if d2 != d1 { pat[d2] = 0.10; }
+                padrao_owned = pat;
+                &padrao_owned
+            };
+
+            for (i, &v) in padrao.iter().enumerate() {
+                nova_ativacao[i] += v;
             }
+            let forca: f32 = padrao.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if forca > melhor_forca {
+                melhor_forca = forca;
+                melhor_palavra = p.to_string();
+            }
+            n_matches += 1;
         }
 
         if n_matches == 0 {

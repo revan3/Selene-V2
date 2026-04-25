@@ -22,6 +22,7 @@ pub mod spike_store;
 pub mod episodic;
 pub mod ondas;
 pub mod checkpoint;
+pub mod reconsolidacao;
 
 // Re-exportações
 pub use memory_graph::ConexaoSinaptica;

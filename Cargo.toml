@@ -32,10 +32,15 @@ nokhwa = { version = "0.10", features = ["input-native"] }   # input-native = Wi
 base64 = "0.22"
 # Mantemos o windows APENAS para timeBeginPeriod/timeEndPeriod
 windows = { version = "0.52", features = ["Win32_Media"] }
+eframe = { version = "0.27", optional = true }
+egui_graphs = { version = "0.21", optional = true }
+petgraph = { version = "0.6", optional = true }
+tokio-tungstenite = { version = "0.21", optional = true }
 
 [features]
 test-bin = []
 ego = []
+gui = ["eframe", "egui_graphs", "petgraph", "tokio-tungstenite"]
 
 [[bin]]
 name = "selene_brain"
@@ -74,6 +79,11 @@ path = "src/bin/system_test.rs"
 [[bin]]
 name = "intensive_benchmark"
 path = "src/bin/intensive_benchmark.rs"
+
+[[bin]]
+name = "neural_viewer"
+path = "src/bin/neural_viewer.rs"
+required-features = ["gui"]
 
 [profile.release]
 opt-level = 2

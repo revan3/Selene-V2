@@ -1,56 +1,47 @@
 // =============================================================================
-// src/synaptic_core.rs — Selene V3.0 — Modelo Unificado de Neurônio Biológico
+// src/synaptic_core.rs — Selene V3.1 — Modelo Unificado de Neurônio Biológico
 // =============================================================================
 //
-// MODELO EVOLUTIVO DE 7 CAMADAS — TODOS OS MECANISMOS BIOLÓGICOS RELEVANTES:
+// MODELO EVOLUTIVO DE 7 CAMADAS + EXTENSÕES V3.1:
 //
 //  ┌──────────────────────────────────────────────────────────────────────────┐
 //  │ Camada 1 — IZHIKEVICH (todos os tipos)                                  │
 //  │   dv/dt = 0.04v² + 5v + 140 − u + I_eff                                │
 //  ├──────────────────────────────────────────────────────────────────────────┤
 //  │ Camada 2 — HODGKIN-HUXLEY (TC e RZ) + I_T Ca²⁺ (TC e LT)              │
-//  │   I_Na = g_Na·m³h·(v−E_Na)   I_K = g_K·n⁴·(v−E_K)   I_L              │
-//  │   I_T  = g_T·m_T²·h_T·(v−E_Ca)  ← burst talâmico e LT rebound        │
 //  ├──────────────────────────────────────────────────────────────────────────┤
-//  │ Camada 3 — NOVOS CANAIS IÔNICOS (todos os tipos, escalonado por tipo)   │
-//  │   I_NaP = g_NaP · m_inf(v) · (v − E_Na)  ← Na⁺ persistente, sem inat.│
-//  │   I_M   = g_M · w · (v − E_K)            ← M-current (KCNQ), lento   │
-//  │   I_A   = g_A · a³ · b · (v − E_K)       ← A-type K⁺, atrasa 1º spike│
-//  │   I_BK  = g_BK · q_bk · (v − E_K)        ← BK channels, AHP rápido  │
+//  │ Camada 3 — NOVOS CANAIS IÔNICOS                                          │
+//  │   I_NaP | I_M (KCNQ) | I_A (Kv4) | I_BK | I_T                         │
 //  ├──────────────────────────────────────────────────────────────────────────┤
 //  │ Camada 4 — SHORT-TERM PLASTICITY (Tsodyks-Markram 1997)                │
-//  │   x: recursos disponíveis  u: probabilidade de utilização               │
-//  │   STD (RS/FS/RZ): depressão por depleção de vesículas                   │
-//  │   STF (CH/LT):    facilitação por acúmulo de Ca²⁺ pré-sináptico        │
 //  ├──────────────────────────────────────────────────────────────────────────┤
-//  │ Camada 5 — Ca²⁺ DUAL: AHP (SK, adaptação) + NMDA (LTP trigger)        │
-//  │   ca_intra: SK channels → AHP → adaptação de frequência                 │
-//  │   ca_nmda:  NMDA Ca²⁺  → LTP → plasticidade de longo prazo             │
-//  │   BK (fast AHP): q_bk surge após spike → hyperpolarização rápida       │
+//  │ Camada 5 — Ca²⁺ DUAL: AHP (SK) + NMDA (LTP trigger)                   │
 //  ├──────────────────────────────────────────────────────────────────────────┤
-//  │ Camada 6 — STDP 3 FATORES (dopamina como gate de consolidação)          │
-//  │   elig_trace: correlação pré-pós sem consolidação imediata              │
-//  │   ΔW = η × elig_trace × (mod_dopa − 1.0).max(0)  ← só com dopamina   │
+//  │ Camada 6 — STDP 3 FATORES bidirecional (RPE+ → LTP | RPE− → LTD)      │
+//  │   Gate ChIN: dopamina só efetiva quando ChIN está em pausa              │
 //  ├──────────────────────────────────────────────────────────────────────────┤
 //  │ Camada 7 — ACh COMO 4º NEUROMODULADOR                                   │
-//  │   ACh bloqueia I_M (KCNQ): mais disparo durante atenção                 │
-//  │   ACh amplifica ca_nmda × 1.2: facilita LTP                             │
 //  └──────────────────────────────────────────────────────────────────────────┘
 //
-// NEUROMODULAÇÃO (NeuroChem):
-//   dopamina  ↑  →  g_K_mod  ↓  →  repolarização lenta  →  mais disparo
-//   serotonina ↑  →  g_L_mod  ↓  →  menos vazamento      →  mais excitável
-//   cortisol  ↑  →  g_Na_mod ↓  →  Na⁺ reduzido         →  limiar mais alto
-//   ACh       ↑  →  I_M bloqueado                        →  atenção/LTP
+// EXTENSÕES V3.1:
+//   RS  BAC Firing:         input_apical + spike → burst imediato + ca_nmda×2
+//   SST → RS:               gating de plasticidade (reduz ca_nmda e elig_trace)
+//   DA_N RPE−:              hiperpolarização → mod_dopa < 1.0 → LTD invertido
+//   TC + ACh:               ACh > 1.2 → +5mV resting → inativa I_T (vigília)
+//   NGF Neurogliaform:      Late-Spiking, normalização divisiva broadcast
+//   LC_N Locus Coeruleus:   burst → zera I_M/AHP de RS → atenção hiperfocada
+//   ChIN Cholinergic:       tônico → pausa libera gate dopaminérgico STDP
+//   Astrócito:              glia — atividade alta >1000ms → ca_nmda_max × 2
 //
-// REFERÊNCIAS BIOLÓGICAS:
-//   I_NaP: Alzheimer & ten Bruggencate (1988) — Nav1.6
-//   I_M:   Adams et al. (1982) — KCNQ2/3, spike-freq adaptation
-//   I_A:   Connor & Stevens (1971) — Kv4.x, delays first spike
-//   I_T:   Destexhe et al. (1994) — Cav3.x, TC burst mode
-//   I_BK:  Barrett et al. (1982) — fast Ca²⁺-activated K⁺
-//   STP:   Tsodyks & Markram (1997) — resource depletion/facilitation
-//   3-STDP: Frémaux & Gerstner (2016) — dopamine-gated eligibility
+// REFERÊNCIAS:
+//   BAC Firing:  Larkum et al. (1999) — Ca²⁺ spike apical coincidence
+//   SST gating:  Silberberg & Markram (2007) — Martinotti → apical dendrite
+//   DA_N RPE−:   Schultz et al. (1997) — dopamine dip hypothesis
+//   TC ACh:      McCormick & Prince (1987) — muscarinic → tonic mode
+//   NGF:         Olah et al. (2009) — volume GABA, Late-Spiking
+//   LC_N:        Sara (2009) — LC-NE arousal, attention reset
+//   ChIN:        Goldberg et al. (2012) — pause → DA-STDP gate
+//   Astrócito:   Henneberger et al. (2010) — D-serine co-agonist NMDA
 // =============================================================================
 
 #![allow(unused_imports)]
@@ -76,6 +67,7 @@ use crate::compressor::salient::{SalientPoint, SalientCompressor};
 /// Tipos originais (7): RS, IB, CH, FS, LT, TC, RZ
 /// Izhikevich adicionais (6): PS, PB, AC, BI, DAP, IIS
 /// Subtipos biológicos (4): PV, SST, VIP, DA_N
+/// V3.1 — novos tipos (3): NGF, LC_N, ChIN
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum TipoNeuronal {
     // ── Tipos originais ────────────────────────────────────────────────────────
@@ -96,37 +88,43 @@ pub enum TipoNeuronal {
 
     // ── Tipos Izhikevich adicionais ────────────────────────────────────────────
     /// Phasic Spiking — dispara APENAS no onset do estímulo; silencia depois.
-    /// Detectores de mudança. Córtex sensorial camada 4.
     PS,
     /// Phasic Bursting — burst único na borda de subida do estímulo.
-    /// Sinaliza início de eventos sensoriais novos.
     PB,
     /// Accommodating — adapta progressivamente até silêncio total.
-    /// Modela habituação local (barril cortical, colículo).
     AC,
     /// Bistable — dois estados estáveis (ON/OFF) com histerese.
-    /// Working memory de curto prazo; pode ser "setado" por input breve.
     BI,
     /// Depolarizing Afterpotential — rebound despolarizante após spike.
-    /// Células do trato olfatório e alguns interneurônios hipocampais.
     DAP,
     /// Inhibition-Induced Spiking — dispara quando a inibição é REMOVIDA.
-    /// Base do rebound burst talâmico; desinibição dos gânglios da base.
     IIS,
 
     // ── Subtipos biológicos ────────────────────────────────────────────────────
     /// Parvalbumin interneuron — FS de alta precisão, Ca²⁺-buffered.
-    /// Gera ritmo gamma (40 Hz), sincronização cortical, inibição perisomal.
     PV,
     /// Somatostatin interneuron (Martinotti) — adapting, inibição dendrítica.
     /// Inibe compartimento apical de pirâmides; controla janela de plasticidade.
     SST,
     /// VIP interneuron — disinhibitory; inibe SST e PV, desinibe pirâmides.
-    /// Fundamental para gating atencional top-down e modulação colinérgica.
     VIP,
     /// Dopaminergic neuron — pacemaker lento ~4 Hz, AHP prolongado.
     /// VTA e SNc; fonte real do sinal dopaminérgico de recompensa.
     DA_N,
+
+    // ── V3.1: novos tipos ────────────────────────────────────────────────────
+    /// Neurogliaform — interneurônio Late-Spiking de inibição volumétrica (GABA-B).
+    /// Sem pesos diretos `lateral_w`; ao disparar subtrai de TODOS os inputs
+    /// da camada via normalização divisiva. Alta g_a (Kv1.x / D-current) → delay 1º spike.
+    NGF,
+    /// Locus Coeruleus — controlador global de noradrenalina.
+    /// Burst: zera I_M (w_m) e AHP (ca_intra) de todos os RS → atenção hiperfocada.
+    /// Reduz eficácia de sinapses fracas (melhora SNR).
+    LC_N,
+    /// Cholinergic Interneuron — pacemaker tônico ~5 Hz.
+    /// Quando inibido (pausa), libera o gate dopaminérgico do STDP 3-fatores
+    /// → consolidação sináptica por coincidência DA + elig_trace.
+    ChIN,
 }
 
 impl TipoNeuronal {
@@ -154,6 +152,13 @@ impl TipoNeuronal {
             TipoNeuronal::SST => (0.02,  0.27, -65.0,  2.0),
             TipoNeuronal::VIP => (0.05,  0.20, -65.0,  8.0),
             TipoNeuronal::DA_N=> (0.006, 0.14, -65.0,  8.0),
+            // V3.1
+            // NGF: Late-Spiking; alta I_A cria atraso no 1º spike (D-current)
+            TipoNeuronal::NGF => (0.02,  0.25, -65.0,  2.0),
+            // LC_N: burst-pacemaker similar a IB, limiar levemente baixo
+            TipoNeuronal::LC_N=> (0.02,  0.20, -55.0,  6.0),
+            // ChIN: tônico com adaptação suave — a baixo, c intermediário
+            TipoNeuronal::ChIN=> (0.05,  0.20, -60.0,  5.0),
         }
     }
 
@@ -161,9 +166,10 @@ impl TipoNeuronal {
     #[inline]
     pub fn threshold_padrao(&self) -> f32 {
         match self {
-            TipoNeuronal::TC => 25.0,
-            TipoNeuronal::FS => 25.0,
-            _               => 30.0,
+            TipoNeuronal::TC  => 25.0,
+            TipoNeuronal::FS  => 25.0,
+            TipoNeuronal::LC_N=> 25.0,  // burst fácil
+            _                 => 30.0,
         }
     }
 
@@ -171,8 +177,9 @@ impl TipoNeuronal {
     #[inline]
     pub fn e_inibitorico(&self) -> bool {
         matches!(self,
-            TipoNeuronal::FS | TipoNeuronal::LT |
-            TipoNeuronal::PV | TipoNeuronal::SST | TipoNeuronal::VIP)
+            TipoNeuronal::FS  | TipoNeuronal::LT |
+            TipoNeuronal::PV  | TipoNeuronal::SST | TipoNeuronal::VIP |
+            TipoNeuronal::NGF)  // NGF: GABA volumétrico (inibição divisiva)
     }
 
     /// Verdadeiro para tipos que usam o modelo Hodgkin-Huxley.
@@ -198,10 +205,14 @@ impl TipoNeuronal {
             TipoNeuronal::BI  => 75.0,
             TipoNeuronal::DAP => 40.0,
             TipoNeuronal::IIS => 55.0,
-            TipoNeuronal::PV  => 15.0,  // Ca²⁺-buffered — muito rápido
+            TipoNeuronal::PV  => 15.0,
             TipoNeuronal::SST => 60.0,
             TipoNeuronal::VIP => 70.0,
-            TipoNeuronal::DA_N=> 150.0, // AHP prolongado — Ca²⁺ lento
+            TipoNeuronal::DA_N=> 150.0,
+            // V3.1
+            TipoNeuronal::NGF => 40.0,   // GABA rápido mas Ca²⁺ moderado
+            TipoNeuronal::LC_N=> 80.0,   // NA burst — Ca²⁺ médio
+            TipoNeuronal::ChIN=> 60.0,   // tônico — Ca²⁺ basal
         }
     }
 
@@ -216,16 +227,20 @@ impl TipoNeuronal {
             TipoNeuronal::LT  => 0.07,
             TipoNeuronal::TC  => 0.05,
             TipoNeuronal::RZ  => 0.12,
-            TipoNeuronal::PS  => 0.03,  // onset-only → atividade muito baixa
+            TipoNeuronal::PS  => 0.03,
             TipoNeuronal::PB  => 0.04,
             TipoNeuronal::AC  => 0.06,
             TipoNeuronal::BI  => 0.10,
             TipoNeuronal::DAP => 0.08,
             TipoNeuronal::IIS => 0.06,
-            TipoNeuronal::PV  => 0.30,  // alta taxa de disparo (gamma)
+            TipoNeuronal::PV  => 0.30,
             TipoNeuronal::SST => 0.08,
             TipoNeuronal::VIP => 0.12,
-            TipoNeuronal::DA_N=> 0.04,  // pacemaker lento ~4 Hz
+            TipoNeuronal::DA_N=> 0.04,
+            // V3.1
+            TipoNeuronal::NGF => 0.05,   // baixa taxa — inibe em rajadas
+            TipoNeuronal::LC_N=> 0.04,   // burst esporádico
+            TipoNeuronal::ChIN=> 0.10,   // tônico ~5 Hz
         }
     }
 
@@ -415,6 +430,46 @@ const TAU_NMDA_CA_MS:  f32 = 50.0;
 const BK_PER_SPIKE:  f32 = 0.6;
 const TAU_BK_MS:     f32 = 5.0;
 
+// ── V3.1: Novos mecanismos ───────────────────────────────────────────────────
+
+// RS BAC Firing (Back-propagating AP → Ca²⁺ spike apical; Larkum et al. 1999)
+/// Limiar de input apical para disparar BAC firing no RS (coincidência apical+somática).
+const APICAL_THRESHOLD:  f32 = 2.0;
+/// Corrente extra injetada durante os 5ms de burst BAC (pA equivalente).
+const BURST_CURRENT:     f32 = 15.0;
+/// Duração do burst BAC após coincidência apical+somática (ms).
+const BURST_DURATION_MS: f32 = 5.0;
+
+// SST Plasticity Gating (Silberberg & Markram 2007 — Martinotti → apical dendrite)
+/// Fração de ca_nmda reduzida por ativação SST por conexão ativa.
+const SST_CA_GATE:   f32 = 0.30;
+/// Fração de elig_trace reduzida por ativação SST (fecha janela de consolidação).
+const SST_ELIG_GATE: f32 = 0.50;
+
+// NGF Divisive Normalization (Olah et al. 2009 — GABA volume transmission)
+/// Contribuição ao pool divisivo por spike de NGF.
+const NGF_DIVISIVE_STEP: f32 = 0.6;
+/// Constante de tempo de decaimento do pool divisivo NGF (ms) — GABA-B lento.
+const TAU_NGF_MS:        f32 = 20.0;
+
+// LC_N (Locus Coeruleus; Sara 2009 — NA arousal reset)
+/// Duração dos efeitos de burst LC_N em RS (ms) — janela de NA elevada.
+const TAU_LC_BURST_MS: f32 = 300.0;
+
+// DA_N RPE negativo (Schultz 1997 — dopamine dip hypothesis)
+/// Hiperpolarização acumulada para sinalizar RPE negativo (≈ ciclo pacemaker 4Hz = 250ms).
+const DAN_HYPERPOL_THRESHOLD_MS: f32 = 200.0;
+/// Valor de mod_dopa para RPE negativo (< 1.0 → LTD no STDP).
+const DAN_RPE_NEG_MOD_DOPA: f32 = 0.6;
+
+// Astrócito (Henneberger et al. 2010 — D-serine co-agonist NMDA)
+/// Limiar de atividade média da camada para trigger astrocítico [0.0–1.0].
+const ASTRO_ACTIVITY_THRESHOLD: f32 = 0.4;
+/// Duração de atividade alta para trigger de facilitação LTP (ms).
+const ASTRO_HIGH_DURATION_MS:   f32 = 1000.0;
+/// Multiplicador de ca_nmda_max quando astrócito ativo (D-serina → amplifica NMDA).
+const ASTRO_CA_NMDA_SCALE: f32 = 2.0;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SEÇÃO 6 — EXTENSÃO V3: CONDUTÂNCIAS DOS NOVOS CANAIS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -447,6 +502,10 @@ impl TipoNeuronalV3 for TipoNeuronal {
             TipoNeuronal::SST => 1.0,
             TipoNeuronal::VIP => 0.8,
             TipoNeuronal::DA_N=> 1.2,
+            // V3.1
+            TipoNeuronal::NGF => 0.4,   // baixo — inibição é primária
+            TipoNeuronal::LC_N=> 1.8,   // burst requer boa excitabilidade
+            TipoNeuronal::ChIN=> 1.0,   // tônico moderado
         }
     }
 
@@ -459,9 +518,9 @@ impl TipoNeuronalV3 for TipoNeuronal {
             TipoNeuronal::LT  => 3.0,
             TipoNeuronal::TC  => 1.5,
             TipoNeuronal::RZ  => 1.0,
-            TipoNeuronal::PS  => 5.0,  // forte adaptação = phasic
+            TipoNeuronal::PS  => 5.0,
             TipoNeuronal::PB  => 4.0,
-            TipoNeuronal::AC  => 8.0,  // muito adaptante
+            TipoNeuronal::AC  => 8.0,
             TipoNeuronal::BI  => 1.0,
             TipoNeuronal::DAP => 0.5,
             TipoNeuronal::IIS => 0.2,
@@ -469,6 +528,10 @@ impl TipoNeuronalV3 for TipoNeuronal {
             TipoNeuronal::SST => 4.0,
             TipoNeuronal::VIP => 2.0,
             TipoNeuronal::DA_N=> 1.5,
+            // V3.1
+            TipoNeuronal::NGF => 3.5,   // adaptação moderada — Late-Spiking
+            TipoNeuronal::LC_N=> 1.0,   // LC precisa disparar facilmente
+            TipoNeuronal::ChIN=> 2.0,   // adaptação suave para manter tônico
         }
     }
 
@@ -486,11 +549,16 @@ impl TipoNeuronalV3 for TipoNeuronal {
             TipoNeuronal::AC  => 4.0,
             TipoNeuronal::BI  => 3.0,
             TipoNeuronal::DAP => 2.0,
-            TipoNeuronal::IIS => 15.0, // grande A para rebound
+            TipoNeuronal::IIS => 15.0,
             TipoNeuronal::PV  => 0.3,
             TipoNeuronal::SST => 12.0,
             TipoNeuronal::VIP => 8.0,
             TipoNeuronal::DA_N=> 6.0,
+            // V3.1
+            // NGF: Kv1.x/D-current muito alto → atraso característico Late-Spiking
+            TipoNeuronal::NGF => 30.0,
+            TipoNeuronal::LC_N=> 5.0,
+            TipoNeuronal::ChIN=> 6.0,
         }
     }
 
@@ -498,7 +566,7 @@ impl TipoNeuronalV3 for TipoNeuronal {
         match self {
             TipoNeuronal::TC  => 8.0,
             TipoNeuronal::LT  => 10.0,
-            TipoNeuronal::IIS => 6.0,  // T-type Ca para rebound
+            TipoNeuronal::IIS => 6.0,
             TipoNeuronal::DA_N=> 3.0,
             _                 => 0.0,
         }
@@ -519,10 +587,14 @@ impl TipoNeuronalV3 for TipoNeuronal {
             TipoNeuronal::BI  => 1.5,
             TipoNeuronal::DAP => 0.5,
             TipoNeuronal::IIS => 1.0,
-            TipoNeuronal::PV  => 3.0,  // forte BK para precisão temporal
+            TipoNeuronal::PV  => 3.0,
             TipoNeuronal::SST => 1.5,
             TipoNeuronal::VIP => 1.0,
-            TipoNeuronal::DA_N=> 4.0,  // grande AHP via BK
+            TipoNeuronal::DA_N=> 4.0,
+            // V3.1
+            TipoNeuronal::NGF => 1.5,
+            TipoNeuronal::LC_N=> 3.0,  // NA release precisa de AHP rápido pós-burst
+            TipoNeuronal::ChIN=> 2.0,
         }
     }
 }
@@ -623,10 +695,9 @@ impl SinapseSTP {
                 x: 1.0, u_stp: 0.50, u0: 0.50, tau_rec: 400.0, tau_fac: 0.0,
                 tipo: TipoSTP::Depression,
             },
-            // Izhikevich adicionais
             TipoNeuronal::PS | TipoNeuronal::PB => Self {
                 x: 1.0, u_stp: 0.60, u0: 0.60, tau_rec: 700.0, tau_fac: 0.0,
-                tipo: TipoSTP::Depression, // depleta rápido — silencia após onset
+                tipo: TipoSTP::Depression,
             },
             TipoNeuronal::AC => Self {
                 x: 1.0, u_stp: 0.40, u0: 0.40, tau_rec: 900.0, tau_fac: 0.0,
@@ -634,7 +705,7 @@ impl SinapseSTP {
             },
             TipoNeuronal::BI => Self {
                 x: 1.0, u_stp: 0.20, u0: 0.20, tau_rec: 200.0, tau_fac: 300.0,
-                tipo: TipoSTP::Facilitation, // biestável: facilita até ligar
+                tipo: TipoSTP::Facilitation,
             },
             TipoNeuronal::DAP => Self {
                 x: 1.0, u_stp: 0.35, u0: 0.35, tau_rec: 400.0, tau_fac: 80.0,
@@ -644,14 +715,13 @@ impl SinapseSTP {
                 x: 1.0, u_stp: 0.10, u0: 0.10, tau_rec: 1000.0, tau_fac: 0.0,
                 tipo: TipoSTP::Depression,
             },
-            // Subtipos biológicos
             TipoNeuronal::PV => Self {
                 x: 1.0, u_stp: 0.30, u0: 0.30, tau_rec: 500.0, tau_fac: 0.0,
                 tipo: TipoSTP::Depression,
             },
             TipoNeuronal::SST => Self {
                 x: 1.0, u_stp: 0.10, u0: 0.10, tau_rec: 200.0, tau_fac: 500.0,
-                tipo: TipoSTP::Facilitation, // fortemente facilitante
+                tipo: TipoSTP::Facilitation,
             },
             TipoNeuronal::VIP => Self {
                 x: 1.0, u_stp: 0.20, u0: 0.20, tau_rec: 300.0, tau_fac: 200.0,
@@ -659,7 +729,23 @@ impl SinapseSTP {
             },
             TipoNeuronal::DA_N => Self {
                 x: 1.0, u_stp: 0.15, u0: 0.15, tau_rec: 1500.0, tau_fac: 0.0,
-                tipo: TipoSTP::Depression, // pacemaker lento, recuperação lenta
+                tipo: TipoSTP::Depression,
+            },
+            // V3.1
+            // NGF: GABA volumétrico lento (GABA-B like) — fortemente facilitante
+            TipoNeuronal::NGF => Self {
+                x: 1.0, u_stp: 0.10, u0: 0.10, tau_rec: 300.0, tau_fac: 800.0,
+                tipo: TipoSTP::Facilitation,
+            },
+            // LC_N: burst NA depleta vesículas rapidamente
+            TipoNeuronal::LC_N => Self {
+                x: 1.0, u_stp: 0.40, u0: 0.40, tau_rec: 600.0, tau_fac: 0.0,
+                tipo: TipoSTP::Depression,
+            },
+            // ChIN: tônico sustentado, recuperação intermediária
+            TipoNeuronal::ChIN => Self {
+                x: 1.0, u_stp: 0.25, u0: 0.25, tau_rec: 400.0, tau_fac: 100.0,
+                tipo: TipoSTP::Mixed,
             },
         }
     }
@@ -711,22 +797,45 @@ pub struct EstadoCanaisExtras {
     pub mod_ach:      f32,
     pub stp_efficacy: f32,
     pub stp:          SinapseSTP,
+
+    // ── V3.1: novos campos ──────────────────────────────────────────────────
+
+    /// RS BAC firing: ms restantes de corrente extra injetada após coincidência apical+somática.
+    /// Criado quando RS dispara E input_apical > APICAL_THRESHOLD.
+    pub burst_remaining_ms: f32,
+
+    /// DA_N RPE negativo: ms acumulados de hiperpolarização sem disparo esperado.
+    /// Quando > DAN_HYPERPOL_THRESHOLD_MS → sinaliza RPE negativo → mod_dopa = 0.6.
+    pub dan_hyperpol_ms: f32,
+
+    /// ChIN gate: true = janela de plasticidade aberta (ChIN em pausa).
+    /// Injetado pelo CamadaHibrida antes de cada tick.
+    /// Quando true, dopamina no STDP 3-fatores é efetiva.
+    pub chin_window_open: bool,
+
+    /// Limite máximo de ca_nmda — escalonado pelo Astrócito quando ativo.
+    /// Padrão 2.0; astrócito ativo → 4.0 (D-serina amplifica NMDA).
+    pub ca_nmda_max: f32,
 }
 
 impl EstadoCanaisExtras {
     pub fn para_tipo(tipo: TipoNeuronal) -> Self {
         Self {
-            w_m:          0.047,
-            a_ka:         0.36,
-            b_ka:         0.10,
-            m_t:          0.01,
-            h_t:          0.018,
-            q_bk:         0.0,
-            ca_nmda:      0.0,
-            elig_trace:   0.0,
-            mod_ach:      1.0,
-            stp_efficacy: 1.0,
-            stp:          SinapseSTP::para_tipo(tipo),
+            w_m:                0.047,
+            a_ka:               0.36,
+            b_ka:               0.10,
+            m_t:                0.01,
+            h_t:                0.018,
+            q_bk:               0.0,
+            ca_nmda:            0.0,
+            elig_trace:         0.0,
+            mod_ach:            1.0,
+            stp_efficacy:       1.0,
+            stp:                SinapseSTP::para_tipo(tipo),
+            burst_remaining_ms: 0.0,
+            dan_hyperpol_ms:    0.0,
+            chin_window_open:   false,
+            ca_nmda_max:        2.0,
         }
     }
 }
@@ -755,6 +864,11 @@ pub struct NeuronioHibrido {
     pub activity_avg:  f32,
     pub modelo:        ModeloDinamico,
     pub extras:        Box<EstadoCanaisExtras>,
+
+    /// RS BAC: entrada do compartimento dendrítico apical.
+    /// Injetado pelo CamadaHibrida ou chamador antes de cada tick.
+    /// Consumido (resetado para 0.0) ao final de update().
+    pub input_apical:  f32,
 }
 
 impl NeuronioHibrido {
@@ -781,6 +895,7 @@ impl NeuronioHibrido {
             activity_avg:    0.0,
             modelo:        ModeloDinamico::para_tipo(tipo),
             extras:        Box::new(EstadoCanaisExtras::para_tipo(tipo)),
+            input_apical:    0.0,
         }
     }
 
@@ -805,6 +920,8 @@ impl NeuronioHibrido {
             self.extras.elig_trace *= (-dt_ms / TAU_ELIG_MS).exp();
             self.extras.ca_nmda   *= (-dt_ms / TAU_NMDA_CA_MS).exp();
             self.extras.q_bk      *= (-dt_ms / TAU_BK_MS).exp();
+            // Decai contador BAC durante refratário
+            self.extras.burst_remaining_ms = (self.extras.burst_remaining_ms - dt_ms).max(0.0);
             return false;
         }
 
@@ -823,7 +940,7 @@ impl NeuronioHibrido {
 
         // ── 3. Registra eficácia STP (para output sináptico) ─────────────
         self.extras.stp_efficacy = self.extras.stp.fator();
-        let input_stp = input_q; // input direto: sem depleção interna
+        let input_stp = input_q;
 
         // ── 4. Correntes HH (TC e RZ) ────────────────────────────────────
         let i_hh = if let ModeloDinamico::IzhikevichHH(ref mut estado) = self.modelo {
@@ -837,8 +954,25 @@ impl NeuronioHibrido {
         // ── 5. Novos canais iônicos ──────────────────────────────────────
         let i_extra = self.calcular_canais_extras(dt_ms);
 
-        // ── 6. I_eff final ────────────────────────────────────────────────
-        let i_eff = input_stp - (i_hh + i_extra) * HH_SCALE;
+        // ── 6. I_eff base ─────────────────────────────────────────────────
+        let mut i_eff = input_stp - (i_hh + i_extra) * HH_SCALE;
+
+        // ── 6a. RS BAC burst: injeta corrente extra se burst ativo ────────
+        // Biológico: AP retrógrado ativa canais de Ca²⁺ apicais →
+        // burst de alta frequência sustentado por BURST_DURATION_MS.
+        if self.tipo == TipoNeuronal::RS && self.extras.burst_remaining_ms > 0.0 {
+            i_eff += BURST_CURRENT;
+            self.extras.burst_remaining_ms = (self.extras.burst_remaining_ms - dt_ms).max(0.0);
+        }
+
+        // ── 6b. TC + ACh: depolarização muscarínica → modo tônico de vigília
+        // M1/M4 receptors → PLC → IP3 → bloqueia I_Kleak → +5mV de bias.
+        // Em calcular_canais_extras(), h_T é inativado mais rapidamente (tau reduzido).
+        if self.tipo == TipoNeuronal::TC && self.extras.mod_ach > 1.2 {
+            let ach_exc = (self.extras.mod_ach - 1.2).clamp(0.0, 0.8);
+            // +5mV × excesso ACh: empurra v de repouso para cima (burst → tônico)
+            i_eff += 5.0 * ach_exc;
+        }
 
         // ── 7. Substeps Izhikevich (~1 ms cada) ──────────────────────────
         let n_sub  = (dt_ms.round() as usize).max(1);
@@ -869,6 +1003,18 @@ impl NeuronioHibrido {
             }
         }
 
+        // ── 7a. RS BAC Firing: coincidência apical+somática ───────────────
+        // Se RS disparou E recebeu input apical suficiente → trigger burst.
+        // Biológico: Larkum 1999 — spike retrógrado + EPSP apical → Ca²⁺ spike
+        // → ca_nmda × 2.0 (amplifica janela NMDA) + burst de 5ms.
+        if spiked && self.tipo == TipoNeuronal::RS && self.input_apical > APICAL_THRESHOLD {
+            self.extras.burst_remaining_ms = BURST_DURATION_MS;
+            // Coincidência amplifica entrada de Ca²⁺ NMDA — potencial de LTP máximo
+            let nmda_cap = self.extras.ca_nmda_max;
+            self.extras.ca_nmda = (self.extras.ca_nmda * 2.0).min(nmda_cap);
+        }
+        self.input_apical = 0.0; // one-shot: consumido a cada tick
+
         // ── 8. Ca²⁺ AHP (SK) + BK rápido pós-spike ──────────────────────
         let ca_decay = (-dt_ms / self.tipo.tau_ca_ms()).exp();
         self.ca_intra *= ca_decay;
@@ -893,13 +1039,14 @@ impl NeuronioHibrido {
         self.trace_pre *= decay;
         self.trace_pos *= decay;
 
-        // ── 11. STDP V3: 3 fatores com Ca²⁺ NMDA e eligibility trace ─────
+        // ── 11. STDP V3.1: 3 fatores bidirecional + gate ChIN ─────────────
         if spiked {
             let mg_unblock = 1.0 / (1.0 + 0.28 * (-0.062 * self.v).exp());
             if self.trace_pre > 0.05 {
                 let ach_ltp_boost = if self.extras.mod_ach > 1.0 { 1.2 } else { 1.0 };
                 let nmda_in = NMDA_CA_RATE * self.trace_pre * mg_unblock * ach_ltp_boost;
-                self.extras.ca_nmda = (self.extras.ca_nmda + nmda_in).min(2.0);
+                let nmda_cap = self.extras.ca_nmda_max;
+                self.extras.ca_nmda = (self.extras.ca_nmda + nmda_in).min(nmda_cap);
             }
 
             let bcm_theta = self.tipo.bcm_theta();
@@ -921,11 +1068,32 @@ impl NeuronioHibrido {
                 -LTD_RATE * (1.0 - self.trace_pre) / bcm_mod.max(0.1)
             } else { 0.0 };
 
-            let dopa_burst = (self.mod_dopa - 1.0).max(0.0);
-            let delta_dopa3 = DOPA_GATE * dopa_burst * self.extras.elig_trace;
-            if dopa_burst > 0.0 {
-                self.extras.elig_trace *= 1.0 - dopa_burst * 0.1;
-            }
+            // ── STDP fator 3: dopamina bidirecional + gate ChIN ─────────────
+            // RPE⁺ (mod_dopa > 1.0) → LTP proporcional ao burst de dopamina.
+            // RPE⁻ (mod_dopa < 1.0) → LTD invertido: penaliza elig_trace ativo.
+            // Gate ChIN: dopamina só é efetiva quando ChIN está em PAUSA (chin_window_open = true).
+            // Biológico: ChIN ativo → ACh → M1 → suprime DARPP-32 → bloqueia consolidação.
+            let dopa_diff = self.mod_dopa - 1.0;
+            let delta_dopa3 = if !self.extras.chin_window_open {
+                // ChIN em disparo tônico: janela fechada → sem consolidação sináptica
+                0.0
+            } else if dopa_diff > 0.0 {
+                // RPE positivo: LTP dopaminérgico (ΔW = DOPA_GATE × DA_burst × elig)
+                let burst = dopa_diff.min(2.0);
+                let d3 = DOPA_GATE * burst * self.extras.elig_trace;
+                // Uso parcial do traço de elegibilidade
+                self.extras.elig_trace *= 1.0 - burst * 0.1;
+                d3
+            } else if dopa_diff < -0.01 {
+                // RPE negativo: LTD invertido (ΔW = −DOPA_GATE × |RPE⁻| × elig)
+                // Biológico: DA dip → D2/D1 desbalanceados → LTD nas sinapses co-ativas
+                let neg = (-dopa_diff).min(1.0);
+                let d3 = -DOPA_GATE * neg * self.extras.elig_trace;
+                self.extras.elig_trace *= 1.0 - neg * 0.05;
+                d3
+            } else {
+                0.0
+            };
 
             self.atualizar_peso(delta_ltp + delta_ltd + delta_dopa3);
             self.trace_pos = 1.0;
@@ -943,6 +1111,27 @@ impl NeuronioHibrido {
 
         // ── 14. Atualiza estado STP para o próximo tick ───────────────────
         self.extras.stp.tick(spiked, dt_ms);
+
+        // ── 15. DA_N: rastreia hiperpolarização para RPE negativo ─────────
+        // Pacemaker natural DA_N ~4 Hz → 1 spike esperado a cada 250ms.
+        // Se v < −70mV por > DAN_HYPERPOL_THRESHOLD_MS sem disparar →
+        // pausa inesperada → sinal de RPE negativo → mod_dopa → 0.6.
+        if self.tipo == TipoNeuronal::DA_N {
+            if !spiked && self.v < -70.0 {
+                self.extras.dan_hyperpol_ms += dt_ms;
+                if self.extras.dan_hyperpol_ms > DAN_HYPERPOL_THRESHOLD_MS {
+                    // Pausa de burst esperado → RPE negativo
+                    self.mod_dopa = DAN_RPE_NEG_MOD_DOPA;
+                }
+            } else {
+                // Disparando ou saindo da hiperpolarização → limpa acumulador
+                self.extras.dan_hyperpol_ms = (self.extras.dan_hyperpol_ms - dt_ms * 2.0).max(0.0);
+                if spiked {
+                    // Spike real → RPE neutro (restaura mod_dopa para ≥ 1.0)
+                    self.mod_dopa = self.mod_dopa.max(1.0);
+                }
+            }
+        }
 
         spiked
     }
@@ -1001,11 +1190,22 @@ impl NeuronioHibrido {
                 (0.612 + 1.0 / (c1 + c2).max(1e-8)).clamp(0.5, 50.0)
             };
             let h_t_inf = 1.0 / (1.0 + ((v + 81.0) / 4.0).clamp(-30.0, 30.0).exp());
-            let tau_ht = if v < -80.0 {
+            let tau_ht_base = if v < -80.0 {
                 (((v + 467.0) / 66.6).clamp(-20.0, 20.0).exp()).clamp(5.0, 500.0)
             } else {
                 (28.0 + (-(v + 22.0) / 10.5).clamp(-20.0, 20.0).exp()).clamp(5.0, 500.0)
             };
+
+            // TC + ACh: muscarínico acelera inativação de h_T → modo tônico de vigília.
+            // Biológico: ACh → PKA → fosforila Cav3.x → tau_ht reduzido até 10× com ACh forte.
+            let tau_ht = if self.tipo == TipoNeuronal::TC && self.extras.mod_ach > 1.2 {
+                let ach_exc = (self.extras.mod_ach - 1.2).clamp(0.0, 0.8);
+                // Reduz tau_ht por até 90% — h_T vai a zero (I_T inativo) rapidamente
+                (tau_ht_base * (1.0 - 0.9 * ach_exc)).max(1.0)
+            } else {
+                tau_ht_base
+            };
+
             let decay_mt = (-dt_ms / tau_mt).exp();
             let decay_ht = (-dt_ms / tau_ht).exp();
             self.extras.m_t = m_t_inf + (self.extras.m_t - m_t_inf) * decay_mt;
@@ -1026,7 +1226,11 @@ impl NeuronioHibrido {
         cortisol:     f32,
         acetilcolina: f32,
     ) {
-        self.mod_dopa = dopamina;
+        // DA_N auto-regula mod_dopa via RPE no passo 15 de update().
+        // Sobrescrever externamente apagaria o sinal de RPE calculado.
+        if self.tipo != TipoNeuronal::DA_N {
+            self.mod_dopa = dopamina;
+        }
         self.mod_sero = serotonina;
         self.mod_cort = cortisol;
         self.extras.mod_ach = acetilcolina.clamp(0.0, 3.0);
@@ -1073,11 +1277,34 @@ impl NeuronioHibrido {
 
 #[derive(Debug)]
 pub struct CamadaHibrida {
-    pub neuronios:     Vec<NeuronioHibrido>,
-    pub escala_camada: f32,
-    pub nome:          String,
-    pub lateral_w:     Vec<Vec<(usize, f32)>>,
-    pub prev_spikes:   Vec<bool>,
+    pub neuronios:          Vec<NeuronioHibrido>,
+    pub escala_camada:      f32,
+    pub nome:               String,
+    /// PV/FS lateral: inibição de voltagem (via corrente elétrica) → soma de RS.
+    pub lateral_w:          Vec<Vec<(usize, f32)>>,
+    pub prev_spikes:        Vec<bool>,
+
+    // ── V3.1: novos campos ──────────────────────────────────────────────────
+
+    /// SST→RS: gating de plasticidade dendrítica (reduz ca_nmda + elig_trace).
+    /// Construído em init_lateral_inhibition() junto com lateral_w.
+    pub sst_w:              Vec<Vec<(usize, f32)>>,
+
+    /// Pool divisivo acumulado de spikes NGF do tick anterior.
+    /// Aplicado a todos os inputs como: input_efetivo = input / (1 + ngf_divisive).
+    pub ngf_divisive:       f32,
+
+    /// true quando nenhum ChIN disparou no tick anterior (pausa = janela DA-STDP aberta).
+    pub chin_paused:        bool,
+
+    /// true enquanto LC_N está em burst — RS perdem adaptação (atenção hiperfocada).
+    pub lc_burst_active:    bool,
+
+    /// ms restantes de efeito de burst LC_N (decai para 0 → lc_burst_active = false).
+    pub lc_burst_remaining: f32,
+
+    /// Astrócito local — monitora atividade e escala ca_nmda_max quando alta por >1s.
+    pub astrocito:          Astrocito,
 }
 
 impl CamadaHibrida {
@@ -1122,34 +1349,50 @@ impl CamadaHibrida {
             neuronios,
             escala_camada,
             nome: nome.to_string(),
-            lateral_w:   Vec::new(),
-            prev_spikes: vec![false; n],
+            lateral_w:          Vec::new(),
+            sst_w:              Vec::new(),
+            prev_spikes:        vec![false; n],
+            ngf_divisive:       0.0,
+            chin_paused:        false,
+            lc_burst_active:    false,
+            lc_burst_remaining: 0.0,
+            astrocito:          Astrocito::new(),
         }
     }
 
     pub fn init_lateral_inhibition(&mut self, n_vizinhos: usize, peso_inhib: f32) {
         let n = self.neuronios.len();
         self.lateral_w = vec![Vec::new(); n];
+        self.sst_w     = vec![Vec::new(); n];
 
         let fs_idx: Vec<usize> = self.neuronios.iter().enumerate()
-            .filter(|(_, n)| n.tipo == TipoNeuronal::FS)
+            .filter(|(_, n)| n.tipo == TipoNeuronal::FS || n.tipo == TipoNeuronal::PV)
+            .map(|(i, _)| i).collect();
+        let sst_idx: Vec<usize> = self.neuronios.iter().enumerate()
+            .filter(|(_, n)| n.tipo == TipoNeuronal::SST)
+            .map(|(i, _)| i).collect();
+        let vip_idx: Vec<usize> = self.neuronios.iter().enumerate()
+            .filter(|(_, n)| n.tipo == TipoNeuronal::VIP)
             .map(|(i, _)| i).collect();
         let rs_idx: Vec<usize> = self.neuronios.iter().enumerate()
             .filter(|(_, n)| !n.tipo.e_inibitorico())
             .map(|(i, _)| i).collect();
 
-        if fs_idx.is_empty() || rs_idx.is_empty() { return; }
+        if rs_idx.is_empty() { return; }
 
-        for &fs in &fs_idx {
-            let mut vizinhos: Vec<(usize, usize)> = rs_idx.iter()
-                .filter(|&&rs| rs != fs)
-                .map(|&rs| {
-                    let dist = (fs as isize - rs as isize).unsigned_abs();
-                    (rs, dist.min(n.saturating_sub(dist)))
-                }).collect();
-            vizinhos.sort_by_key(|&(_, d)| d);
-            for (rs, _) in vizinhos.into_iter().take(n_vizinhos) {
-                self.lateral_w[fs].push((rs, peso_inhib));
+        // ── PV/FS → RS: inibição de voltagem (corrente perisomal) ──────────
+        if !fs_idx.is_empty() {
+            for &fs in &fs_idx {
+                let mut vizinhos: Vec<(usize, usize)> = rs_idx.iter()
+                    .filter(|&&rs| rs != fs)
+                    .map(|&rs| {
+                        let dist = (fs as isize - rs as isize).unsigned_abs();
+                        (rs, dist.min(n.saturating_sub(dist)))
+                    }).collect();
+                vizinhos.sort_by_key(|&(_, d)| d);
+                for (rs, _) in vizinhos.into_iter().take(n_vizinhos) {
+                    self.lateral_w[fs].push((rs, peso_inhib));
+                }
             }
         }
         for &rs in &rs_idx {
@@ -1158,12 +1401,115 @@ impl CamadaHibrida {
                 self.lateral_w[rs].push((prox, 0.8));
             }
         }
+
+        // ── VIP → SST: circuito desinibitório (VIP inibe SST → libera RS) ────
+        // VIP dispara → SST recebe corrente inibitória (lateral_w) → SST não dispara
+        // → ca_nmda e elig_trace de RS não são gatados → janela de plasticidade aberta.
+        // Biológico: VIP (disinibitory interneuron) ativa via projeções de PFC top-down.
+        if !vip_idx.is_empty() && !sst_idx.is_empty() {
+            for &vip in &vip_idx {
+                for &sst in &sst_idx {
+                    // VIP → SST com peso moderado (inibe SST perisomal, GABA-A)
+                    self.lateral_w[vip].push((sst, peso_inhib * 0.8));
+                }
+            }
+        }
+
+        // ── SST → RS: gating de plasticidade dendrítica (sst_w) ────────────
+        // SST projeta para compartimento apical → inibe ca_nmda e elig_trace.
+        // SST cobre mais neurônios RS do que PV (cobertura dendrítica ampla).
+        if !sst_idx.is_empty() {
+            for &sst in &sst_idx {
+                let mut vizinhos: Vec<(usize, usize)> = rs_idx.iter()
+                    .filter(|&&rs| rs != sst)
+                    .map(|&rs| {
+                        let dist = (sst as isize - rs as isize).unsigned_abs();
+                        (rs, dist.min(n.saturating_sub(dist)))
+                    }).collect();
+                vizinhos.sort_by_key(|&(_, d)| d);
+                for (rs, _) in vizinhos.into_iter().take(n_vizinhos * 2) {
+                    self.sst_w[sst].push((rs, peso_inhib * 0.7));
+                }
+            }
+        }
     }
 
     pub fn update(&mut self, inputs: &[f32], dt: f32, t_ms: f32) -> Vec<bool> {
-        let esc = self.escala_camada;
-        let n = self.neuronios.len();
+        let esc   = self.escala_camada;
+        let n     = self.neuronios.len();
+        let dt_ms = dt * 1000.0;
 
+        // ── Pre-tick A: NGF divisive normalization ──────────────────────────
+        // Pool divisivo NGF: acumula NGF_DIVISIVE_STEP por spike NGF do tick anterior,
+        // decai com TAU_NGF_MS. Aplicado como: input_efetivo = input / (1 + ngf_divisive).
+        let ngf_spikes = self.neuronios.iter().enumerate()
+            .filter(|(i, n_)| {
+                n_.tipo == TipoNeuronal::NGF
+                    && self.prev_spikes.get(*i).copied().unwrap_or(false)
+            })
+            .count() as f32;
+        self.ngf_divisive = (self.ngf_divisive * (-dt_ms / TAU_NGF_MS).exp()
+            + ngf_spikes * NGF_DIVISIVE_STEP).min(5.0);
+
+        // ── Pre-tick B: ChIN state — detecta pausa ──────────────────────────
+        // ChIN pausa = nenhum ChIN disparou no tick anterior → janela DA-STDP abre.
+        let chin_ativo = self.neuronios.iter().enumerate().any(|(i, n_)| {
+            n_.tipo == TipoNeuronal::ChIN
+                && self.prev_spikes.get(i).copied().unwrap_or(false)
+        });
+        self.chin_paused = !chin_ativo;
+
+        // ── Pre-tick C: LC_N burst — reset de adaptação em RS ──────────────
+        // LC_N em burst → NA → zera I_M (w_m) e AHP (ca_intra) de todos os RS.
+        // Biológico: NE → β1 → cAMP → PKA → modula canais de K⁺ e Ca²⁺.
+        let lc_spike = self.neuronios.iter().enumerate().any(|(i, n_)| {
+            n_.tipo == TipoNeuronal::LC_N
+                && self.prev_spikes.get(i).copied().unwrap_or(false)
+        });
+        if lc_spike {
+            self.lc_burst_active    = true;
+            self.lc_burst_remaining = TAU_LC_BURST_MS;
+        } else {
+            self.lc_burst_remaining = (self.lc_burst_remaining - dt_ms).max(0.0);
+            if self.lc_burst_remaining == 0.0 { self.lc_burst_active = false; }
+        }
+        if self.lc_burst_active {
+            for n_ in &mut self.neuronios {
+                if n_.tipo == TipoNeuronal::RS {
+                    // Zera adaptação: w_m (I_M) e ca_intra (AHP-SK) → atenção hiperfocada.
+                    // Biológico: NE → β1 → cAMP → PKA → reduz I_M e Ca²⁺ AHP.
+                    n_.extras.w_m = 0.0;
+                    n_.ca_intra   = 0.0;
+                    // NOTA: SNR (silenciamento de sinapses fracas) é aplicado
+                    // no loop paralelo via scaling de input_div — não aqui,
+                    // pois stp_efficacy seria sobrescrito por update() step 3.
+                }
+            }
+        }
+
+        // ── Pre-tick D: SST gating de plasticidade dendrítica ───────────────
+        // SST dispara → ca_nmda e elig_trace dos RS alvo são reduzidos.
+        // Biológico: SST (Martinotti) → compartimento apical → inibe NMDA via shunting.
+        if !self.sst_w.is_empty() {
+            for (from, targets) in self.sst_w.iter().enumerate() {
+                if self.prev_spikes.get(from).copied().unwrap_or(false) {
+                    for &(to, strength) in targets {
+                        if to < n {
+                            let n_ = &mut self.neuronios[to];
+                            if !n_.tipo.e_inibitorico() {
+                                // Fecha janela de plasticidade dendrítica
+                                n_.extras.ca_nmda    = (n_.extras.ca_nmda
+                                    * (1.0 - SST_CA_GATE * strength)).max(0.0);
+                                n_.extras.elig_trace = (n_.extras.elig_trace
+                                    * (1.0 - SST_ELIG_GATE * strength)).max(0.0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Pre-tick E: PV/FS lateral current (inibição perisomal) ─────────
         let mut lateral_current = vec![0.0f32; n];
         if !self.lateral_w.is_empty() {
             for (from, neighbors) in self.lateral_w.iter().enumerate() {
@@ -1175,15 +1521,83 @@ impl CamadaHibrida {
             }
         }
 
+        // ── Parallel update: injeta estado global, roda cada neurônio ───────
+        let ngf_div   = self.ngf_divisive;
+        let chin_p    = self.chin_paused;
+        let astro_cap = self.astrocito.ca_nmda_max();
+        let lc_active = self.lc_burst_active; // captura para SNR no closure
+
         let spikes: Vec<bool> = self.neuronios.par_iter_mut().enumerate().map(|(i, n_)| {
             let ext = inputs.get(i).copied().unwrap_or(0.0);
             let lat = lateral_current.get(i).copied().unwrap_or(0.0);
-            n_.update(ext + lat, dt, t_ms, esc)
+            // Normalização divisiva NGF: input_efetivo = input / (1 + pool_divisivo)
+            let raw_div = (ext + lat) / (1.0 + ngf_div);
+            // LC_N SNR: sinapses fracas de RS são silenciadas durante burst de NA.
+            // Biológico: NE → α1 → reduz condutância de fundo → melhora relação sinal/ruído.
+            // Aplicado aqui (não em Pre-tick C) porque stp_efficacy é recalculado em update().
+            let input_div = if lc_active
+                && n_.tipo == TipoNeuronal::RS
+                && n_.extras.stp.fator() < 0.5
+            {
+                raw_div * 0.3 // silencia sinapse fraca — só sinapses fortes passam
+            } else {
+                raw_div
+            };
+            // Injeta estado global antes do update (capturados por cópia — sem contention)
+            n_.extras.chin_window_open = chin_p;
+            n_.extras.ca_nmda_max      = astro_cap;
+            n_.update(input_div, dt, t_ms, esc)
         }).collect();
+
+        // ── Post-tick A: DA_N RPE broadcast ────────────────────────────────
+        // Propaga mod_dopa autocomputado dos neurônios DA_N para todos os neurônios
+        // excitatórios da camada. RPE⁺ → LTP nos RS; RPE⁻ → LTD invertido.
+        // Biológico: VTA/SNc libera DA de forma volumétrica → modula plasticidade cortical.
+        {
+            let mut dan_sum = 0.0f32;
+            let mut dan_count = 0usize;
+            for n_ in &self.neuronios {
+                if n_.tipo == TipoNeuronal::DA_N {
+                    dan_sum += n_.mod_dopa;
+                    dan_count += 1;
+                }
+            }
+            if dan_count > 0 {
+                let rpe = dan_sum / dan_count as f32;
+                for n_ in &mut self.neuronios {
+                    if matches!(n_.tipo,
+                        TipoNeuronal::RS | TipoNeuronal::IB | TipoNeuronal::CH |
+                        TipoNeuronal::DAP | TipoNeuronal::VIP)
+                    {
+                        n_.mod_dopa = rpe;
+                    }
+                }
+            }
+        }
+
+        // ── Post-tick B: atualiza astrócito com taxa de spike atual ────────
+        let spike_rate = spikes.iter().filter(|&&s| s).count() as f32 / n.max(1) as f32;
+        self.astrocito.update(spike_rate, dt_ms);
 
         if self.prev_spikes.len() != n { self.prev_spikes = vec![false; n]; }
         self.prev_spikes.copy_from_slice(&spikes);
         spikes
+    }
+
+    /// Injeta input apical nos neurônios RS/IB antes do próximo update().
+    ///
+    /// Representa projeções top-down de camadas corticais superiores para
+    /// o compartimento dendrítico apical de neurônios piramidais (RS/IB).
+    /// Se o RS disparar E `input_apical > APICAL_THRESHOLD` → BAC burst + ca_nmda×2.
+    ///
+    /// Chame antes de `update()`:
+    ///   `camada.set_apical_inputs(&top_down); camada.update(&bottom_up, dt, t_ms);`
+    pub fn set_apical_inputs(&mut self, apical: &[f32]) {
+        for (i, n) in self.neuronios.iter_mut().enumerate() {
+            if matches!(n.tipo, TipoNeuronal::RS | TipoNeuronal::IB) {
+                n.input_apical = apical.get(i).copied().unwrap_or(0.0);
+            }
+        }
     }
 
     pub fn modular_neuro(&mut self, dopamina: f32, serotonina: f32, cortisol: f32) {
@@ -1210,23 +1624,26 @@ impl CamadaHibrida {
                 PrecisionType::INT4 => s.int4 += 1,
             }
             match n.tipo {
-                TipoNeuronal::RS  => s.tipo_rs  += 1,
-                TipoNeuronal::IB  => s.tipo_ib  += 1,
-                TipoNeuronal::CH  => s.tipo_ch  += 1,
-                TipoNeuronal::FS  => s.tipo_fs  += 1,
-                TipoNeuronal::LT  => s.tipo_lt  += 1,
-                TipoNeuronal::TC  => s.tipo_tc  += 1,
-                TipoNeuronal::RZ  => s.tipo_rz  += 1,
-                TipoNeuronal::PS  => s.tipo_ps  += 1,
-                TipoNeuronal::PB  => s.tipo_pb  += 1,
-                TipoNeuronal::AC  => s.tipo_ac  += 1,
-                TipoNeuronal::BI  => s.tipo_bi  += 1,
-                TipoNeuronal::DAP => s.tipo_dap += 1,
-                TipoNeuronal::IIS => s.tipo_iis += 1,
-                TipoNeuronal::PV  => s.tipo_pv  += 1,
-                TipoNeuronal::SST => s.tipo_sst += 1,
-                TipoNeuronal::VIP => s.tipo_vip += 1,
-                TipoNeuronal::DA_N=> s.tipo_dan += 1,
+                TipoNeuronal::RS   => s.tipo_rs   += 1,
+                TipoNeuronal::IB   => s.tipo_ib   += 1,
+                TipoNeuronal::CH   => s.tipo_ch   += 1,
+                TipoNeuronal::FS   => s.tipo_fs   += 1,
+                TipoNeuronal::LT   => s.tipo_lt   += 1,
+                TipoNeuronal::TC   => s.tipo_tc   += 1,
+                TipoNeuronal::RZ   => s.tipo_rz   += 1,
+                TipoNeuronal::PS   => s.tipo_ps   += 1,
+                TipoNeuronal::PB   => s.tipo_pb   += 1,
+                TipoNeuronal::AC   => s.tipo_ac   += 1,
+                TipoNeuronal::BI   => s.tipo_bi   += 1,
+                TipoNeuronal::DAP  => s.tipo_dap  += 1,
+                TipoNeuronal::IIS  => s.tipo_iis  += 1,
+                TipoNeuronal::PV   => s.tipo_pv   += 1,
+                TipoNeuronal::SST  => s.tipo_sst  += 1,
+                TipoNeuronal::VIP  => s.tipo_vip  += 1,
+                TipoNeuronal::DA_N => s.tipo_dan  += 1,
+                TipoNeuronal::NGF  => s.tipo_ngf  += 1,
+                TipoNeuronal::LC_N => s.tipo_lcn  += 1,
+                TipoNeuronal::ChIN => s.tipo_chin += 1,
             }
             if n.tipo.usa_hh() { s.hh += 1; }
             s.bytes_total += std::mem::size_of::<NeuronioHibrido>();
@@ -1291,6 +1708,10 @@ pub struct CamadaStats {
     pub tipo_vip:    usize,
     pub tipo_dan:    usize,
     pub hh:          usize,
+    // V3.1
+    pub tipo_ngf:    usize,
+    pub tipo_lcn:    usize,
+    pub tipo_chin:   usize,
 }
 
 impl CamadaStats {
@@ -1301,7 +1722,8 @@ impl CamadaStats {
     pub fn prop_inibitorios(&self) -> f32 {
         if self.total == 0 { 0.0 }
         else {
-            (self.tipo_fs + self.tipo_lt + self.tipo_pv + self.tipo_sst + self.tipo_vip)
+            (self.tipo_fs + self.tipo_lt + self.tipo_pv
+                + self.tipo_sst + self.tipo_vip + self.tipo_ngf)
                 as f32 / self.total as f32
         }
     }
@@ -1321,4 +1743,68 @@ pub struct CamadaStatsV3 {
     pub media_elig:         f32,
     pub media_stp_efficacy: f32,
     pub n_com_it_ativo:     usize,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEÇÃO 13 — ASTRÓCITO (célula da glia — facilitação LTP tripartite)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Astrócito — célula da glia que monitora atividade local e facilita consolidação.
+///
+/// Quando a taxa de spike da camada supera ASTRO_ACTIVITY_THRESHOLD por >1000ms,
+/// o astrócito libera D-serina (co-agonista do receptor NMDA NR1), ampliando o
+/// limite máximo de ca_nmda de 2.0 para 4.0 (ASTRO_CA_NMDA_SCALE × base).
+///
+/// Biológico: Henneberger et al. (2010) — D-serine de astrócito é necessária
+/// para indução de LTP hipocampal. Feedback positivo moderado: atividade alta
+/// → astrócito libera D-serina → NMDA mais eficiente → mais LTP → consolidação.
+#[derive(Debug)]
+pub struct Astrocito {
+    /// EMA da taxa de spike local (tau ≈ 100ms). Atualizado a cada tick.
+    pub activity_avg: f32,
+    /// Acumulador de tempo em estado de alta atividade (ms).
+    pub high_activity_ms: f32,
+    /// Fator de escala para ca_nmda_max [1.0 = basal, ASTRO_CA_NMDA_SCALE = ativo].
+    pub ca_nmda_scale: f32,
+}
+
+impl Astrocito {
+    pub fn new() -> Self {
+        Self { activity_avg: 0.0, high_activity_ms: 0.0, ca_nmda_scale: 1.0 }
+    }
+
+    /// Atualiza estado do astrócito com base na taxa de spike atual da camada.
+    ///
+    /// - `spike_rate`: fração de neurônios que dispararam neste tick [0.0–1.0].
+    /// - `dt_ms`: passo de tempo em milissegundos.
+    pub fn update(&mut self, spike_rate: f32, dt_ms: f32) {
+        // EMA da atividade local: tau ≈ 100ms
+        let alpha = (-dt_ms / 100.0).exp();
+        self.activity_avg = self.activity_avg * alpha + spike_rate * (1.0 - alpha);
+
+        if self.activity_avg >= ASTRO_ACTIVITY_THRESHOLD {
+            // Atividade persistentemente alta: acumula tempo para trigger
+            self.high_activity_ms += dt_ms;
+            if self.high_activity_ms >= ASTRO_HIGH_DURATION_MS {
+                // Sinalização tripartite ativa: D-serina → amplifica NMDA
+                // ca_nmda_max = 2.0 × ASTRO_CA_NMDA_SCALE = 4.0
+                self.ca_nmda_scale = ASTRO_CA_NMDA_SCALE;
+            }
+        } else {
+            // Atividade voltou ao normal: drena o acumulador e decai escala
+            self.high_activity_ms = (self.high_activity_ms - dt_ms * 2.0).max(0.0);
+            if self.high_activity_ms == 0.0 {
+                // Re-captura de D-serina: decai exponencialmente (tau ≈ 500ms)
+                let decay = (-dt_ms / 500.0).exp();
+                self.ca_nmda_scale = 1.0 + (self.ca_nmda_scale - 1.0) * decay;
+            }
+        }
+    }
+
+    /// Limite máximo de ca_nmda considerando o estado atual do astrócito.
+    /// Padrão: 2.0 × 1.0 = 2.0. Ativo: 2.0 × 2.0 = 4.0.
+    #[inline]
+    pub fn ca_nmda_max(&self) -> f32 {
+        2.0 * self.ca_nmda_scale
+    }
 }

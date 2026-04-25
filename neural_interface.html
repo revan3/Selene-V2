@@ -649,6 +649,44 @@ header::after {
     border-radius: 0 0 2px 2px;
   }
 }
+
+/* ── Ontogenia ──────────────────────────────────────────── */
+.stage-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px; border-radius: 10px;
+  font-family: var(--orb); font-size: 8px; letter-spacing: 2px;
+  border: 1px solid; transition: all 0.4s;
+}
+.stage-neonatal     { color: #4a7090; border-color: #1a2d40; background: rgba(26,45,64,0.3); }
+.stage-preverbal    { color: #7b4fff; border-color: rgba(123,79,255,0.4); background: rgba(123,79,255,0.08); }
+.stage-palavraunica { color: #00d4ff; border-color: rgba(0,212,255,0.4); background: rgba(0,212,255,0.08); }
+.stage-frase        { color: #ff9a00; border-color: rgba(255,154,0,0.4); background: rgba(255,154,0,0.08); }
+.stage-discurso     { color: #00ffb3; border-color: rgba(0,255,179,0.4); background: rgba(0,255,179,0.12);
+  box-shadow: 0 0 8px rgba(0,255,179,0.2); }
+
+.onto-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.onto-k   { font-family: var(--mono); font-size: 8px; color: var(--muted); }
+.onto-v   { font-family: var(--mono); font-size: 9px; }
+.onto-frac span { color: var(--accent3); }
+
+.mic-native-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--muted); flex-shrink: 0; transition: all 0.3s;
+}
+.mic-native-dot.ativo {
+  background: #00ff96; box-shadow: 0 0 7px #00ff96;
+  animation: blink 1.2s ease-in-out infinite;
+}
+
+.btn-reset-full {
+  width: 100%; margin-top: 8px; padding: 7px 0;
+  border-radius: 6px; border: 1px solid rgba(255,61,92,0.4);
+  background: rgba(255,61,92,0.07); color: var(--danger);
+  cursor: pointer; font-family: var(--mono); font-size: 9px;
+  letter-spacing: 0.08em; display: flex; align-items: center;
+  justify-content: center; gap: 5px; transition: all 0.2s;
+}
+.btn-reset-full:hover { background: rgba(255,61,92,0.18); }
 </style>
 </head>
 <body>
@@ -678,6 +716,13 @@ header::after {
     <div class="hstat">
       <span>step</span>
       <span class="hstat-val" id="h-step">—</span>
+    </div>
+    <div class="hstat" id="hstat-stage" style="display:none">
+      <span id="h-stage-badge" class="stage-badge stage-neonatal">NEONATAL</span>
+    </div>
+    <div class="hstat" id="hstat-mic-native" style="display:none" title="Microfone nativo ativo (cpal)">
+      <div class="mic-native-dot" id="mic-native-dot"></div>
+      <span style="font-size:9px">MIC</span>
     </div>
   </div>
 
@@ -861,11 +906,58 @@ header::after {
       <div class="metric-section-title">Personalidade</div>
       <div id="tracos-list"></div>
     </div>
+
+    <div class="metric-section">
+      <div class="metric-section-title">Desenvolvimento</div>
+      <div style="margin-bottom:7px">
+        <span id="m-stage-badge" class="stage-badge stage-neonatal">NEONATAL</span>
+        <span id="m-stage-next" style="font-family:var(--mono);font-size:8px;color:var(--muted);margin-left:6px">→ —</span>
+      </div>
+      <div class="bar-row">
+        <div class="bar-header">
+          <span class="bar-name" style="color:var(--accent3);font-size:8px">PROGRESSO</span>
+          <span class="bar-pct" id="v-onto-prog">—</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill" id="b-onto-prog"
+          style="width:0%;background:linear-gradient(90deg,var(--accent3),var(--accent))"></div></div>
+      </div>
+      <div class="onto-row">
+        <span class="onto-k">VOCAB</span>
+        <span class="onto-v" id="m-onto-vocab">—</span>
+        <span class="onto-frac" id="m-onto-vocab-thr"></span>
+      </div>
+      <div class="onto-row">
+        <span class="onto-k">ARESTAS</span>
+        <span class="onto-v" id="m-onto-edges">—</span>
+        <span class="onto-frac" id="m-onto-edges-thr"></span>
+      </div>
+      <div class="onto-row">
+        <span class="onto-k">REWARD MÉD</span>
+        <span class="onto-v" id="m-onto-reward">—</span>
+        <span class="onto-frac" id="m-onto-reward-thr"></span>
+      </div>
+      <div class="onto-row">
+        <span class="onto-k">ESCUTA</span>
+        <span class="onto-v" id="m-onto-escuta">—</span>
+        <span class="onto-frac" id="m-onto-escuta-thr"></span>
+      </div>
+      <div class="onto-row">
+        <span class="onto-k">PALAVRAS OUVIDAS</span>
+        <span class="onto-v" id="m-onto-palavras">—</span>
+      </div>
+      <button class="btn-reset-full" id="btn-reset-mem" title="Apaga memória semântica e reinicia estágio Neonatal">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="1 4 1 10 7 10"/>
+          <path d="M3.51 15a9 9 0 1 0 .49-3.5"/>
+        </svg>
+        RESET MEMÓRIA
+      </button>
+    </div>
   </div>
 
   <!-- CHAT -->
   <div class="chat-panel">
-    <div class="panel-label">INTERFACE DE DIALOGO</div>
+    <div class="panel-label">INTERFACE DE DIÁLOGO</div>
     <div id="chat-messages">
       <div style="font-family:var(--mono);font-size:10px;color:var(--muted);text-align:center;padding-top:20px;letter-spacing:0.06em">
         AGUARDANDO CONEXAO COM SELENE...
@@ -1415,6 +1507,7 @@ const state = {
   recognition: null,
   camOn: false,
   pensamentosVisto: new Set(),
+  ontogenyStage: null,  // estágio atual, atualizado via ontogeny_status
 };
 
 // ════════════════════════════════════════════════
@@ -1445,8 +1538,8 @@ function connect(host) {
     setConnected(true);
     document.getElementById('conn-modal').classList.add('hidden');
     state.ws.send(JSON.stringify({ action: 'ping' }));
-    // Carrega grafo mental logo ao conectar
     state.ws.send(JSON.stringify({ action: 'vocab_request' }));
+    state.ws.send(JSON.stringify({ action: 'ontogeny_status' }));
     schedPing();
   };
   state.ws.onclose = () => setConnected(false);
@@ -1468,13 +1561,25 @@ function setConnected(v) {
   document.getElementById('btn-send').disabled = !v;
   document.getElementById('btn-shutdown').style.display = v ? 'flex' : 'none';
   document.getElementById('btn-sleep').style.display = v ? 'flex' : 'none';
+  // Mostra badge de estágio sempre que conectado
+  const hStat = document.getElementById('hstat-stage');
+  if (hStat) hStat.style.display = v ? 'flex' : 'none';
+  if (!v) {
+    state.ontogenyStage = null;
+    updateInputPlaceholder();
+  }
 }
 
 function schedPing() {
+  let pingCount = 0;
   setInterval(() => {
     if (state.ws?.readyState === 1) {
       state.pingTs = Date.now();
       state.ws.send(JSON.stringify({ action: 'ping' }));
+      // Solicita status da ontogenia a cada ~30s (6 pings)
+      if (++pingCount % 6 === 0) {
+        state.ws.send(JSON.stringify({ action: 'ontogeny_status' }));
+      }
     }
   }, 5000);
 }
@@ -1493,13 +1598,9 @@ function handleEvent(d) {
   switch (d.event) {
     case 'chat_reply':
       removeTyping();
-      appendMessage('selene', d.message, d.emocao);
-      // Aguarda até 80ms para receber voz_params antes de falar.
-      // O servidor envia voz_params logo após chat_reply; esse delay
-      // garante que pendingVozParams esteja preenchido quando falar() rodar.
+      appendMessage('selene', d.message, d.emotion);
       { const msgSnapshot = d.message;
         setTimeout(() => falar(msgSnapshot), 80); }
-      // Atualiza grafo após cada resposta (Selene acabou de aprender)
       if (state.ws?.readyState === WebSocket.OPEN)
         state.ws.send(JSON.stringify({ action: 'vocab_request' }));
       break;
@@ -1551,6 +1652,42 @@ function handleEvent(d) {
 
     case 'vocab_snapshot':
       if (window.updateMentalGraph) window.updateMentalGraph(d);
+      // Popula vocabulário ativo para scoreRelevancia (modo ambiente)
+      if (Array.isArray(d.nodes)) {
+        state.graphWords = d.nodes.map(n => n.id ?? n.label ?? '').filter(Boolean);
+      }
+      break;
+
+    case 'ontogeny_status': {
+      if (d.data) {
+        const newStage = d.data.stage;
+        if (newStage && state.ontogenyStage && newStage !== state.ontogenyStage) {
+          addSystemMsg(`🌱 Selene avançou: ${state.ontogenyStage} → ${newStage}`);
+        }
+        state.ontogenyStage = newStage ?? state.ontogenyStage;
+        updateOntogenyUI(d.data);
+        updateInputPlaceholder();
+      }
+      break;
+    }
+
+    case 'mic_status':
+      setMicNativo(!!d.ativo);
+      if (d.ativo) addSystemMsg('🎤 Microfone nativo ativo (cpal)');
+      else         addSystemMsg('Microfone nativo pausado');
+      break;
+
+    case 'reset_memory_ack':
+      addSystemMsg('✓ Memória resetada — Selene volta ao estágio Neonatal');
+      // Solicita status atualizado da ontogenia
+      if (state.ws?.readyState === 1)
+        state.ws.send(JSON.stringify({ action: 'ontogeny_status' }));
+      break;
+
+    case 'reacao_emocional':
+      // PreVerbal stage: reação emocional sem palavras
+      appendMessage('selene', d.reacao ?? '...', d.emotion ?? 0);
+      falar(d.reacao ?? '');
       break;
 
     case 'pong':
@@ -1717,21 +1854,9 @@ function nowStr() {
 }
 
 function appendPensamento(texto) {
-  const stream = document.getElementById('pensamentos-stream');
-  // Remove placeholder
-  const empty = stream.querySelector('.pens-empty');
-  if (empty) empty.remove();
-
-  const item = document.createElement('div');
-  item.className = 'pens-item';
-  item.innerHTML = `
-    <div class="pens-ts">${nowStr()}</div>
-    <div class="pens-txt">${texto}</div>
-  `;
-  stream.appendChild(item);
-  // Mantém máximo 120 pensamentos visíveis
-  while (stream.children.length > 120) stream.removeChild(stream.firstChild);
-  stream.scrollTop = stream.scrollHeight;
+  // Pensamentos espontâneos chegam via 'pensamento_espontaneo' event e vão ao chat.
+  // Esta função mantida para compatibilidade mas não tem painel dedicado.
+  console.debug('[PENSAMENTO]', nowStr(), texto);
 }
 
 // ════════════════════════════════════════════════
@@ -1909,12 +2034,33 @@ function sendMessage(text) {
   appendMessage('user', text);
   $input.value = ''; $input.style.height = 'auto';
   $send.disabled = true;
-  showTyping();
-  // Pipeline áudio-primeiro: envia bandas FFT fonéticas + transcript.
-  // O servidor recebe o sinal de frequência antes do texto — como se o usuário
-  // tivesse falado em voz alta (inner speech sintético do lado do cliente).
+
+  const neonatal = state.ontogenyStage === 'Neonatal';
+  const preverbal = state.ontogenyStage === 'PreVerbal';
+  if (neonatal || preverbal) {
+    // Estágio não-verbal: não mostrar indicador de digitação (não haverá resposta)
+    addSystemMsg(neonatal
+      ? '📡 absorvendo em silêncio...'
+      : '🔈 absorvendo... (reação emocional possível)');
+  } else {
+    showTyping();
+  }
+
   const bands = textoBandas32(text);
   state.ws.send(JSON.stringify({ action: 'audio_chat', transcript: text, bands }));
+}
+
+function updateInputPlaceholder() {
+  const stage = state.ontogenyStage;
+  const ph = {
+    'Neonatal':     'Ensine a Selene... (ela não fala ainda)',
+    'PreVerbal':    'Fale com a Selene... (ela só reage emocionalmente)',
+    'PalavraUnica': 'Fale com a Selene... (máx 2 palavras)',
+    'Frase':        'Fale com a Selene... (máx 5 palavras)',
+    'Discurso':     'Fale com Selene...',
+  };
+  const el = document.getElementById('chat-input');
+  if (el) el.placeholder = ph[stage] ?? 'Fale com Selene...';
 }
 
 $input.addEventListener('input', () => {
@@ -2022,7 +2168,7 @@ if (SR) {
 
     // Continuidade semântica: palavras da frase aparecem no histórico recente
     const palavras = t.split(/\s+/).filter(w => w.length > 3);
-    const historico = Array.from(document.querySelectorAll('.chat-msg .msg-text'))
+    const historico = Array.from(document.querySelectorAll('.msg .msg-bubble'))
       .slice(-6).map(el => el.textContent.toLowerCase());
     const ctx = historico.join(' ');
     const overlap = palavras.filter(w => ctx.includes(w)).length;
@@ -2290,12 +2436,18 @@ document.getElementById('btn-listen').addEventListener('click', async () => {
   if (!state.ws || state.ws.readyState !== 1) return;
   state.listenOn = !state.listenOn;
   document.getElementById('btn-listen').classList.toggle('listen-on', state.listenOn);
+
   if (state.listenOn) {
+    // 1. Aciona mic nativo no servidor (cpal)
+    state.ws.send(JSON.stringify({ action: 'start_mic' }));
+    // 2. Também inicia captura no browser (para scoreRelevancia do modo ambiente)
     const ok = await initAudioCapture();
     if (ok && state.recognition) {
       try { state.recognition.start(); state.recording = true; } catch(_) {}
     }
   } else {
+    // Para mic nativo no servidor
+    state.ws.send(JSON.stringify({ action: 'stop_mic' }));
     if (state.recognition && state.recording) {
       state.recognition.stop();
     }
@@ -2547,6 +2699,100 @@ document.getElementById('modal-connect').addEventListener('click', () => {
 document.getElementById('modal-host').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.getElementById('modal-connect').click();
 });
+
+// ════════════════════════════════════════════════
+// ONTOGENIA — handlers e helpers
+// ════════════════════════════════════════════════
+const STAGE_CSS = {
+  'Neonatal':     'stage-neonatal',
+  'PreVerbal':    'stage-preverbal',
+  'PalavraUnica': 'stage-palavraunica',
+  'Frase':        'stage-frase',
+  'Discurso':     'stage-discurso',
+};
+
+function updateOntogenyUI(d) {
+  // d = data field from ontogeny_status event
+  const stage = d.stage ?? '—';
+  const css   = STAGE_CSS[stage] ?? 'stage-neonatal';
+  const next  = d.proximo_estagio ?? null;
+  const m     = d.metrics   ?? {};
+  const thr   = d.thresholds ?? {};
+
+  // Atualiza badges (header + painel)
+  ['m-stage-badge', 'h-stage-badge'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = stage.toUpperCase();
+    el.className   = 'stage-badge ' + css;
+  });
+
+  const hStat = document.getElementById('hstat-stage');
+  if (hStat) hStat.style.display = 'flex';
+
+  const nextEl = document.getElementById('m-stage-next');
+  if (nextEl) nextEl.textContent = next ? '→ ' + next : '→ Estágio final';
+
+  // Calcula progresso toward next stage (0-100%)
+  // Usa média dos critérios que têm threshold > 0
+  let cumProg = 0, nCrit = 0;
+  function addCrit(val, min) {
+    if (min <= 0) return;
+    cumProg += Math.min(1, val / min);
+    nCrit++;
+  }
+  addCrit(m.vocab_count   ?? 0, thr.vocab_min     ?? 0);
+  addCrit(m.graph_edges   ?? 0, thr.edges_min     ?? 0);
+  addCrit(m.avg_reward    ?? 0, thr.avg_reward_min ?? 0);
+  addCrit(m.horas_escuta  ?? 0, thr.horas_escuta_min ?? 0);
+  const prog = nCrit > 0 ? Math.round((cumProg / nCrit) * 100) : (stage === 'Discurso' ? 100 : 0);
+
+  const vProg = document.getElementById('v-onto-prog');
+  const bProg = document.getElementById('b-onto-prog');
+  if (vProg) vProg.textContent = prog + '%';
+  if (bProg) bProg.style.width = prog + '%';
+
+  // Métricas individuais com threshold
+  function setMetric(valId, thrId, val, min, fmt) {
+    const vEl = document.getElementById(valId);
+    const tEl = document.getElementById(thrId);
+    if (vEl) vEl.textContent = fmt(val);
+    if (tEl && min > 0) {
+      tEl.innerHTML = `/ <span>${fmt(min)}</span>`;
+      const ok = val >= min;
+      if (vEl) vEl.style.color = ok ? 'var(--accent3)' : 'var(--text)';
+    }
+  }
+  setMetric('m-onto-vocab',  'm-onto-vocab-thr',  m.vocab_count  ?? 0, thr.vocab_min     ?? 0, v=>v);
+  setMetric('m-onto-edges',  'm-onto-edges-thr',  m.graph_edges  ?? 0, thr.edges_min     ?? 0, v=>v);
+  setMetric('m-onto-reward', 'm-onto-reward-thr', m.avg_reward   ?? 0, thr.avg_reward_min ?? 0, v=>v.toFixed(3));
+  setMetric('m-onto-escuta', 'm-onto-escuta-thr', m.horas_escuta ?? 0, thr.horas_escuta_min ?? 0, v=>v.toFixed(1)+'h');
+
+  const pOuv = document.getElementById('m-onto-palavras');
+  if (pOuv) pOuv.textContent = (m.total_palavras_ouvidas ?? 0).toLocaleString('pt-BR');
+}
+
+// Botão reset memória
+document.getElementById('btn-reset-mem')?.addEventListener('click', () => {
+  if (!state.ws || state.ws.readyState !== 1) return;
+  if (!confirm('Apagar toda a memória semântica e voltar ao estágio Neonatal?')) return;
+  state.ws.send(JSON.stringify({ action: 'reset_memory', keep_ego: true }));
+  addSystemMsg('♻ Reset de memória enviado — aguardando ack do servidor...');
+});
+
+// ════════════════════════════════════════════════
+// START_MIC — mic nativo via cpal (servidor local)
+// btn-listen agora também aciona o mic do servidor
+// ════════════════════════════════════════════════
+state.micNativoOn = false;
+
+function setMicNativo(ativo) {
+  state.micNativoOn = ativo;
+  const dot = document.getElementById('mic-native-dot');
+  const hst = document.getElementById('hstat-mic-native');
+  if (dot) dot.classList.toggle('ativo', ativo);
+  if (hst) hst.style.display = ativo ? 'flex' : 'none';
+}
 
 // ════════════════════════════════════════════════
 // INIT — auto-connect

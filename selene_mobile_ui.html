@@ -312,6 +312,48 @@ header::after {
 .btn-video { background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.3); color:var(--accent); }
 .btn-video.cam-on { background:rgba(255,61,92,0.18); border-color:var(--danger); color:var(--danger);
   animation:rec-pulse 0.7s infinite alternate; }
+
+/* CAMERA PREVIEW PiP */
+#cam-preview {
+  position: fixed; bottom: 80px; right: 12px;
+  width: 96px; height: 72px;
+  border-radius: 8px; border: 1.5px solid var(--accent);
+  overflow: hidden; z-index: 500;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.6);
+  display: none;
+}
+#cam-preview.active { display: block; }
+#cam-preview video { width: 100%; height: 100%; object-fit: cover; }
+#cam-preview-close {
+  position: absolute; top: 2px; right: 2px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: rgba(0,0,0,0.7); border: none;
+  color: #fff; font-size: 10px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+
+/* AUDIO VIZ — barra animada durante gravação */
+#audio-viz {
+  position: fixed; bottom: 68px; left: 14px; right: 14px;
+  height: 22px; display: none; align-items: center; gap: 2px;
+  z-index: 400; pointer-events: none;
+}
+#audio-viz.active { display: flex; }
+.av-bar {
+  flex: 1; border-radius: 2px;
+  background: var(--accent2);
+  animation: av-bounce 0.5s ease-in-out infinite alternate;
+  min-height: 3px;
+}
+@keyframes av-bounce { from { height: 3px } to { height: 18px } }
+
+/* ONTOGENIA badge no sys-panel */
+.ontogeny-badge {
+  font-family: var(--mono); font-size: 9px; padding: 2px 8px;
+  border-radius: 10px; background: rgba(123,79,255,0.12);
+  border: 1px solid rgba(123,79,255,0.4); color: var(--accent2);
+  letter-spacing: 0.06em;
+}
 .btn-tts { background:rgba(255,200,0,0.08); border:1px solid rgba(255,200,0,0.3); color:#ffc800; }
 .btn-tts.muted { background:rgba(80,80,80,0.1); border-color:rgba(80,80,80,0.3); color:#444; }
 .btn-listen { background:rgba(0,255,150,0.08); border:1px solid rgba(0,255,150,0.3); color:#00ff96; }
@@ -377,6 +419,11 @@ header::after {
       <div class="sys-row"><span class="sys-key">DOPAMINA</span><span class="sys-val" id="s-dopa">--</span></div>
       <div class="sys-row"><span class="sys-key">SEROTONINA</span><span class="sys-val" id="s-sero">--</span></div>
       <div class="sys-row"><span class="sys-key">NORADR.</span><span class="sys-val" id="s-nor">--</span></div>
+      <div class="sys-row" style="grid-column:1/-1;display:flex;align-items:center;gap:8px;margin-top:2px;">
+        <span class="sys-key">ONTOGENIA</span>
+        <span class="ontogeny-badge" id="s-ontogeny">--</span>
+        <span class="sys-key" id="s-ontogeny-pct" style="margin-left:auto"></span>
+      </div>
       <div class="sys-row"><span class="sys-key">SENTIMENTO</span><span class="sys-val" id="s-sentiment">--</span></div>
       <div class="sys-row" style="grid-column:1/-1">
         <span class="sys-key">ÁUDIO</span>
@@ -460,6 +507,24 @@ header::after {
       </button>
     </div>
   </div>
+</div>
+
+<!-- CAMERA PREVIEW PiP -->
+<div id="cam-preview">
+  <video id="cam-preview-video" autoplay muted playsinline></video>
+  <button id="cam-preview-close">✕</button>
+</div>
+
+<!-- AUDIO VIZ -->
+<div id="audio-viz">
+  <div class="av-bar" style="animation-delay:0.0s"></div>
+  <div class="av-bar" style="animation-delay:0.07s"></div>
+  <div class="av-bar" style="animation-delay:0.14s"></div>
+  <div class="av-bar" style="animation-delay:0.21s"></div>
+  <div class="av-bar" style="animation-delay:0.28s"></div>
+  <div class="av-bar" style="animation-delay:0.35s"></div>
+  <div class="av-bar" style="animation-delay:0.42s"></div>
+  <div class="av-bar" style="animation-delay:0.49s"></div>
 </div>
 
 <!-- SLEEP OVERLAY -->
@@ -574,6 +639,7 @@ function connect(host) {
   state.ws = ws;
 
   ws.onopen = () => {
+    state._reconnectDelay = 2000; // reset backoff
     setConnected(true);
     if ($notice) $notice.remove();
     appendMessage('selene', `Conexão WebSocket estabelecida com Selene v2.4 em ${host}.`);
@@ -595,7 +661,7 @@ function connect(host) {
         removeTyping();
         appendMessage('selene', msg.message, msg.emotion);
         falar(msg.message);
-        $send.disabled = false;
+        $send.disabled = !state.connected || !$input.value.trim();
         return;
       }
 
@@ -603,7 +669,37 @@ function connect(host) {
       if (msg.event === 'sem_memoria') {
         removeTyping();
         appendMessage('selene', '...', 0);
-        $send.disabled = false;
+        $send.disabled = !state.connected || !$input.value.trim();
+        return;
+      }
+
+      // Pensamentos espontâneos
+      if (msg.event === 'pensamento_espontaneo' || msg.event === 'curiosidade_espontanea') {
+        const icon = msg.event === 'curiosidade_espontanea' ? '❓' : '💭';
+        appendPensamento(`${icon} ${msg.message}`);
+        if (msg.event === 'curiosidade_espontanea' && msg.message) {
+          appendMessage('selene', msg.message, msg.emotion);
+          falar(msg.message);
+        }
+        return;
+      }
+
+      // ACKs de aprendizado — ignorados silenciosamente
+      if (msg.event === 'audio_learn_ack' || msg.event === 'visual_learn_ack') return;
+
+      // Status do microfone nativo
+      if (msg.event === 'mic_status') {
+        const on = msg.ativo;
+        appendPensamento(`🎙 mic nativo: ${on ? 'ATIVADO (cpal)' : 'DESATIVADO'}`);
+        return;
+      }
+
+      // Status de ontogenia
+      if (msg.event === 'ontogeny_status') {
+        const el = document.getElementById('s-ontogeny');
+        if (el) el.textContent = msg.stage ?? '--';
+        const pct = document.getElementById('s-ontogeny-pct');
+        if (pct && msg.vocab_n !== undefined) pct.textContent = `vocab:${msg.vocab_n}`;
         return;
       }
 
@@ -627,8 +723,9 @@ function connect(host) {
         return;
       }
       if (msg.event === 'sensor_ack') {
-        const label = msg.sensor === 'audio' ? 'Áudio' : 'Vídeo';
-        appendMessage('selene', `${label}: ${msg.active ? '🟢 ATIVADO' : '⚪ DESATIVADO'}`);
+        const label  = msg.sensor === 'audio' ? 'Áudio' : 'Vídeo';
+        const isOn   = msg.active ?? msg.ativo ?? false;
+        appendPensamento(`${label}: ${isOn ? '🟢 ATIVADO' : '⚪ DESATIVADO'}`);
         return;
       }
 
@@ -665,9 +762,10 @@ function connect(host) {
 
   ws.onclose = () => {
     setConnected(false);
-    // Tenta reconectar após 4 segundos se tinha conexão
-    if (state.host) {
-      setTimeout(() => { if (!state.connected && state.host) connect(state.host); }, 4000);
+    // Reconexão com backoff exponencial: 2s → 4s → 8s → 16s (max)
+    if (state.host && !state._stopReconnect) {
+      state._reconnectDelay = Math.min((state._reconnectDelay || 2000) * 1.5, 16000);
+      setTimeout(() => { if (!state.connected && state.host) connect(state.host); }, state._reconnectDelay);
     }
   };
 
@@ -709,6 +807,12 @@ function applyTelemetry(s) {
   document.getElementById('s-sero').textContent     = (s.neurotransmissores?.serotonina ?? 0).toFixed(3);
   document.getElementById('s-nor').textContent      = (s.neurotransmissores?.noradrenalina ?? 0).toFixed(3);
   document.getElementById('s-sentiment').textContent= (s.ego?.sentimento_atual ?? 0).toFixed(3);
+
+  // Ontogenia
+  const stageEl = document.getElementById('s-ontogeny');
+  if (stageEl && s.ontogeny?.stage) stageEl.textContent = s.ontogeny.stage;
+  const pctEl = document.getElementById('s-ontogeny-pct');
+  if (pctEl && s.ontogeny?.vocab_n !== undefined) pctEl.textContent = `vocab:${s.ontogeny.vocab_n}`;
 
   // Onda dominante no badge do header
   const ondaDom = s.ondas?.dominante ?? '';
@@ -1094,7 +1198,9 @@ if (SpeechRecognition) {
   };
 
   state.recognition.onend = () => {
-    state.recording = false; $mic.classList.remove('recording');
+    state.recording = false;
+    $mic.classList.remove('recording');
+    document.getElementById('audio-viz').classList.remove('active');
     const text = $input.value.trim();
     if (text && state.connected) {
       lastTranscript = text;
@@ -1121,10 +1227,12 @@ if (SpeechRecognition) {
   $mic.addEventListener('click', async () => {
     if (state.recording) {
       state.recognition.stop();
+      document.getElementById('audio-viz').classList.remove('active');
     } else {
       await initAudioCapture();
       state.recording = true;
       $mic.classList.add('recording');
+      document.getElementById('audio-viz').classList.add('active');
       state.recognition.start();
     }
   });
@@ -1141,14 +1249,33 @@ let camOn = false;
 const VID_W = 32, VID_H = 16;
 let camStream = null, camVideo = null, camCanvas = null, camCtx2d = null, camIntervalId = null;
 
+const $camPreview = document.getElementById('cam-preview');
+const $camPreviewVid = document.getElementById('cam-preview-video');
+document.getElementById('cam-preview-close').addEventListener('click', () => {
+  camOn = false;
+  $vid.classList.remove('cam-on');
+  $camPreview.classList.remove('active');
+  stopCamera();
+  if (state.ws?.readyState === 1)
+    state.ws.send(JSON.stringify({ action: 'toggle_sensor', sensor: 'video', active: false }));
+});
+
 async function startCamera() {
   try {
-    camStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+    // Mostrar preview PiP
+    $camPreviewVid.srcObject = camStream;
+    $camPreviewVid.muted = true;
+    $camPreviewVid.playsInline = true;
+    await $camPreviewVid.play().catch(() => {});
+    $camPreview.classList.add('active');
+
+    // Canvas interno para extrair frames
     camVideo = document.createElement('video');
     camVideo.srcObject = camStream;
     camVideo.muted = true;
     camVideo.playsInline = true;
-    await camVideo.play();
+    await camVideo.play().catch(() => {});
     camCanvas = document.createElement('canvas');
     camCanvas.width = VID_W; camCanvas.height = VID_H;
     camCtx2d = camCanvas.getContext('2d');
@@ -1171,6 +1298,8 @@ async function startCamera() {
 }
 
 function stopCamera() {
+  $camPreview.classList.remove('active');
+  $camPreviewVid.srcObject = null;
   if (camIntervalId) { clearInterval(camIntervalId); camIntervalId = null; }
   if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
   camVideo = null; camCanvas = null; camCtx2d = null;
@@ -1311,6 +1440,12 @@ document.getElementById('btn-tts').addEventListener('click', () => {
   document.getElementById('btn-tts').classList.toggle('muted', !ttsAtivo);
   if (!ttsAtivo) speechSynthesis.cancel();
 });
+
+// Oculta compartilhar tela em Android (getDisplayMedia não suportado)
+const isAndroid = /Android/i.test(navigator.userAgent);
+if (isAndroid || !navigator.mediaDevices?.getDisplayMedia) {
+  document.getElementById('btn-screen').style.display = 'none';
+}
 
 // ═══════════════════════════════════════════════════════
 // PREVENT ZOOM DOUBLE TAP (Android)

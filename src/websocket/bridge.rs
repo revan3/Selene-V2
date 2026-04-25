@@ -16,6 +16,8 @@ use crate::encoding::helix_store::HelixStore;
 use crate::brain_zones::occipital::OccipitalLobe;
 use crate::learning::hypothesis::HypothesisEngine;
 use crate::learning::pattern_engine::PatternEngine;
+use crate::learning::ontogeny::OntogenyState;
+use crate::learning::multimodal::ConvergenciaMultimodal;
 use crate::sensors::audio::WordAccumulator;
 
 /// Evento episódico rico — registra um momento de experiência com contexto perceptual completo.
@@ -213,10 +215,16 @@ pub struct BrainState {
     /// Gera RPE que propaga para grounding e grafo. Monitora padrões da própria resposta como
     /// radar para futura capacidade de autoprogramação.
     pub hypothesis_engine: HypothesisEngine,
-    /// Acumulador temporal de palavras para o pipeline WebSocket (audio_raw).
-    /// Integra frames de 46ms vindos do cliente até detectar fronteira de palavra.
-    /// Mesma lógica do acumulador interno do audio.rs, mas para áudio externo.
+    /// Acumulador para microfone físico (audio.rs) — mantido por compatibilidade.
     pub audio_acumulador: WordAccumulator,
+    /// Acumulador separado para WebSocket audio_raw — evita interferência entre
+    /// o microfone físico e o áudio enviado pelo browser.
+    pub audio_acumulador_ws: WordAccumulator,
+    /// Hash do último SpikePattern de áudio processado com sucesso.
+    /// Usado para deduplicação: descarta reconhecimentos idênticos em < 300ms.
+    pub ultimo_audio_hash: u64,
+    /// Timestamp (ms desde epoch) do último reconhecimento de áudio.
+    pub ultimo_audio_ts_ms: f64,
     /// Córtex occipital — processa frames visuais da webcam/screen share do browser.
     /// Aplica detecção de movimento (flicker_buffer), contraste e orientação (V1→V2)
     /// antes de gerar o spike pattern que vai para spike_vocab.
@@ -320,6 +328,29 @@ pub struct BrainState {
     /// Motor de reconhecimento e predição de padrões (3 camadas: episódica → extração → consolidação).
     /// Grave episódios via `pattern_engine.gravar()`; extração + consolidação ocorre no sono N3.
     pub pattern_engine: PatternEngine,
+
+    /// Estado de ontogenia — controla o estágio de desenvolvimento cognitivo atual.
+    /// Neonatal: escuta pura. PreVerbal: reações. PalavraUnica/Frase: saída limitada. Discurso: livre.
+    pub ontogeny: OntogenyState,
+
+    /// Tokens pendentes para Wernicke — injetados pelos handlers WS (chat/passive_hear)
+    /// e consumidos pelo loop neural no próximo tick via language.wernicke_process().
+    /// Padrão canal único: apenas o último lote importa; substitui sem acumular.
+    pub pending_wernicke_tokens: Option<Vec<String>>,
+
+    /// Integração multimodal audiovisual — predição cruzada visual↔audio.
+    /// Usado para amplificar sinal congruente e detectar incongruência (surpresa).
+    pub convergencia_multimodal: ConvergenciaMultimodal,
+
+    /// Memória acústica por palavra — frames FFT brutos gravados durante escuta.
+    /// Chave: palavra (lowercase). Valor: até 16 frames de 32 bandas FFT.
+    /// Usado pela síntese neural de voz: Selene reproduz o que aprendeu a ouvir.
+    /// Se vazia para uma palavra, a síntese recai no Klatt paramétrico.
+    pub audio_frames: HashMap<String, Vec<[f32; 32]>>,
+
+    /// Saída de áudio nativa (cpal). Some() quando rodando localmente com device de saída disponível.
+    /// None em servidores headless ou clientes remotos (eles recebem voz via voz_params WS).
+    pub audio_output: Option<std::sync::Arc<crate::synthesis::cpal_output::AudioOutput>>,
 }
 
 pub struct EgoVoiceState {
@@ -626,6 +657,9 @@ impl BrainState {
             visual_time: 0.0,
             hypothesis_engine: hypothesis_engine_init,
             audio_acumulador: WordAccumulator::new(),
+            audio_acumulador_ws: WordAccumulator::new(),
+            ultimo_audio_hash: 0,
+            ultimo_audio_ts_ms: 0.0,
             pensamento_consciente: VecDeque::with_capacity(10),
             pensamento_inconsciente: VecDeque::with_capacity(20),
             pensamento_step: 0,
@@ -651,6 +685,12 @@ impl BrainState {
             indice_prefixo: HashMap::new(),
             trigrama_cache: HashMap::new(),
             pattern_engine: PatternEngine::novo(),
+            ontogeny: OntogenyState::carregar("selene_ontogeny.json"),
+            convergencia_multimodal: ConvergenciaMultimodal::novo(),
+            audio_frames: HashMap::new(),
+            audio_output: crate::synthesis::cpal_output::AudioOutput::try_new()
+                .map(std::sync::Arc::new),
+            pending_wernicke_tokens: None,
         };
         state.reconstruir_indice_prefixo();
         state.reconstruir_trigrama_cache();

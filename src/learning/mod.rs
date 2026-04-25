@@ -10,3 +10,5 @@ pub mod binding;
 pub mod narrativa;
 pub mod templates;
 pub mod pattern_engine;
+pub mod ontogeny;
+pub mod multimodal;

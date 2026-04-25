@@ -24,6 +24,8 @@ mod basal_ganglia;
 mod brainstem;
 mod learning;
 mod meta;
+mod glia;
+mod synthesis;
 
 // Imports necessários
 use std::sync::mpsc::{channel, Sender, Receiver};
@@ -96,6 +98,9 @@ use learning::chunking::ChunkingEngine;
 
 // Metacognição
 use meta::MetaCognitive;
+
+// Glia
+use glia::GliaLayer;
 
 // Outros imports
 use neurochem::NeuroChem;
@@ -430,6 +435,9 @@ async fn async_main() {
     // --- 12b. CHUNKING ENGINE ---
     let mut chunking = ChunkingEngine::new(RegionType::Temporal);
 
+    // --- 12e. CAMADA GLIAL (astrocytes tripartite) ---
+    let mut glia = GliaLayer::new();
+
     // --- 12d. METACOGNIÇÃO ---
     let mut metacognitive = MetaCognitive::new();
     // Firing rates do tick anterior — usados pelas projeções inter-lobe
@@ -627,34 +635,94 @@ async fn async_main() {
         let audio_signal = rx_audio.try_recv().ok();
 
         // ── Reconhecimento auditivo via microfone (córtex auditivo secundário) ──
-        // Quando o acumulador interno do audio.rs detecta fim de palavra,
-        // AudioSignal.palavra_completa fica Some(bandas_medias).
-        // Aqui fazemos a busca no spike_vocab e injetamos em neural_context —
-        // mesmo mecanismo do WebSocket audio_raw, mas para microfone físico.
+        // Pipeline nativo: cpal → FFT → acumulador → palavra_completa → cérebro.
+        // Não usa WS; a interface só envia start_mic/stop_mic para toggle da flag.
+        // Mantém-se audio_raw WS como porta aberta para mobile/remoto.
         if let Some(ref sig) = audio_signal {
             if let Some(ref bandas_palavra) = sig.palavra_completa {
                 use crate::encoding::spike_codec::{bands_to_spike_pattern, similarity as spike_sim};
                 let audio_pat = bands_to_spike_pattern(bandas_palavra);
-                if let Ok(mut bs) = brain_state.try_lock() {
-                    let mut melhor: Option<String> = None;
-                    let mut sim_max: f32 = 0.0;
-                    for (chave, pat_ref) in &bs.spike_vocab {
-                        if let Some(palavra) = chave.strip_prefix("audio:") {
-                            let s = spike_sim(&audio_pat, pat_ref);
-                            if s > sim_max { sim_max = s; melhor = Some(palavra.to_string()); }
-                        }
-                    }
-                    if sim_max >= 0.55 {
+
+                // ── Dedup: descarta reconhecimentos idênticos em < 300ms ──────
+                let agora_ms = step as f64 * (1000.0 / 200.0); // ~5ms por step @ 200Hz
+                let repetido = {
+                    if let Ok(bs) = brain_state.try_lock() {
+                        let mut h: u64 = 14695981039346656037;
+                        for b in &audio_pat { h = h.wrapping_mul(1099511628211) ^ (*b as u64); }
+                        h == bs.ultimo_audio_hash && (agora_ms - bs.ultimo_audio_ts_ms) < 300.0
+                    } else { false }
+                };
+
+                if !repetido {
+                    // ── Busca no spike_vocab ─────────────────────────────────
+                    let (melhor, sim_max) = {
+                        if let Ok(bs) = brain_state.try_lock() {
+                            let mut m: Option<String> = None;
+                            let mut s_max = 0.0f32;
+                            for (chave, pat_ref) in &bs.spike_vocab {
+                                if let Some(p) = chave.strip_prefix("audio:") {
+                                    let s = spike_sim(&audio_pat, pat_ref);
+                                    if s > s_max { s_max = s; m = Some(p.to_string()); }
+                                }
+                            }
+                            (m, s_max)
+                        } else { (None, 0.0) }
+                    };
+
+                    if let Ok(mut bs) = brain_state.try_lock() {
+                        // Grava hash/ts para dedup
+                        let mut h: u64 = 14695981039346656037;
+                        for b in &audio_pat { h = h.wrapping_mul(1099511628211) ^ (*b as u64); }
+                        bs.ultimo_audio_hash = h;
+                        bs.ultimo_audio_ts_ms = agora_ms;
+
+                        // ── Fase C: grava frames FFT brutos para síntese neural ──
+                        // Converte Vec<f32> em [f32;32] e armazena por palavra reconhecida
                         if let Some(ref palavra) = melhor {
-                            println!("🎙️ [MIC] Reconheceu «{}» (sim={:.2})", palavra, sim_max);
-                            if bs.neural_context.len() >= 20 { bs.neural_context.pop_front(); }
-                            bs.neural_context.push_back(palavra.clone());
-                            let vpad = bs.ultimo_padrao_visual;
-                            let apad = audio_pat;
-                            let emocao = bs.emocao_bias;
-                            bs.grounding_bind(&[palavra.clone()], vpad, apad, emocao, sim_max, 0.0);
+                            if bandas_palavra.len() >= 32 {
+                                let mut frame = [0f32; 32];
+                                frame.copy_from_slice(&bandas_palavra[..32]);
+                                bs.audio_frames
+                                    .entry(palavra.clone())
+                                    .and_modify(|frames: &mut Vec<[f32; 32]>| {
+                                        if frames.len() >= 16 { frames.remove(0); } // janela 16
+                                        frames.push(frame);
+                                    })
+                                    .or_insert_with(|| vec![frame]);
+                            }
+                        }
+
+                        if sim_max >= 0.55 {
+                            if let Some(ref palavra) = melhor {
+                                println!("🎙️ [MIC] Reconheceu «{}» (sim={:.2})", palavra, sim_max);
+                                if bs.neural_context.len() >= 20 { bs.neural_context.pop_front(); }
+                                bs.neural_context.push_back(palavra.clone());
+                                let vpad = bs.ultimo_padrao_visual;
+                                let emocao = bs.emocao_bias;
+                                bs.grounding_bind(&[palavra.clone()], vpad, audio_pat, emocao, sim_max, 0.0);
+                                // Atualiza ontogeny: conta palavra ouvida
+                                bs.ontogeny.metrics.total_palavras_ouvidas += 1;
+                            }
+                        } else {
+                            // Palavra nova: aprende semanticamente (mesmo pipeline do audio_raw WS)
+                            let chave_audio = format!("audio:palavra_{}", step % 10000);
+                            bs.inserir_spike_vocab(chave_audio, audio_pat);
+                            let swap_arc = bs.swap_manager.clone();
+                            drop(bs);
+                            if let Ok(mut sw) = swap_arc.try_lock() {
+                                // Valência neutra para palavras ouvidas mas não reconhecidas
+                                let valence = sig.energia * 0.1;
+                                sw.aprender_conceito("_audio_novo", valence);
+                            };
                         }
                     }
+                }
+            }
+
+            // Atualiza ontogeny: acumula horas de escuta (~5ms por step onde há som)
+            if sig.energia > 0.01 {
+                if let Ok(mut bs) = brain_state.try_lock() {
+                    bs.ontogeny.metrics.add_escuta_dt(0.005); // ~5ms por frame com som
                 }
             }
         }
@@ -1144,8 +1212,18 @@ async fn async_main() {
                 bs.oxytocin_level  = neuro.oxytocin;
                 bs.amygdala_fear   = amygdala.fear_signal;
                 bs.amygdala_extinction = amygdala.extinction_trace;
-                // Wernicke/Broca: atualizados no server.rs (language.process por input de chat)
-                // mas o frontal_goal_signal pode pre-computar broca aqui
+                // Wernicke: consome tokens pendentes injetados pelos handlers WS
+                if let Some(tokens) = bs.pending_wernicke_tokens.take() {
+                    let valencias_w = if let Ok(sw) = swap_manager.try_lock() {
+                        sw.valencias_palavras()
+                    } else {
+                        std::collections::HashMap::new()
+                    };
+                    let score = language.wernicke_process(
+                        &tokens, &valencias_w, dt, current_time, &config,
+                    );
+                    bs.wernicke_comprehension = score;
+                }
                 let frontal_goal_signal = frontal.goal_queue.front()
                     .map(|g| g.prioridade).unwrap_or(0.0);
                 let (fluency, _syntax) = language.broca_plan(
@@ -1809,6 +1887,25 @@ async fn async_main() {
             }
         }
 
+        // Atualiza camada glial (step%5: 40Hz — suficiente para Ca²⁺ lento).
+        if step % 5 == 0 {
+            let regional_activity = GliaLayer::activity_from_firing_rates(&[
+                prev_frontal_rates.iter().sum::<f32>() / prev_frontal_rates.len().max(1) as f32,
+                prev_parietal_rates.iter().sum::<f32>() / prev_parietal_rates.len().max(1) as f32,
+                prev_temporal_rates.iter().sum::<f32>() / prev_temporal_rates.len().max(1) as f32,
+                prev_v1_rates.iter().sum::<f32>() / prev_v1_rates.len().max(1) as f32,
+                prev_limbic_rates.iter().sum::<f32>() / prev_limbic_rates.len().max(1) as f32,
+                prev_hippo_rates.iter().sum::<f32>() / prev_hippo_rates.len().max(1) as f32,
+                0.0, // Cerebellum
+                brainstem.stats().alertness,
+                0.0, // CorpusCallosum
+            ]);
+            glia.update(&regional_activity, dt * 5.0);
+            if let Ok(mut swap) = swap_manager.try_lock() {
+                swap.glio_factor = glia.global_glio_factor();
+            }
+        }
+
         // Roda Izhikevich+STDP nos neurônios conceituais aprendidos via WS.
         // try_lock() em vez de lock().await — salta o tick semântico se o chat handler
         // estiver com o swap. O STDP tolera alguns ticks pulados sem degradação.
@@ -1969,6 +2066,25 @@ async fn async_main() {
             if let Ok(swap) = swap_manager.try_lock() {
                 if let Err(e) = swap.salvar_estado("selene_swap_state.json") {
                     log::warn!("[SwapState] Falha ao salvar: {}", e);
+                }
+            }
+
+            // ── Atualiza e salva métricas de ontogenia ───────────────────────────
+            {
+                let (vocab_n, edges_n) = if let Ok(mut sw) = swap_manager.try_lock() {
+                    let v = sw.palavra_para_id.len();
+                    let e: usize = sw.sinapses_conceito.len();
+                    (v, e)
+                } else { (0, 0) };
+                let progressou = if let Ok(mut bs) = brain_state.try_lock() {
+                    let rpe = bs.ultimo_rpe;
+                    bs.ontogeny.tick(vocab_n, edges_n, Some(rpe), None)
+                } else { false };
+                if let Ok(bs) = brain_state.try_lock() {
+                    bs.ontogeny.salvar("selene_ontogeny.json");
+                    if progressou {
+                        println!("🧒 [ONTOGENY] Progressão automática → {}", bs.ontogeny.stage);
+                    }
                 }
             }
         }

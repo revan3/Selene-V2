@@ -677,6 +677,37 @@ fn fase_n3_rem(state: &mut crate::websocket::bridge::BrainState) {
         println!("   💭 Sonho: {}", r);
     }
 
+    // Reconsolidação: processa janelas lábeis expiradas durante o sono.
+    // Memórias evocadas durante o dia entram em estado lábil; o sono N3
+    // fecha as janelas e re-estabiliza (ou apaga) cada memória.
+    if let Ok(mut sw) = state.swap_manager.try_lock() {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        let resultados = sw.reconsolidacao.processar_janelas(t);
+        let n_recons = resultados.len();
+        let n_apagadas = resultados.iter().filter(|(_, _, _, p)| !p).count();
+        if n_recons > 0 {
+            // Aplica os pesos reconsolidados de volta ao grafo
+            for (a, b, peso, persiste) in resultados {
+                if persiste {
+                    sw.importar_causal(vec![(a, b, peso)]);
+                } else {
+                    // Remove sinapse apagada por contradição/erosão
+                    let pop_a = sw.palavra_para_id.get(&a).and_then(|p| p.first()).copied();
+                    let pop_b = sw.palavra_para_id.get(&b).and_then(|p| p.first()).copied();
+                    if let (Some(id_a), Some(id_b)) = (pop_a, pop_b) {
+                        sw.sinapses_conceito.remove(&(id_a, id_b));
+                    }
+                }
+            }
+            sw.marcar_grafo_dirty();
+            println!("   🔄 [N3] Reconsolidação: {} memórias | {} apagadas por erosão/contradição",
+                n_recons, n_apagadas);
+        }
+    }
+
     // Evolui traços de personalidade com base nas memórias autobiográficas.
     // Memórias emocionalmente fortes (|valência| > 0.4) reforçam traços alinhados.
     let mut tracos_delta: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
@@ -1005,25 +1036,28 @@ pub async fn handle_connection(
                             let event_type = if e_curiosidade { "curiosidade_espontanea" } else { "pensamento_espontaneo" };
                             let (dop2, ser2, nor2) = state.neurotransmissores;
                             let formants = crate::encoding::phoneme::sentence_to_formants(&reply, dop2, ser2, nor2);
-                            // Registra na autobiografia
+                            let pode_verbalizar = state.ontogeny.stage.pode_responder();
+                            // Registra na autobiografia independente do estágio
                             let reply_trunc50: String = reply.chars().take(50).collect();
                             state.registrar_memoria(
                                 format!("pensei espontaneamente sobre '{}': {}", estimulo, reply_trunc50),
                                 emocao * 0.5,
                             );
                             drop(state);
-                            println!("💭 [{}] '{}'  →  {}", event_type.to_uppercase(), estimulo, reply);
-                            let msg = serde_json::json!({
-                                "event":       event_type,
-                                "estimulo":    estimulo,
-                                "message":     reply,
-                                "emotion":     emocao,
-                                "estado":      estado_af.como_palavra(),
-                            }).to_string();
-                            if ws_tx.send(Message::text(msg)).await.is_err() { break; }
-                            if let Ok(fj) = serde_json::to_string(&formants) {
-                                let voz = format!(r#"{{"event":"voz_params","formants":{}}}"#, fj);
-                                let _ = ws_tx.send(Message::text(voz)).await;
+                            if pode_verbalizar {
+                                println!("💭 [{}] '{}'  →  {}", event_type.to_uppercase(), estimulo, reply);
+                                let msg = serde_json::json!({
+                                    "event":       event_type,
+                                    "estimulo":    estimulo,
+                                    "message":     reply,
+                                    "emotion":     emocao,
+                                    "estado":      estado_af.como_palavra(),
+                                }).to_string();
+                                if ws_tx.send(Message::text(msg)).await.is_err() { break; }
+                                if let Ok(fj) = serde_json::to_string(&formants) {
+                                    let voz = format!(r#"{{"event":"voz_params","formants":{}}}"#, fj);
+                                    let _ = ws_tx.send(Message::text(voz)).await;
+                                }
                             }
                         }
                     }
@@ -1352,17 +1386,12 @@ pub async fn handle_connection(
                                                 sw.valencias_palavras()
                                             } else { HashMap::new() };
 
-                                            // ── Wernicke: atualiza comprehension_score ──────────
-                                            // Proporção de tokens conhecidos (com valência no grafo)
-                                            // → score alto = Selene entendeu o input.
+                                            // ── Wernicke: delega ao loop neural para processamento real ─
+                                            // O loop neural chama language.wernicke_process() com estes
+                                            // tokens no próximo tick — atualiza wernicke_comprehension
+                                            // com familiarity + camada neural + semantic_buffer real.
                                             if !input_tokens_hip.is_empty() {
-                                                let n_known = input_tokens_hip.iter()
-                                                    .filter(|w| val_clone.contains_key(w.as_str()))
-                                                    .count();
-                                                let familiarity = n_known as f32 / input_tokens_hip.len() as f32;
-                                                // EMA: 70% histórico + 30% novo input
-                                                state.wernicke_comprehension =
-                                                    state.wernicke_comprehension * 0.7 + familiarity * 0.3;
+                                                state.pending_wernicke_tokens = Some(input_tokens_hip.clone());
                                             }
 
                                             // ACC social pain: punição/rejeição sinalizada via RPE negativo
@@ -1626,6 +1655,40 @@ pub async fn handle_connection(
                                             ctx.extend(state.frontal_goal_words.iter().cloned());
                                             // P1-A: conceitos neuralmente ativos entram no contexto
                                             ctx.extend(conceitos_ativos_ctx.iter().cloned());
+
+                                            // #8: Vizinhos por embedding — enriquece contexto com
+                                            // palavras semanticamente próximas no espaço de co-ativação
+                                            if let Ok(sw) = state.swap_manager.try_lock() {
+                                                for tok in mensagem.split_whitespace().take(3) {
+                                                    let tok_l: String = tok.to_lowercase()
+                                                        .trim_matches(|c: char| !c.is_alphabetic())
+                                                        .to_string();
+                                                    if tok_l.len() >= 3 {
+                                                        for (w, _sim) in sw.vizinhos_semanticos(&tok_l, 4, 0.55) {
+                                                            if !ctx.contains(&w) { ctx.push(w); }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // #3: HelixStore nearest — vizinhos por similaridade de spike
+                                            if let Some(h) = &state.helix {
+                                                for tok in mensagem.split_whitespace().take(5) {
+                                                    let tok_l: String = tok.to_lowercase()
+                                                        .trim_matches(|c: char| !c.is_alphabetic())
+                                                        .to_string();
+                                                    if tok_l.len() >= 3 {
+                                                        if let Some(sp) = h.get(&tok_l) {
+                                                            for (w, sim) in h.nearest(&sp, 0.72, 3) {
+                                                                if sim > 0.72 && !ctx.contains(&w) {
+                                                                    ctx.push(w);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
                                             // P3.4: estado emocional narrativo como cor do vocabulário
                                             {
                                                 let (d_n, s_n, nor_n) = state.neurotransmissores;
@@ -2118,6 +2181,8 @@ pub async fn handle_connection(
                                         let tracos_snapshot = state.ego.tracos.clone();
                                         let pensamentos_snapshot: Vec<String> =
                                             state.ego.pensamentos_recentes.iter().cloned().collect();
+                                        // Captura estágio de ontogenia para filtro da resposta
+                                        let ontogeny_stage = state.ontogeny.stage;
                                         // ── LIBERA O LOCK ANTES DE FAZER I/O ────────────
                                         drop(state);
 
@@ -2160,8 +2225,39 @@ pub async fn handle_connection(
                                         }
                                         println!("💬 [CHAT] Lock liberado. Enviando chat_reply...");
 
-                                        if reply.is_empty() {
-                                            // Selene não aprendeu nada ainda — cérebro vazio
+                                        // ── GATE DE ONTOGENIA: filtra resposta por estágio ──
+                                        let reply_filtrado = {
+                                            use crate::learning::ontogeny::DevStage;
+                                            if !ontogeny_stage.pode_responder() {
+                                                // Neonatal / PreVerbal: absorve input mas não vocaliza
+                                                log::debug!("[ONTOGENY] Estágio {:?} — suprimindo resposta verbal.", ontogeny_stage);
+                                                String::new()
+                                            } else {
+                                                ontogeny_stage.max_palavras()
+                                                    .map(|max| {
+                                                        let words: Vec<&str> = reply.split_whitespace().collect();
+                                                        if words.len() <= max { reply.clone() }
+                                                        else { words[..max].join(" ") }
+                                                    })
+                                                    .unwrap_or_else(|| reply.clone())
+                                            }
+                                        };
+
+                                        if reply_filtrado.is_empty() && !reply.is_empty()
+                                            && !ontogeny_stage.pode_responder() {
+                                            // Emite reação emocional mesmo sem palavras (PreVerbal+)
+                                            use crate::learning::ontogeny::DevStage;
+                                            if ontogeny_stage.emite_reacao_emocional() {
+                                                let reacao = serde_json::json!({
+                                                    "event": "reacao_emocional",
+                                                    "emotion": emocao_resposta,
+                                                    "arousal": alerta,
+                                                    "stage": format!("{:?}", ontogeny_stage),
+                                                }).to_string();
+                                                let _ = ws_tx.send(Message::text(reacao)).await;
+                                            }
+                                        } else if reply_filtrado.is_empty() && ontogeny_stage.pode_responder() {
+                                            // Selene deveria responder mas cérebro está vazio
                                             let ev = serde_json::json!({
                                                 "event": "sem_memoria",
                                             }).to_string();
@@ -2170,7 +2266,7 @@ pub async fn handle_connection(
                                         } else {
                                             let resp = serde_json::json!({
                                                 "event": "chat_reply",
-                                                "message": reply,
+                                                "message": reply_filtrado,
                                                 "emotion": emocao_resposta,
                                                 "arousal": alerta,
                                             }).to_string();
@@ -2193,12 +2289,14 @@ pub async fn handle_connection(
 
                                         // ── FASE 2b: Emite pergunta autônoma se curiosidade disparou
                                         if let Some(pergunta) = pergunta_autonoma {
-                                            println!("🤔 [CURIOSIDADE] Selene pergunta: «{}»", pergunta);
-                                            let curi_evt = serde_json::json!({
-                                                "event": "curiosidade",
-                                                "pergunta": pergunta,
-                                            }).to_string();
-                                            let _ = ws_tx.send(Message::text(curi_evt)).await;
+                                            if ontogeny_stage.pode_responder() {
+                                                println!("🤔 [CURIOSIDADE] Selene pergunta: «{}»", pergunta);
+                                                let curi_evt = serde_json::json!({
+                                                    "event": "curiosidade",
+                                                    "pergunta": pergunta,
+                                                }).to_string();
+                                                let _ = ws_tx.send(Message::text(curi_evt)).await;
+                                            }
                                         }
                                     }
                                 }
@@ -2327,62 +2425,66 @@ pub async fn handle_connection(
                                     let energia: f32 = json["energia"].as_f64()
                                         .unwrap_or(0.0) as f32;
 
-                                    // Todo frame passa pelo acumulador — ele integra frames
-                                    // de 46ms e só emite quando detecta fronteira de palavra
-                                    // (~300-500ms de fala, análogo ao córtex auditivo secundário)
                                     if bands.len() >= 16 {
                                         let mut state = brain.lock().await;
 
-                                        let palavra_completa = state.audio_acumulador
+                                        // Usa acumulador SEPARADO do WebSocket (não contamina o microfone físico)
+                                        let palavra_completa = state.audio_acumulador_ws
                                             .processar(&bands, energia, 0.0);
 
                                         let (melhor_palavra, melhor_sim) = if let Some(ref bandas_palavra) = palavra_completa {
-                                            // Palavra completa: padrão médio de N frames >> qualidade
                                             let audio_pat = bands_to_spike_pattern(bandas_palavra);
-                                            let mut melhor: Option<String> = None;
-                                            let mut sim_max: f32 = 0.0;
 
-                                            for (chave, pat_ref) in &state.spike_vocab {
-                                                if let Some(palavra) = chave.strip_prefix("audio:") {
-                                                    let sim = spike_similarity(&audio_pat, pat_ref);
-                                                    if sim > sim_max {
-                                                        sim_max = sim;
-                                                        melhor = Some(palavra.to_string());
+                                            // Deduplicação: hash do padrão + janela de 300ms
+                                            let pat_hash = {
+                                                let mut h: u64 = 14695981039346656037;
+                                                for b in &audio_pat { h = h.wrapping_mul(1099511628211) ^ (*b as u64); }
+                                                h
+                                            };
+                                            let agora_ms = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap_or_default().as_millis() as f64;
+                                            let repetido = pat_hash == state.ultimo_audio_hash
+                                                && (agora_ms - state.ultimo_audio_ts_ms) < 300.0;
+
+                                            if repetido {
+                                                (None, 0.0) // descarta repetição
+                                            } else {
+                                                let mut melhor: Option<String> = None;
+                                                let mut sim_max: f32 = 0.0;
+                                                for (chave, pat_ref) in &state.spike_vocab {
+                                                    if let Some(palavra) = chave.strip_prefix("audio:") {
+                                                        let sim = spike_similarity(&audio_pat, pat_ref);
+                                                        if sim > sim_max {
+                                                            sim_max = sim;
+                                                            melhor = Some(palavra.to_string());
+                                                        }
                                                     }
                                                 }
-                                            }
 
-                                            const LIMIAR: f32 = 0.55;
-                                            if sim_max >= LIMIAR {
-                                                if let Some(ref palavra) = melhor {
-                                                    println!("🎙️ [AUDIO_RAW] «{}» (sim={:.2})",
-                                                        palavra, sim_max);
-
-                                                    if state.neural_context.len() >= 20 {
-                                                        state.neural_context.pop_front();
-                                                    }
-                                                    state.neural_context.push_back(palavra.clone());
-
-                                                    let vpad = state.ultimo_padrao_visual;
-                                                    let emocao = state.emocao_bias;
-                                                    state.grounding_bind(
-                                                        &[palavra.clone()],
-                                                        vpad, audio_pat,
-                                                        emocao, sim_max,
-                                                        0.0,
-                                                    );
-
-                                                    if emocao.abs() > 0.15 {
-                                                        let entry = state.emocao_palavras
-                                                            .entry(palavra.clone()).or_insert(0.0);
-                                                        *entry = (*entry * 0.85 + emocao * 0.15)
-                                                            .clamp(-1.0, 1.0);
+                                                const LIMIAR: f32 = 0.55;
+                                                if sim_max >= LIMIAR {
+                                                    if let Some(ref palavra) = melhor {
+                                                        state.ultimo_audio_hash = pat_hash;
+                                                        state.ultimo_audio_ts_ms = agora_ms;
+                                                        println!("🎙️ [AUDIO_RAW] «{}» (sim={:.2})", palavra, sim_max);
+                                                        if state.neural_context.len() >= 20 {
+                                                            state.neural_context.pop_front();
+                                                        }
+                                                        state.neural_context.push_back(palavra.clone());
+                                                        let vpad = state.ultimo_padrao_visual;
+                                                        let emocao = state.emocao_bias;
+                                                        state.grounding_bind(&[palavra.clone()], vpad, audio_pat, emocao, sim_max, 0.0);
+                                                        if emocao.abs() > 0.15 {
+                                                            let entry = state.emocao_palavras.entry(palavra.clone()).or_insert(0.0);
+                                                            *entry = (*entry * 0.85 + emocao * 0.15).clamp(-1.0, 1.0);
+                                                        }
                                                     }
                                                 }
+                                                (melhor, sim_max)
                                             }
-                                            (melhor, sim_max)
                                         } else {
-                                            (None, 0.0) // ainda acumulando frames
+                                            (None, 0.0)
                                         };
 
                                         let ack = serde_json::json!({
@@ -2433,6 +2535,11 @@ pub async fn handle_connection(
                                         state.neural_context.pop_front();
                                     }
 
+                                    // Delega ao loop neural para Wernicke real (passivo)
+                                    if !tokens.is_empty() {
+                                        state.pending_wernicke_tokens = Some(tokens.clone());
+                                    }
+
                                     // Aprende valência modulada pela energia do padrão FFT
                                     let energia_fft: f32 = bandas_fft.iter().map(|b| b * b).sum::<f32>()
                                         / bandas_fft.len() as f32;
@@ -2445,8 +2552,9 @@ pub async fn handle_connection(
                                         }
                                     }
 
+                                    let transcript_preview: String = transcript.chars().take(40).collect();
                                     log::debug!("[PASSIVE] score={:.2} fft_e={:.3} tokens={} transcript='{}'",
-                                        score, energia_fft, tokens.len(), &transcript[..transcript.len().min(40)]);
+                                        score, energia_fft, tokens.len(), transcript_preview);
                                 }
 
                                 // ── VISUAL_LEARN: vincula padrão visual (512 pixels luminância) às palavras ──
@@ -2595,6 +2703,58 @@ pub async fn handle_connection(
                                     println!("✅ [TRAIN] Consolidação finalizada — {} sinapses semânticas", n_sinapses_final);
                                 }
 
+                                // ── START_MIC / STOP_MIC: toggle do microfone nativo (cpal) ──────
+                                // A interface envia apenas este comando; o processamento é 100% no backend.
+                                // Para mobile/remoto: usar audio_raw WS — caminho paralelo mantido aberto.
+                                Some("start_mic") => {
+                                    let state = brain.lock().await;
+                                    state.sensor_flags.audio_ativo.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    drop(state);
+                                    println!("🎙️ [MIC] Microfone nativo ATIVADO.");
+                                    let ack = serde_json::json!({
+                                        "event": "mic_status",
+                                        "ativo": true,
+                                        "modo": "nativo_cpal",
+                                    }).to_string();
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                }
+
+                                Some("stop_mic") => {
+                                    let state = brain.lock().await;
+                                    state.sensor_flags.audio_ativo.store(false, std::sync::atomic::Ordering::Relaxed);
+                                    drop(state);
+                                    println!("🎙️ [MIC] Microfone nativo DESATIVADO.");
+                                    let ack = serde_json::json!({
+                                        "event": "mic_status",
+                                        "ativo": false,
+                                        "modo": "nativo_cpal",
+                                    }).to_string();
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                }
+
+                                // ── SET_SENSOR: toggle genérico de sensores nativos ──────────────
+                                // Suporta: audio, video, camera.
+                                // Mantém porta aberta para mobile: mobile envia dados via WS (audio_raw,
+                                // visual_learn) sem precisar de sensores nativos no servidor.
+                                Some("set_sensor") => {
+                                    let sensor = json["sensor"].as_str().unwrap_or("");
+                                    let ativo  = json["ativo"].as_bool().unwrap_or(false);
+                                    let state  = brain.lock().await;
+                                    match sensor {
+                                        "audio"  => state.sensor_flags.audio_ativo.store(ativo, std::sync::atomic::Ordering::Relaxed),
+                                        "video"  => state.sensor_flags.video_ativo.store(ativo, std::sync::atomic::Ordering::Relaxed),
+                                        _ => {}
+                                    }
+                                    drop(state);
+                                    println!("🔧 [SENSOR] {} → {}", sensor, if ativo { "ON" } else { "OFF" });
+                                    let ack = serde_json::json!({
+                                        "event": "sensor_ack",
+                                        "sensor": sensor,
+                                        "ativo": ativo,
+                                    }).to_string();
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                }
+
                                 Some("set_mode") => {
                                     let mode_str = json["mode"].as_str().unwrap_or("Boost200");
                                     let novo_modo = match mode_str {
@@ -2618,6 +2778,147 @@ pub async fn handle_connection(
                                         "event": "mode_ack",
                                         "mode":  mode_str,
                                         "hz":    hz,
+                                    }).to_string();
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                }
+
+                                // ── RESET_MEMORY: apaga vocabulário e memória semântica — reinicia como bebê ──
+                                // Mantém personalidade (traços), autobiografia e hipóteses (opcionalmente).
+                                // Muda o estágio de desenvolvimento para Neonatal.
+                                Some("reset_memory") => {
+                                    use crate::learning::ontogeny::DevStage;
+                                    let keep_ego = json["keep_ego"].as_bool().unwrap_or(true);
+                                    let keep_hypo = json["keep_hypotheses"].as_bool().unwrap_or(false);
+
+                                    {
+                                        let mut state = brain.lock().await;
+                                        // Reset semântico: apaga vocabulário e sinapses
+                                        if let Ok(mut sw) = state.swap_manager.try_lock() {
+                                            sw.reset_vocabulario();
+                                        }
+                                        // Limpa contexto neural e grounding
+                                        state.neural_context.clear();
+                                        state.grounding.clear();
+                                        state.aresta_contagem.clear();
+                                        state.frases_padrao.clear();
+                                        state.auto_learn_contagem.clear();
+                                        state.reconstruir_indice_prefixo();
+                                        state.reconstruir_trigrama_cache();
+                                        // Limpa Q-table e histórico RL
+                                        state.palavra_qvalores.clear();
+                                        state.ultimo_rpe = 0.0;
+                                        // Opcional: mantém ou apaga autobiografia/traços
+                                        if !keep_ego {
+                                            state.ego.memorias_autobiograficas.clear();
+                                            state.ego.pensamentos_recentes.clear();
+                                            state.ego.sentimento = 0.0;
+                                        }
+                                        if !keep_hypo {
+                                            state.hypothesis_engine = crate::learning::hypothesis::HypothesisEngine::new();
+                                        }
+                                        // Reseta para Neonatal
+                                        state.ontogeny.reset_para_neonatal();
+                                    }
+
+                                    // Apaga arquivos de memória persistida no disco
+                                    let _ = tokio::fs::remove_file("selene_swap_state.json").await;
+                                    let _ = tokio::fs::remove_file("selene_linguagem.json").await;
+                                    let _ = tokio::fs::remove_file("selene_qtable.bin").await;
+                                    if !keep_hypo {
+                                        let _ = tokio::fs::remove_file("selene_hypotheses.json").await;
+                                    }
+                                    // Salva estado de ontogenia
+                                    {
+                                        let state = brain.lock().await;
+                                        state.ontogeny.salvar("selene_ontogeny.json");
+                                    }
+
+                                    println!("🔄 [ONTOGENY] Memória resetada — estágio: Neonatal | keep_ego={}", keep_ego);
+                                    let ack = serde_json::json!({
+                                        "event": "reset_memory_ack",
+                                        "stage": "Neonatal",
+                                        "keep_ego": keep_ego,
+                                        "keep_hypotheses": keep_hypo,
+                                    }).to_string();
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                }
+
+                                // ── SET_STAGE: força estágio de desenvolvimento ─────────────────────────────
+                                // Uso: {"action":"set_stage","stage":"Frase","auto_progress":true}
+                                Some("set_stage") => {
+                                    use crate::learning::ontogeny::DevStage;
+                                    let stage_str = json["stage"].as_str().unwrap_or("Discurso");
+                                    let auto = json["auto_progress"].as_bool();
+                                    let novo_stage = DevStage::from_str(stage_str)
+                                        .unwrap_or(DevStage::Discurso);
+                                    {
+                                        let mut state = brain.lock().await;
+                                        state.ontogeny.set_stage(novo_stage);
+                                        if let Some(a) = auto {
+                                            state.ontogeny.auto_progress = a;
+                                        }
+                                        state.ontogeny.salvar("selene_ontogeny.json");
+                                    }
+                                    println!("🧒 [ONTOGENY] Estágio → {} (auto={})", stage_str,
+                                        auto.unwrap_or(true));
+                                    let ack = serde_json::json!({
+                                        "event": "set_stage_ack",
+                                        "stage": stage_str,
+                                    }).to_string();
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                }
+
+                                // ── ONTOGENY_STATUS: retorna estágio e métricas ────────────────────────────
+                                Some("ontogeny_status") => {
+                                    let state = brain.lock().await;
+                                    let js = state.ontogeny.to_json();
+                                    drop(state);
+                                    let ack = serde_json::json!({
+                                        "event": "ontogeny_status",
+                                        "data": js,
+                                    }).to_string();
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                }
+
+                                // ── LIST_SNAPSHOTS: lista snapshots do grafo disponíveis ─────────
+                                Some("list_snapshots") => {
+                                    let state = brain.lock().await;
+                                    let swap_arc = state.swap_manager.clone();
+                                    drop(state);
+                                    let snaps = if let Ok(sw) = swap_arc.try_lock() {
+                                        sw.snapshots_disponiveis()
+                                            .into_iter()
+                                            .map(|(idx, tick, n_sin)| serde_json::json!({
+                                                "idx": idx,
+                                                "tick": tick,
+                                                "n_sinapses": n_sin,
+                                            }))
+                                            .collect::<Vec<_>>()
+                                    } else {
+                                        vec![]
+                                    };
+                                    let ack = serde_json::json!({
+                                        "event": "snapshots_list",
+                                        "snapshots": snaps,
+                                    }).to_string();
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                }
+
+                                // ── RESTORE_SNAPSHOT: restaura valências de um snapshot anterior ─
+                                Some("restore_snapshot") => {
+                                    let idx = json["idx"].as_u64().unwrap_or(0) as usize;
+                                    let state = brain.lock().await;
+                                    let swap_arc = state.swap_manager.clone();
+                                    drop(state);
+                                    let ok = if let Ok(mut sw) = swap_arc.try_lock() {
+                                        sw.restaurar_valencias_snapshot(idx)
+                                    } else {
+                                        false
+                                    };
+                                    let ack = serde_json::json!({
+                                        "event": "snapshot_restored",
+                                        "idx": idx,
+                                        "ok": ok,
                                     }).to_string();
                                     let _ = ws_tx.send(Message::text(ack)).await;
                                 }
@@ -3037,50 +3338,6 @@ pub async fn handle_connection(
                                     drop(state);
                                     let _ = ws_tx.send(Message::text(ack)).await;
                                     println!("🤲 [TOUCH] tipo={} intensidade={:.2}", tipo_str, intensity);
-                                }
-
-                                // ── FEEDBACK ──────────────────────────────────────────
-                                // Reforça ou penaliza as arestas do último walk gerado.
-                                // value > 0 = positivo (reforça caminho), value < 0 = negativo (penaliza).
-                                // Implementa aprendizado por reforço no grafo semântico.
-                                Some("feedback") => {
-                                    let value = json["value"].as_f64().unwrap_or(0.3) as f32;
-                                    let value = value.clamp(-1.0, 1.0);
-                                    let delta = value * 0.08;
-                                    let mut state = brain.lock().await;
-                                    let caminho = state.ultimo_caminho_walk.clone();
-                                    let swap_arc_fb = state.swap_manager.clone();
-                                    let mut reforcos = 0usize;
-                                    if let Ok(mut sw) = swap_arc_fb.try_lock() {
-                                        for i in 0..caminho.len().saturating_sub(1) {
-                                            let (a, b) = (&caminho[i], &caminho[i+1]);
-                                            if let (Some(pop_a), Some(pop_b)) = (
-                                                sw.palavra_para_id.get(a).and_then(|p| p.first().copied()),
-                                                sw.palavra_para_id.get(b).and_then(|p| p.first().copied()),
-                                            ) {
-                                                if let Some(w) = sw.sinapses_conceito.get_mut(&(pop_a, pop_b)) {
-                                                    *w = (*w + delta).clamp(0.0, 1.0);
-                                                    reforcos += 1;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    // Feedback positivo também eleva dopamina levemente
-                                    if value > 0.0 {
-                                        let (dopa, sero, nor) = state.neurotransmissores;
-                                        state.neurotransmissores = (
-                                            (dopa + value * 0.1).clamp(0.0, 2.0), sero, nor
-                                        );
-                                    }
-                                    let ack = serde_json::json!({
-                                        "event":     "feedback_ack",
-                                        "value":     value,
-                                        "reforcos":  reforcos,
-                                        "caminho_n": caminho.len(),
-                                    }).to_string();
-                                    drop(state);
-                                    let _ = ws_tx.send(Message::text(ack)).await;
-                                    println!("🔁 [FEEDBACK] {:.2} → {} arestas ajustadas", value, reforcos);
                                 }
 
                                 // ── CHECK_CONNECTION ──────────────────────────────────
@@ -3652,20 +3909,76 @@ pub async fn handle_connection(
                                 state.ego.pensamentos_recentes.push_back(pensamento);
                                 state.atividade = (step, alerta, emocao_resp);
 
-                                let resp = serde_json::json!({
-                                    "event":   "chat_reply",
-                                    "message": reply,
-                                    "emotion": emocao_resp,
-                                    "arousal": alerta,
-                                }).to_string();
+                                // ── GATE DE ONTOGENIA ───────────────────────────────────
+                                let ontogeny_s = state.ontogeny.stage;
+                                let reply_s = if ontogeny_s.pode_responder() {
+                                    ontogeny_s.max_palavras()
+                                        .map(|max| {
+                                            let words: Vec<&str> = reply.split_whitespace().collect();
+                                            if words.len() <= max { reply.clone() }
+                                            else { words[..max].join(" ") }
+                                        })
+                                        .unwrap_or_else(|| reply.clone())
+                                } else {
+                                    log::debug!("[ONTOGENY] Estágio {:?} — suprimindo resposta verbal (mobile/text).", ontogeny_s);
+                                    String::new()
+                                };
+
                                 let (dop2, ser2, nor2) = state.neurotransmissores;
-                                let formants = sentence_to_formants(&reply, dop2, ser2, nor2);
+                                let formants = sentence_to_formants(&reply_s, dop2, ser2, nor2);
+
+                                // Fase C: coletar frames FFT para síntese neural
+                                let neural_frames: Vec<[f32; 32]> = reply_s
+                                    .split_whitespace()
+                                    .flat_map(|w| {
+                                        let wl: String = w.chars()
+                                            .filter(|c| c.is_alphabetic())
+                                            .collect::<String>()
+                                            .to_lowercase();
+                                        state.audio_frames.get(&wl)
+                                            .map(|v| v.clone())
+                                            .unwrap_or_default()
+                                    })
+                                    .collect();
+
+                                let audio_out = state.audio_output.clone();
                                 drop(state);
-                                println!("💬 [CHAT] Resposta: {}", reply);
-                                let _ = ws_tx.send(Message::text(resp)).await;
-                                if let Ok(fj) = serde_json::to_string(&formants) {
-                                    let voz = format!(r#"{{"event":"voz_params","formants":{}}}"#, fj);
-                                    let _ = ws_tx.send(Message::text(voz)).await;
+
+                                if reply_s.is_empty() {
+                                    // Neonatal/PreVerbal: absorve input sem vocalizar
+                                } else {
+                                    let resp = serde_json::json!({
+                                        "event":   "chat_reply",
+                                        "message": reply_s,
+                                        "emotion": emocao_resp,
+                                        "arousal": alerta,
+                                    }).to_string();
+
+                                    // Síntese: neural (>= 4 frames) ou Klatt paramétrico
+                                    let pcm = if neural_frames.len() >= 4 {
+                                        let dur_ms = neural_frames.len() as f32 * 50.0;
+                                        crate::synthesis::formant_synth::sintetizar_neural(
+                                            &neural_frames, 120.0, dur_ms,
+                                        )
+                                    } else {
+                                        crate::synthesis::formant_synth::sintetizar(&formants)
+                                    };
+
+                                    // Saída nativa (servidor local)
+                                    if let Some(ao) = &audio_out {
+                                        ao.enqueue(
+                                            pcm,
+                                            crate::synthesis::formant_synth::SAMPLE_RATE,
+                                        );
+                                    }
+
+                                    println!("💬 [CHAT] Resposta: {}", reply_s);
+                                    let _ = ws_tx.send(Message::text(resp)).await;
+                                    // Porta mobile: envia voz_params para clientes remotos
+                                    if let Ok(fj) = serde_json::to_string(&formants) {
+                                        let voz = format!(r#"{{"event":"voz_params","formants":{}}}"#, fj);
+                                        let _ = ws_tx.send(Message::text(voz)).await;
+                                    }
                                 }
                             }
                         }

@@ -154,11 +154,19 @@ pub struct WordAccumulator {
     frames_falando: u32,         // frames de fala acumulados na palavra atual
     /// Média exponencial do F0 do falante — atualizado a cada frame voiced.
     pub media_f0: f32,
+    /// Média exponencial da energia dos últimos ~100 frames (alpha=0.01).
+    /// Usada para calibração automática do limiar de fala — adapta a diferentes
+    /// ganhos de microfone sem calibração manual.
+    energia_media: f32,
 }
 
 impl WordAccumulator {
-    /// Limiar de energia para considerar que há fala (não silêncio).
-    const ENERGIA_FALA: f32 = 0.04;
+    /// Limiar MÍNIMO absoluto (fallback para microfones muito fracos).
+    const ENERGIA_FALA_MIN: f32 = 0.02;
+    /// Limiar ALTO para início de palavra (reduz falsos positivos por cliques/ruído).
+    const ENERGIA_FALA_INICIO_FATOR: f32 = 0.35; // 35% da média histórica
+    /// Limiar BAIXO para continuar palavra (permite hesitações/consoantes surdas).
+    const ENERGIA_FALA_CONTINUA_FATOR: f32 = 0.20; // 20% da média histórica
     /// Frames de silêncio para fechar uma palavra (~138ms @ 46ms/frame).
     const FRAMES_PAUSA: u32 = 3;
     /// Mínimo de frames para ser uma palavra válida (não ruído ~92ms).
@@ -173,6 +181,7 @@ impl WordAccumulator {
             frames_silencio: 0,
             frames_falando: 0,
             media_f0: 180.0, // F0 neutro inicial (voz feminina adulta ~200Hz)
+            energia_media: 0.05, // seed para evitar limiar zero no início
         }
     }
 
@@ -189,7 +198,21 @@ impl WordAccumulator {
             self.media_f0 = self.media_f0 * 0.98 + pitch * 0.02;
         }
 
-        let tem_fala = energia > Self::ENERGIA_FALA;
+        // EMA da energia para calibração automática do limiar (alpha=0.01 → ~100 frames)
+        self.energia_media = self.energia_media * 0.99 + energia * 0.01;
+
+        // Limiar dinâmico adaptativo — evita fragmentação com microfones fracos
+        // e falsos positivos em ambientes ruidosos.
+        let limiar_inicio = (self.energia_media * Self::ENERGIA_FALA_INICIO_FATOR)
+            .max(Self::ENERGIA_FALA_MIN);
+        let limiar_continua = (self.energia_media * Self::ENERGIA_FALA_CONTINUA_FATOR)
+            .max(Self::ENERGIA_FALA_MIN * 0.5);
+
+        // Usa limiar alto para iniciar (reduz cliques), limiar baixo para continuar
+        let tem_fala = match self.estado {
+            EstadoAcum::Silencio => energia > limiar_inicio,
+            _ => energia > limiar_continua,
+        };
 
         match self.estado {
             EstadoAcum::Silencio => {

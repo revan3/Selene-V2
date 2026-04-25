@@ -9,6 +9,7 @@ use uuid::Uuid;
 // CORREÇÃO E0425 + E0063: importar TipoNeuronal e adicionar next_id
 use crate::synaptic_core::{NeuronioHibrido, PrecisionType, TipoNeuronal};
 use crate::brain_zones::RegionType;
+use crate::storage::reconsolidacao::RegistroReconsolidacao;
 
 // ── CAMADA ZERO: primitivas fixas (criadas UMA VEZ, nunca substituídas) ───────
 
@@ -182,6 +183,17 @@ pub struct SwapManager {
 
     /// Ticks consecutivos sem spike — usado para coasting (pular STDP quando ocioso).
     ticks_sem_spike: u32,
+    /// Contador de ticks semânticos — para poda periódica de sinapses fracas.
+    tick_count: u32,
+
+    /// Fator gliático: modulação astrocítica do STDP ([-1, +1], escrita pelo GliaLayer).
+    /// Positivo = LTP facilitado; negativo = LTD dominante.
+    pub glio_factor: f32,
+
+    /// Timestamp do último rebuild completo do grafo_cache (segundos desde epoch).
+    /// Debounce: o grafo só é reconstruído se > 0.5s passaram desde o último rebuild.
+    /// Isso elimina reconstruções repetidas durante sequências rápidas de aprender_conceito().
+    last_grafo_rebuild_s: f64,
 
     /// Templates cognitivos — padrões relacionais com slots efêmeros.
     /// A topologia (relações entre slots) persiste; o conteúdo dos slots é efêmero.
@@ -192,13 +204,53 @@ pub struct SwapManager {
     grafo_cache: Option<HashMap<String, Vec<(String, f32)>>>,
     /// Sinaliza que sinapses mudaram e o cache precisa ser reconstruído.
     grafo_dirty: bool,
+
+    /// Reconsolidação de memória — gerencia a janela lábil após evocação.
+    pub reconsolidacao: RegistroReconsolidacao,
 }
 
 impl SwapManager {
     pub fn ram_count(&self) -> usize { self.ram.len() }
     pub fn total_count(&self) -> usize { self.ram.len() + self.ssd.len() }
-    pub fn synapses_ativas(&self) -> usize { 
-        self.ram.len() * SYNAPSES_PER_NEURON 
+    pub fn synapses_ativas(&self) -> usize {
+        self.ram.len() * SYNAPSES_PER_NEURON
+    }
+
+    /// Marca o cache do grafo como sujo — força rebuild na próxima chamada a grafo_palavras.
+    pub fn marcar_grafo_dirty(&mut self) { self.grafo_dirty = true; }
+
+    /// Apaga todo vocabulário e memória semântica aprendida.
+    /// Preserva os primitivos fixos de camada 0 (fonemas + visuais).
+    /// Usado pelo reset_memory ontogênico para reiniciar como bebê.
+    pub fn reset_vocabulario(&mut self) {
+        // Coleta IDs de primitivos fixos (fonema + visual) para preservar
+        let ids_fixos: std::collections::HashSet<Uuid> = self.fonemas_para_id.values()
+            .chain(self.visuais_para_id.values())
+            .cloned()
+            .collect();
+
+        // Remove neurônios aprendidos (não primitivos)
+        self.palavra_para_id.clear();
+        self.ram.retain(|id, _| ids_fixos.contains(id));
+        self.ssd.retain(|id, _| ids_fixos.contains(id));
+        self.indices.retain(|_, ids| { ids.retain(|id| ids_fixos.contains(id)); !ids.is_empty() });
+        self.ultimo_acesso.retain(|id, _| ids_fixos.contains(id));
+        self.frequencia_acesso.retain(|id, _| ids_fixos.contains(id));
+        self.ultimo_conceito_id = None;
+        self.ultimo_conceito_pop = None;
+
+        // Apaga memória semântica e associativa
+        self.sinapses_conceito.clear();
+        self.valencia_neuronio.clear();
+        self.correntes.clear();
+        self.fast_weights.clear();
+        self.embeddings.clear();
+        self.snapshots.clear();
+        self.grafo_cache = None;
+        self.grafo_dirty = false;
+        self.ticks_sem_spike = 0;
+        self.tick_count = 0;
+        log::info!("[RESET] Vocabulário e memória semântica apagados. Primitivos preservados: {}", ids_fixos.len());
     }
 
     pub fn new(max_ram_neurons: usize, swap_threshold_seconds: u64) -> Self {
@@ -225,9 +277,13 @@ impl SwapManager {
             snapshots: std::collections::VecDeque::with_capacity(MAX_SNAPSHOTS),
             embeddings: HashMap::new(),
             ticks_sem_spike: 0,
+            tick_count: 0,
+            glio_factor: 0.0,
+            last_grafo_rebuild_s: 0.0,
             template_store: crate::learning::templates::TemplateStore::novo(),
             grafo_cache: None,
             grafo_dirty: true,
+            reconsolidacao: RegistroReconsolidacao::novo(),
         }
     }
     
@@ -482,6 +538,28 @@ impl SwapManager {
                 fw.reforcos += 1;
                 fw.peso = (fw.peso + 0.1).min(1.0);
             }
+            // Reconsolidação: evocação marca o conceito como lábil por 1h
+            // Permite que feedback subsequente modifique a memória antes de reconsolidar
+            if let Some(pre_pop) = self.ultimo_conceito_pop.as_ref() {
+                if let Some(&pre_id) = pre_pop.first() {
+                    if let Some(&post_id) = pop.first() {
+                        if pre_id != post_id {
+                            let peso = self.sinapses_conceito
+                                .get(&(pre_id, post_id)).copied().unwrap_or(0.0);
+                            if peso > 0.01 {
+                                let t = current_time();
+                                let pre_nome = self.palavra_para_id.iter()
+                                    .find(|(_, v)| v.first() == Some(&pre_id))
+                                    .map(|(k, _)| k.clone())
+                                    .unwrap_or_default();
+                                if !pre_nome.is_empty() {
+                                    self.reconsolidacao.ativar(&pre_nome, &chave, peso, t);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             pop
         } else {
             // Novo conceito — one-shot: registra fast_weight antes de criar população
@@ -554,8 +632,8 @@ impl SwapManager {
                 .map(|(&k, &v)| (k, v))
                 .collect();
             pesos.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-            // Remove os 5% mais fracos
-            let n_remover = SINAPSES_CAP / 20;
+            // Remove os 10% mais fracos (aumentado de 5% → poda mais agressiva)
+            let n_remover = SINAPSES_CAP / 10;
             for (k, _) in pesos.iter().take(n_remover) {
                 self.sinapses_conceito.remove(k);
             }
@@ -597,16 +675,9 @@ impl SwapManager {
             .collect()
     }
 
-    /// Constrói um grafo de palavras a partir das sinapses_conceito neurais.
-    /// Substitui o antigo grafo_associacoes (HashMap de strings) — a fonte de
-    /// verdade é agora o STDP entre populações neurais, não co-ocorrência textual.
-    /// Filtro mínimo: apenas palavras com ≥2 chars entram no grafo.
-    pub fn grafo_palavras(&mut self) -> HashMap<String, Vec<(String, f32)>> {
-        if !self.grafo_dirty {
-            if let Some(ref cache) = self.grafo_cache {
-                return cache.clone();
-            }
-        }
+    /// Reconstrói o cache do grafo a partir das sinapses_conceito.
+    /// Chamado internamente com debounce de 0.5s — evita O(sinapses×log) em cada chat.
+    fn rebuild_grafo_cache(&mut self) {
         let id_to_word = self.id_para_palavra();
         let mut grafo: HashMap<String, Vec<(String, f32)>> = HashMap::new();
         for (&(pre, post), &peso) in &self.sinapses_conceito {
@@ -619,9 +690,31 @@ impl SwapManager {
         for vizinhos in grafo.values_mut() {
             vizinhos.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         }
-        self.grafo_cache = Some(grafo.clone());
+        self.grafo_cache = Some(grafo);
         self.grafo_dirty = false;
-        grafo
+        self.last_grafo_rebuild_s = current_time();
+    }
+
+    /// Retorna referência ao cache do grafo (zero-copy para leituras).
+    /// O grafo é reconstruído no máximo uma vez a cada 0.5s mesmo se dirty.
+    /// Isso elimina rebuilds O(sinapses×log) durante sequências rápidas de aprendizado.
+    pub fn grafo_palavras_ref(&mut self) -> &HashMap<String, Vec<(String, f32)>> {
+        let agora = current_time();
+        let precisa_rebuild = self.grafo_dirty
+            && (agora - self.last_grafo_rebuild_s) >= 0.5;
+        let cache_vazio = self.grafo_cache.is_none();
+        if precisa_rebuild || cache_vazio {
+            self.rebuild_grafo_cache();
+        }
+        self.grafo_cache.as_ref().unwrap()
+    }
+
+    /// Constrói um grafo de palavras a partir das sinapses_conceito neurais.
+    /// Substitui o antigo grafo_associacoes (HashMap de strings) — a fonte de
+    /// verdade é agora o STDP entre populações neurais, não co-ocorrência textual.
+    /// Filtro mínimo: apenas palavras com ≥2 chars entram no grafo.
+    pub fn grafo_palavras(&mut self) -> HashMap<String, Vec<(String, f32)>> {
+        self.grafo_palavras_ref().clone()
     }
 
     /// Constrói o mapa palavra→valência a partir das populações neurais.
@@ -712,7 +805,9 @@ impl SwapManager {
         // STDP inter-conceito assimétrico (biologicamente correto):
         // LTP: pre disparou ANTES de post → pré→post fortalece (causal)
         // LTD: pre disparou DEPOIS de post → pré→post enfraquece (anti-causal)
-        const LTD_CONCEITO: f32 = LTP_CONCEITO * 0.7; // LTD menor que LTP — net potentiação
+        // glio_factor: modulação astrocítica [-1,+1] — gliotransmissores modulam plasticidade ±80%
+        let glio_ltp = LTP_CONCEITO * (1.0 + self.glio_factor * 0.8).clamp(0.2, 1.8);
+        let glio_ltd = LTP_CONCEITO * 0.7 * (1.0 - self.glio_factor * 0.8).clamp(0.2, 1.8);
 
         // LTP: post dispara agora, pre tem trace (disparou antes)
         for &post_id in spikes.iter().filter(|id| canonicos.contains(id)) {
@@ -721,7 +816,7 @@ impl SwapManager {
                 let pre_trace = self.ram.get(&pre_id).map(|n| n.trace_pos).unwrap_or(0.0);
                 if pre_trace > 0.15 {
                     let peso = self.sinapses_conceito.entry((pre_id, post_id)).or_insert(0.0);
-                    *peso = (*peso + LTP_CONCEITO * pre_trace).clamp(0.0, PESO_MAX_CONCEITO);
+                    *peso = (*peso + glio_ltp * pre_trace).clamp(0.0, PESO_MAX_CONCEITO);
                     self.grafo_dirty = true;
                 }
             }
@@ -735,7 +830,7 @@ impl SwapManager {
                 if post_trace > 0.15 {
                     // Enfraquece sinapse pre→post (pré chegou depois — não causou o spike de post)
                     if let Some(peso) = self.sinapses_conceito.get_mut(&(pre_id, post_id)) {
-                        *peso = (*peso - LTD_CONCEITO * post_trace).max(0.0);
+                        *peso = (*peso - glio_ltd * post_trace).max(0.0);
                         self.grafo_dirty = true;
                     }
                 }
@@ -798,6 +893,18 @@ impl SwapManager {
                     }
                 }
             }
+        }
+
+        // P4.4 — Poda sináptica periódica (a cada 500 ticks semânticos).
+        // Remove sinapses muito fracas (≤ 0.008) que nunca foram reforçadas.
+        // Biologicamente: sinapses que não disparam juntas perdem força (Stent 1973).
+        // Reduz o tamanho de sinapses_conceito → tick_semantico mais rápido + menos RAM.
+        self.tick_count = self.tick_count.wrapping_add(1);
+        const PODA_LIMIAR: f32 = 0.008;
+        const PODA_INTERVALO: u32 = 500;
+        if self.tick_count % PODA_INTERVALO == 0 && self.sinapses_conceito.len() > 500 {
+            self.sinapses_conceito.retain(|_, &mut v| v > PODA_LIMIAR);
+            self.grafo_dirty = true;
         }
     }
 

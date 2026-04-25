@@ -22,6 +22,8 @@ pub mod basal_ganglia;
 pub mod brainstem;
 pub mod learning;
 pub mod meta;
+pub mod glia;
+pub mod synthesis;
 
 // Re-exportações
 pub use sleep_manager::SleepManagerV2 as SleepManager;
