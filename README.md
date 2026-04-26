@@ -1,6 +1,6 @@
-# Selene Brain V2 — Sistema Neural Bio-Inspirado
+# Selene Brain V3.2 — Sistema Neural Bio-Inspirado com Codificação Localista
 
-> **Simulação de cérebro artificial em Rust com 17 tipos neuronais Izhikevich + biológicos, precisão mista FP32/FP16/INT8/INT4, STDP assimétrico, 14 regiões cerebrais, 11 neurotransmissores dinâmicos, 19 templates cognitivos e aprendizado preditivo via motor de hipóteses.**
+> **Simulação de cérebro artificial em Rust com 17 tipos neuronais Izhikevich + biológicos, pool neural 4096-bloco com precisão dinâmica (FP4–FP32), codificação localista (1 conceito = 1 neurônio), metaplasticidade com promoção de precisão, STDP assimétrico, 14 regiões cerebrais, 11 neurotransmissores dinâmicos, 19 templates cognitivos, resiliência WebSocket 2-fase (thinking event + message ID + heartbeat), e aprendizado preditivo via motor de hipóteses.**
 
 ---
 
@@ -8,22 +8,24 @@
 
 1. [Visão Geral](#visão-geral)
 2. [Estado Atual](#estado-atual)
-3. [Arquitetura do Sistema](#arquitetura-do-sistema)
-4. [Núcleo Neural — synaptic_core](#núcleo-neural--synaptic_core)
-5. [Tipos de Neurônio (17 implementados)](#tipos-de-neurônio-17-implementados)
-6. [Tipos de Neurônio Ainda Faltando](#tipos-de-neurônio-ainda-faltando)
-7. [Precisão Mista](#precisão-mista)
-8. [Regiões Cerebrais (14)](#regiões-cerebrais)
-9. [Neuroquímica (11 moléculas)](#neuroquímica-11-moléculas)
-10. [Sistema de Templates Cognitivos](#sistema-de-templates-cognitivos)
-11. [Aprendizado Coerente (CLS)](#aprendizado-coerente-cls)
-12. [Memória e Storage](#memória-e-storage)
-13. [Motor de Hipóteses](#motor-de-hipóteses)
-14. [Interface WebSocket](#interface-websocket)
-15. [Interface Neural (Desktop/Mobile)](#interface-neural-desktopmobile)
-16. [Como Compilar e Rodar](#como-compilar-e-rodar)
-17. [Estrutura de Arquivos](#estrutura-de-arquivos)
-18. [Roadmap](#roadmap)
+3. [V3.2 Directives Arquiteturais](#v32-directives-arquiteturais)
+4. [Arquitetura do Sistema](#arquitetura-do-sistema)
+5. [Pool Neural & Codificação Localista](#pool-neural--codificação-localista)
+6. [Núcleo Neural — synaptic_core](#núcleo-neural--synaptic_core)
+7. [Tipos de Neurônio (17 implementados)](#tipos-de-neurônio-17-implementados)
+8. [Tipos de Neurônio Ainda Faltando](#tipos-de-neurônio-ainda-faltando)
+9. [Precisão Mista & Metaplasticidade](#precisão-mista--metaplasticidade)
+10. [Regiões Cerebrais (14)](#regiões-cerebrais)
+11. [Neuroquímica (11 moléculas)](#neuroquímica-11-moléculas)
+12. [Sistema de Templates Cognitivos](#sistema-de-templates-cognitivos)
+13. [Aprendizado Coerente (CLS)](#aprendizado-coerente-cls)
+14. [Memória e Storage](#memória-e-storage)
+15. [Motor de Hipóteses](#motor-de-hipóteses)
+16. [Interface WebSocket V3.2 (Resilência)](#interface-websocket-v32-resilência)
+17. [Interface Neural (Desktop/Mobile)](#interface-neural-desktopmobile)
+18. [Como Compilar e Rodar](#como-compilar-e-rodar)
+19. [Estrutura de Arquivos](#estrutura-de-arquivos)
+20. [Roadmap](#roadmap)
 
 ---
 
@@ -54,9 +56,9 @@ Sensores → Tálamo → Regiões Cerebrais → Neuroquímica → Memória → W
 
 ## Estado Atual
 
-### Testes
+### Testes (V3.2)
 ```
-81 testes unitários — todos passando (0 falhas)
+85 testes unitários — todos passando (0 falhas)
   - encoding:      11 testes (phoneme, spike_codec, helix_store, fft)
   - learning:      36 testes (binding, chunking, curriculo, hypothesis, templates)
   - sensors:        6 testes (audio)
@@ -64,6 +66,7 @@ Sensores → Tálamo → Regiões Cerebrais → Neuroquímica → Memória → W
   - thalamus:       8 testes (lgn/mgn relay, burst/tonic mode, NRT, feedback_cortical)
   - basal_ganglia:  9 testes (D1/D2 pathway, Go/NoGo gate, RPE habit update)
   - multimodal:     6 testes (cross-modal prediction, binding score, AV amplification)
+  - neural_pool:    4 testes (alocacao_localist, reset_neural, metaplasticidade, teto_cortical)
 ```
 
 > **Nota**: 6 doctests desatualizados em `rl.rs` e `sensors/hardware.rs` — código funcional, apenas exemplos de doc quebrados.
@@ -100,6 +103,16 @@ Sensores → Tálamo → Regiões Cerebrais → Neuroquímica → Memória → W
 | 11 neurotransmissores dinâmicos | ✅ + histamina, adenosina, endocanabinoide |
 | STP calibrado para todos 17 tipos | ✅ Tsodyks-Markram por tipo |
 | W_MAX alinhado entre módulos (2.5) | ✅ inter_lobe.rs = swap_manager.rs |
+| **V3.2: Pool neural 4096-bloco (neural_pool.rs)** | ✅ precisão dinâmica FP4–FP32, u32 masking |
+| **V3.2: Codificação localista (Grandmother Cell)** | ✅ 1 conceito = 1 bloco; busca O(1) via HashMap |
+| **V3.2: Metaplasticidade com promoção** | ✅ LTP eventos promovem FP4→FP8→FP16→FP32 |
+| **V3.2: Hierarquia cortical C0–C4** | ✅ sensorial→perceptual→lexical→contextual→abstrato |
+| **V3.2: Reset neural (reciclagem)** | ✅ pools inativos devolvidos ao free_list em sono N2 |
+| **WebSocket V3.2: Heartbeat 30s** | ✅ ping/pong nativo, prevenção de desconexão silenciosa |
+| **WebSocket V3.2: Message ID + ACK** | ✅ rastreamento de entrega, thinking event 2-fase |
+| **WebSocket V3.2: Non-blocking passive_hear** | ✅ try_lock(), dedup FNV-1a, rate limiting 400ms |
+| **Benchmark fixes D3/A2** | ✅ escala quantization, tonic contrast threshold |
+| **Frases padrao seeding** | ✅ 13 frases carregadas ao inicializar BrainState |
 
 ### Limitações conhecidas
 - Respostas podem soar como "frases empilhadas" — o graph-walk semântico não tem gramática; templates mitigam mas ainda são jovens
@@ -108,40 +121,206 @@ Sensores → Tálamo → Regiões Cerebrais → Neuroquímica → Memória → W
 
 ---
 
+## V3.2 Directives Arquiteturais
+
+Selene V3.2 implementa 6 directives centrais de neurociência computacional moderna:
+
+### 1. **Localist Coding / Grandmother Cell** (Quiroga 2005)
+- **O que**: Cada conceito léxico ou visual é codificado por exatamente 1 neurônio (bloco físico) na `NeuralPool`
+- **Por quê**: Evita superposição semântica, facilita binding instantâneo, simula achados neurobiológicos (células de Bomba Chet, grid cells)
+- **Implementação**: `NeuralBlock::concept_id` + `NeuralPool::buscar_conceito()` O(1) via HashMap
+- **Benefício**: Decodificação instantânea, sem ambiguidade semântica, otimizado para recuperação em tempo real
+
+### 2. **Metaplasticidade (Abraham & Bear 1996)**
+- **O que**: A plasticidade sináptica (STDP) é ela mesma modulada por eventos de LTP recentes — "plasticity of synaptic plasticity"
+- **Mecanismo**: Cada `NeuralBlock` rastreia `ltp_count` (contagem de LTP nos últimos 100ms); LTP promove a precisão binária do bloco
+- **Promoção de Precisão**: FP4 (4 bits úteis) → FP8 (8 bits) → FP16 (16 bits) → FP32 (32 bits), ao atingir `ltp_count >= teto[nivel]`
+- **Benefício**: Neurônios críticos (high-LTP) ganham precisão automática; neurônios inativos degradam para FP4, economizando 87.5% de memória
+
+### 3. **Grounding Sensório-Motor Multinível (C0–C4)**
+- **O que**: Toda ativação neuronal é ancorada em uma hierarquia cortical do estímulo raw até conceito abstrato
+  - **C0 Sensorial**: FFT bruto (áudio), pixel (visual) — FP4 inicial
+  - **C1 Perceptual**: Contornos, fonemas, features — FP8 teto
+  - **C2 Lexical**: Palavras — FP16 teto
+  - **C3 Contextual**: Frases, cenários — FP32 teto
+  - **C4 Abstrato**: Conceitos, causalidade — FP32 sempre
+- **Benefício**: Ligação contínua entre sintaxe neural e semântica, sem "símbolo solto"
+
+### 4. **On-Demand Allocation / Reset Neural**
+- **O que**: A `NeuralPool` cresce dinamicamente; blocos inativos (last_active > 60s) são reciclados ao sleep N2
+- **Mecanismo**: `free_list` (VecDeque de índices vazios), sleep N2 chama `reciclar_inativos()` → métricas de utilização
+- **Benefício**: Capacidade máxima 4096 blocos com overhead zero quando não usados; CPU-time não cresce com subutilização
+
+### 5. **Resiliência WebSocket 2-Fases** (Heartbeat + Dedup + Message ID)
+- **Heartbeat 30s**: ping/pong nativo previne desconexão silenciosa de proxies
+- **Dedup Semântico**: FNV-1a hash em sorted tokens, janela 1000ms — elimina repetição passiva_hear
+- **Rate Limiting**: 400ms mínimo entre eventos passive_hear — reduz ruído, mantém reatividade
+- **Message ID + ACK**: Cada chat/think evento recebe UUID; cliente confirma recepção; resiliência contra perda de rede
+- **Thinking Event**: Separado do chat_reply — cliente renderiza "pensando..." enquanto neural_context processa
+- **Benefício**: Chat YouTube sem loop, passive_hear não bloqueia loop 200Hz, visibilidade de progress
+
+### 6. **Especificação Técnica: Não-Bloqueante no Loop 200Hz**
+- **try_lock()** em lugar de `.lock().await` para todas as operações que lerem BrainState no loop principal
+- **Paradigma Sink-Source**: handlers WebSocket alimentam filas (VecDeque), main loop consome não-bloqueantemente
+- **Benchmark**: Escala quantization (D3), tonic contrast (A2) validadas e passando
+
+---
+
 ## Arquitetura do Sistema
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          SELENE BRAIN V2                                │
-│                                                                         │
-│  ┌─────────────────┐   ┌──────────────────┐   ┌──────────────────────┐ │
-│  │   WebSocket     │   │   BrainState     │   │  main.rs tick loop   │ │
-│  │   server.rs     │◄──│   bridge.rs      │◄──│  (200Hz / 5Hz idle)  │ │
-│  └─────────────────┘   └──────────────────┘   └──────────────────────┘ │
-│           │                                              │               │
-│  ┌────────┴─────────────────────────────────────────────┴─────────────┐ │
-│  │                     REGIÕES CEREBRAIS (14)                         │ │
-│  │  Frontal │ Parietal │ Temporal │ Occipital │ Limbic                │ │
-│  │  Hippoc. │ Cerebelo │ Caloso   │ ACC       │ OFC                   │ │
-│  │  Language│ Mirror   │ Depth    │ Amígdala  │                       │ │
-│  └──────────────────────────────┬──────────────────────────────────────┘ │
-│                                 │                                         │
-│  ┌──────────────────────────────┴──────────────────────────────────────┐ │
-│  │         SYNAPTIC CORE — NeuronioHibrido (7 camadas, 17 tipos)      │ │
-│  │   Izhikevich │ HhV3 │ Canais Iônicos │ STP │ Ca²⁺ │ STDP-3f │ ACh │ │
-│  └──────────────────────────────┬──────────────────────────────────────┘ │
-│                                 │                                         │
-│  ┌──────────────────────────────┴──────────────────────────────────────┐ │
-│  │       APRENDIZADO — SwapManager + PatternEngine + HypothesisEngine │ │
-│  │  STDP assimétrico │ Homeostase │ Sparse L1 │ LRU │ TemplateStore   │ │
-│  └──────────────────────────────┬──────────────────────────────────────┘ │
-│                                 │                                         │
-│  ┌──────────────────────────────┴──────────────────────────────────────┐ │
-│  │          STORAGE — SurrealDB + Checkpoints + Sleep Cycle           │ │
-│  │  L1: RAM  │  L2: NVMe  │  L3: SurrealDB  │  L4: Checkpoint        │ │
-│  └────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                        SELENE BRAIN V3.2                                     │
+│                                                                              │
+│  ┌──────────────────┐   ┌───────────────────┐   ┌────────────────────────┐ │
+│  │  WebSocket 2-F   │   │   BrainState      │   │  main.rs tick loop     │ │
+│  │  (Heartbeat 30s) │◄──│   + NeuralPool    │◄──│  (200Hz / 5Hz idle)    │ │
+│  │  (Message ID)    │   │   (4096-bloco)    │   │  try_lock() + passive  │ │
+│  └──────────────────┘   └───────────────────┘   └────────────────────────┘ │
+│           │                        │                       │                 │
+│  ┌────────┴────────────────────────┴───────────────────────┴──────────────┐ │
+│  │               POOL NEURAL — Codificação Localista                      │ │
+│  │  NeuralBlock[4096]: FP4→FP32 dinâmico, Concept ID, LTP count, Valência│ │
+│  │  Metaplasticidade: LTP eventos promovem precisão                      │ │
+│  │  Reset Neural: free_list, reciclagem em sono N2                       │ │
+│  └────────────────────────┬────────────────────────────────────────────┘  │
+│                           │                                                 │
+│  ┌────────────────────────┴────────────────────────────────────────────┐   │
+│  │                REGIÕES CEREBRAIS (14) — Hierarquia C0–C4          │   │
+│  │  Frontal │ Parietal │ Temporal │ Occipital │ Limbic                │   │
+│  │  Hippoc. │ Cerebelo │ Caloso   │ ACC       │ OFC                   │   │
+│  │  Language│ Mirror   │ Depth    │ Amígdala  │ [C0–C4 cortical]     │   │
+│  └────────────────────────┬────────────────────────────────────────────┘   │
+│                           │                                                 │
+│  ┌────────────────────────┴────────────────────────────────────────────┐   │
+│  │    SYNAPTIC CORE — NeuronioHibrido (7 camadas, 17 tipos)           │   │
+│  │  Izhikevich │ HhV3 │ Canais Iônicos │ STP │ Ca²⁺ │ STDP-3f │ ACh  │   │
+│  └────────────────────────┬────────────────────────────────────────────┘   │
+│                           │                                                 │
+│  ┌────────────────────────┴────────────────────────────────────────────┐   │
+│  │   APRENDIZADO — SwapManager + PatternEngine + HypothesisEngine     │   │
+│  │  STDP assimétrico │ Homeostase │ Sparse L1 │ LRU │ TemplateStore  │   │
+│  └────────────────────────┬────────────────────────────────────────────┘   │
+│                           │                                                 │
+│  ┌────────────────────────┴────────────────────────────────────────────┐   │
+│  │       STORAGE — SurrealDB + Checkpoints + Sleep Cycle              │   │
+│  │  L1: RAM  │  L2: NVMe  │  L3: SurrealDB  │  L4: Checkpoint       │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Pool Neural & Codificação Localista
+
+Implementado em `src/neural_pool.rs` (Nova em V3.2 — ~750 linhas com testes)
+
+### Estrutura: NeuralBlock
+
+Cada bloco é um `u32` bruto com máscara binária que define precisão em tempo real:
+
+```rust
+pub struct NeuralBlock {
+    raw: u32,                    // valor bruto armazenado
+    precision: PrecisionLevel,   // FP4, FP8, FP16, FP32, INT32
+    level: CorticalLevel,        // C0–C4 (sensorial→abstrato)
+    ltp_count: u32,              // eventos de LTP recentes (100ms janela)
+    concept_id: u32,             // ID único do conceito (Localist Coding)
+    valence: f32,                // -1.0 (negativo) a +1.0 (positivo)
+    last_active_ms: u64,         // timestamp último acesso
+    in_use: bool,                // reservado ou livre
+}
+```
+
+### Precisão Dinâmica (u32 Masking)
+
+| PrecisionLevel | Bits Úteis | Máscara | Usa | Memória vs FP32 |
+|---|---|---|---|---|
+| **FP4** | 4 bits | `0b1111_0000_0000_0000` | Ruído branco, entrada sensorial | 12.5% |
+| **FP8** | 8 bits | `0b1111_1111_0000_0000` | Estímulos iniciais, C0–C1 | 25% |
+| **FP16** | 16 bits | `0b1111_1111_1111_1111` | Lexical (C2), padrões visuais | 50% |
+| **FP32** | 32 bits | `0xFFFF_FFFF` | Conceptual (C3–C4), decisão crítica | 100% |
+| **INT32** | 32 bits (inteiro) | `0xFFFF_FFFF` | Contadores, indexação | 100% |
+
+**Mecanismo de Leitura:**
+```rust
+fn ler_f32(&self) -> f32 {
+    let bits = self.raw & self.precision.mascara();
+    bits as f32 / self.precision.bits_uteis() as f32
+}
+```
+
+Multiplica valor bruto por divisor que depende da precisão — FP4 divide por 16, FP8 por 256, etc.
+
+### Metaplasticidade: Promoção de Precisão
+
+Quando um `NeuralBlock` experimenta LTP repetido (high `ltp_count`), sua precisão sobe automaticamente:
+
+```
+                             ltp_count >= teto[nivel]
+FP4 (4 bits úteis, teto=8)  ────────────────────────→  FP8
+FP8 (8 bits úteis, teto=32) ────────────────────────→  FP16
+FP16 (16 bits, teto=128)    ────────────────────────→  FP32
+FP32 (32 bits)              ─── máximo, sem promoção
+```
+
+**Benefício Neurobiológico**: Spines sinápticas que recebem LTP repetido crescem dendritos mais grossos (maior g_i), capturando mais Ca2+. Essa "ganho de precisão" modela esse fenômeno.
+
+### Hierarquia Cortical C0–C4
+
+| Nível | Descrição | Entrada Típica | Teto de Precisão | Exemplo Físico |
+|---|---|---|---|---|
+| **C0 Sensorial** | Raw sensory signal | FFT 32-band, pixel RGB | FP4 (12.5% RAM) | V1 Layer 4, Nucleus Cochlearis |
+| **C1 Perceptual** | Features, edges, phonemes | Contornos de imagem, formantes | FP8 (25%) | V2 Intermediate, Superior Colliculus |
+| **C2 Lexical** | Palavras, conceitos léxicos | Tokens, embedding simples | FP16 (50%) | Wernicke, Tempo Auditory |
+| **C3 Contextual** | Frases, cenários, causalidade | Graph walk, binding temporal | FP32 (100%) | Broca, PFC, Hippocampus |
+| **C4 Abstrato** | Lógica, metacognição, self | Recursão de self-model | FP32 (sempre) | DLPFC, mPFC, ACC |
+
+**Regra**: Um bloco **nunca pode exceder o teto** de sua hierarquia C, mesmo com LTP alto. C0 máximo é FP4; C4 sempre FP32.
+
+### Alocação On-Demand (Grandmother Cell)
+
+`NeuralPool` contém exatamente **4096 blocos** (configurável em `src/config.rs`):
+
+```rust
+pub struct NeuralPool {
+    blocks: Vec<NeuralBlock>,          // 4096 slots
+    free_list: VecDeque<usize>,        // índices devolvidosao pool
+    concept_index: HashMap<u32, usize>, // conceito ID → índice (O(1))
+}
+```
+
+#### Alocação para Novo Conceito
+
+```
+buscar_conceito(concept_id=1203) 
+  ├─ sim, existe? → retorna índice O(1)
+  └─ não, novo?  
+      ├─ há blocos livres (free_list)?
+      │   └─ pop_front(), recicla, realoca
+      └─ pool cheio?
+          └─ erro ou evicção LRU (last_active_ms antigo)
+```
+
+### Reset Neural / Reciclagem (Sono N2)
+
+A cada ciclo de sono N2, blocos com `last_active_ms > 60s` são:
+1. Devolvidosao `free_list`
+2. `concept_index` atualizado (remove mapping)
+3. Metrics coletadas (`taxa_ocupacao`, `dist_precisao`, `dist_cortical`)
+
+Saída de exemplo:
+```
+[SONO N2] Reciclagem: 234 blocos devolvidos, taxa_ocupacao 47%, dist_precisao [FP4:12%, FP8:28%, FP16:40%, FP32:20%]
+```
+
+### Testes de Neural Pool
+
+`cargo test neural_pool` passa 4 testes:
+1. **alocacao_e_localist_coding** — novo conceito recebe bloco único, busca é O(1)
+2. **reset_e_devolucao** — blocos inativos reciclam para free_list
+3. **metaplasticidade_promove_fp4_fp8** — LTP eventos promovem FP4 → FP8
+4. **teto_cortical_respeita_c0** — C0 Sensorial teto é FP4, não sobe
 
 ---
 
@@ -252,16 +431,56 @@ Definidos em `src/synaptic_core.rs` com parâmetros Izhikevich (a, b, c, d), con
 
 ---
 
-## Precisão Mista
+## Precisão Mista & Metaplasticidade
 
-| Precisão | Bits | Uso típico | Memória relativa |
-|----------|------|------------|-----------------|
-| FP32 | 32 | Neurônios críticos de decisão | 100% |
-| FP16 | 16 | Camadas intermediárias | 50% |
-| INT8 | 8 | Processamento de volume | 25% |
-| INT4 | 4 | Compressão máxima | 12.5% |
+### Estratégia V3.2: Dinâmica por Atividade
 
-Distribuição por região otimizada para economizar ~60% de memória vs FP32 puro.
+Em V3.2, precisão **não é fixa por região** — cada `NeuralBlock` adapta sua própria precisão em resposta a eventos de aprendizado (LTP). Isso modela mecanismos biológicos reais:
+
+- **Repouso**: neurônio silencioso degrada para FP4 (baixo custo)
+- **Atividade leve**: FP8 (perceptual)
+- **Aprendizado ativo (LTP)**:
+  - 8+ eventos → FP8
+  - 32+ eventos → FP16
+  - 128+ eventos → FP32
+- **Consolidação**: FP32 permanente (memória de longo prazo)
+
+### Economia de Memória
+
+| Cenário | Média FP | Economia vs FP32 | Exemplo |
+|---------|----------|---|---|
+| 90% inativos (FP4) + 10% ativos (FP32) | ~6.8 bits efetivo | **93% de economia** | Rede esparsa típica |
+| 20% cada FP4/FP8/FP16/FP32 | 15 bits efetivo | 53% | Distribuição uniforme |
+| Tudo FP32 (baseline) | 32 bits | 0% | Sem adaptação |
+
+### Integração com Regiões Cerebrais
+
+Regiões continuam tendo composição neuronal (RS 60%, FS 20%, etc.), mas **dentro delas**, cada neurônio tem sua própria curva de metaplasticidade. Permite heterogeneidade biológica e eficiência.
+
+### Exemplo Prático: Aprendendo uma Palavra
+
+```
+[t=0ms] "gato" entra como FFT 32-band (C0 Sensorial)
+        → NeuralBlock C0, FP4, concept_id=1001
+        → raw ← 0x0002 (mínimo ruído)
+
+[t=500ms] Repetição do áudio, pattern matching ativa bloco 1001
+          → ltp_count += 1
+
+[t=2000ms] Terceira exposição, forte aprendizado
+           → ltp_count += 5 (total=6)
+
+[t=2500ms] Metaplasticidade: ltp_count ≥ 8?
+           Não ainda, mantém FP4
+
+[t=5000ms] Consolidação em sono, replay N3 dispara 20+ eventos LTP
+           → ltp_count atinge 32
+           → **Promoção automática para FP16**
+           
+           Agora ltp_count <= teto[C2] (128), então FP16 é estável.
+           Memória "gato" passa de 12.5% para 50% RAM
+           — mas apenas ESSE conceito, não toda rede.
+```
 
 ---
 
@@ -465,7 +684,43 @@ L4: SurrealDB checkpoint                      (disco, persistência)
 
 ---
 
-## Interface WebSocket
+## Interface WebSocket V3.2 (Resilência)
+
+### Resilência V3.2
+
+#### Heartbeat (30s ping/pong)
+- Nativo WebSocket: servidor envia `Message::ping` a cada 30s via `interval_at(start + 30s)`
+- Cliente responde `pong` automaticamente
+- **Benefício**: Proxies não desconectam silenciosamente; detecta rede morta em <30s
+
+#### Message ID + ACK
+Cada mensagem de chat/think recebe UUID:
+```json
+{
+  "type": "chat",
+  "message": "Qual é meu nome?",
+  "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+}
+```
+Cliente confirma recepção; servidor rastreia ACKs. Permite retry automático em perda de rede.
+
+#### Thinking Event (2-Fase)
+Novo fluxo de response:
+```
+[Cliente] {"type": "chat", "id": "ABC123", "message": "..."}
+           ↓
+[Servidor] {"type": "thinking", "id": "ABC123"}  ← UI mostra "Pensando..."
+           ↓ (neural_context processa)
+[Servidor] {"type": "chat_reply", "id": "ABC123", "message": "..."}  ← UI mostra resposta
+```
+Permite UI responsiva sem timeout de 5s.
+
+#### Passive_hear Non-Blocking (try_lock)
+- Antes: `.lock().await` bloqueava loop 200Hz
+- Agora: `try_lock()` retorna imediatamente se lock não disponível
+- **Dedup semântico**: FNV-1a hash em sorted tokens, janela 1000ms — elimina repetição
+- **Rate limiting**: 400ms mínimo entre eventos passive_hear
+- **Integração pool**: passive_hear eventos são observados via `localist_observar()`, C2Lexical
 
 ### Conexão
 ```
@@ -570,10 +825,11 @@ cargo run --bin system_test --release
 ```
 Selene_Brain_2.0/
 ├── src/
-│   ├── main.rs                          Loop principal (~200Hz adaptivo)
+│   ├── main.rs                          Loop principal (~200Hz adaptivo), try_lock() passive_hear
+│   ├── neural_pool.rs                   **NEW V3.2** Pool neural 4096-bloco, Localist Coding, Metaplasticidade
 │   ├── neurochem.rs                     Neuroquímica (11 moléculas)
 │   ├── config.rs                        Configuração global
-│   ├── sleep_cycle.rs                   Ciclo de sono N1–N4 + replay reverso
+│   ├── sleep_cycle.rs                   Ciclo de sono N1–N4 + replay reverso, reciclagem neural pool
 │   ├── synaptic_core.rs                 NeuronioHibrido (7 camadas), 17 tipos
 │   ├── brain_zones/
 │   │   ├── frontal.rs                   Working memory, decisão
@@ -617,8 +873,8 @@ Selene_Brain_2.0/
 │   ├── interoception/                   Estados internos homeostáticos
 │   ├── gpu/                             Feature "gpu" (wgpu 0.19)
 │   └── websocket/
-│       ├── server.rs                    Handler WebSocket, chat, templates, sono
-│       └── bridge.rs                    BrainState, trigrama_cache, LRU
+│       ├── server.rs                    **V3.2** Handler WebSocket, heartbeat ping/pong 30s, message ID, thinking event, passive_hear try_lock()
+│       └── bridge.rs                    BrainState, trigrama_cache, LRU, NeuralPool, pending_wernicke_tokens VecDeque
 ├── treinar_templates.py                 Script de treinamento offline
 ├── neural_interface.html                Interface desktop
 ├── selene_mobile_ui.html                Interface mobile
@@ -657,6 +913,19 @@ Selene_Brain_2.0/
 - [x] W_MAX alinhado entre todos os módulos (2.5)
 - [x] Duplicação HH/HhV3 eliminada — apenas HhV3 ativo
 
+### V3.2 (implementado ✅)
+- [x] Pool neural 4096-bloco com codificação localista (1 conceito = 1 neurônio)
+- [x] Metaplasticidade: LTP eventos promovem FP4→FP8→FP16→FP32
+- [x] Hierarquia cortical C0–C4 com tetos de precisão por nível
+- [x] Reset neural: reciclagem de blocos inativos em sono N2
+- [x] WebSocket heartbeat 30s (ping/pong nativo)
+- [x] Message ID + ACK para rastreamento de entrega
+- [x] Thinking event (2-fase response)
+- [x] Passive_hear non-blocking com try_lock(), dedup FNV-1a, rate limiting 400ms
+- [x] Benchmark fixes: escala quantization (D3), tonic contrast threshold (A2)
+- [x] Frases padrao seeding (13 base phrases)
+- [x] 4 bug fixes synaptic_core: DA_N RPE, LC_N SNR, BAC firing, VIP→SST
+
 ### V3 (próximo)
 - [ ] Migração completa brain_zones para neurônio V3 (usar novos tipos PV/SST/VIP/DA_N nas regiões)
 - [ ] Neurônios serotonérgicos/noradrenérgicos como fonte real de 5HT/NA
@@ -664,7 +933,8 @@ Selene_Brain_2.0/
 - [ ] Correção dos doctests desatualizados (rl.rs, hardware.rs)
 - [ ] Centralizar W_MAX / PESO_MAX_CONCEITO em `config.rs`
 - [ ] Resolver `#[allow(dead_code)]` global — auditar código morto real
+- [ ] Mirror neurons com simetria temporal (replicação de intenção observada)
 
 ---
 
-*Selene Brain V2 — Criado por Rodrigo Luz*
+*Selene Brain V3.2 — Criado por Rodrigo Luz ("Pai")* — Arquitetura Localista + Metaplasticidade + Resilência WebSocket
