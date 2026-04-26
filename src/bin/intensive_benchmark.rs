@@ -178,7 +178,8 @@ fn benchmark_neural(config: &Config) {
         let t_ms = tick as f32 * dt * 1000.0;
         neuro.update(&mut sensor, config);
         let (da, ser, cor) = (neuro.dopamine, neuro.serotonin, neuro.cortisol);
-        let tonic = 0.04 * (tick as f32 * 0.1).sin().abs();
+        // Acima do contrast_threshold (0.15) do OccipitalLobe — garante disparo de V1
+        let tonic = 0.30 * (tick as f32 * 0.1).sin().abs() + 0.10;
         let input_vis = vec![tonic; n];
         let input_aud = vec![tonic * 0.5; 10];
 
@@ -665,18 +666,21 @@ fn benchmark_aprendizado(config: &Config) {
     subsecao("D3 — Chunking: emergência de padrões compostos");
     let mut chunker = ChunkingEngine::new(RegionType::Temporal);
     let n_chunk = 256usize;
+    // escala=1.0 (não 40.0): com escala alta, INT8 quantiza inputs<1.0 para zero
+    // → trace_pre permanece 0.0 → forca_acum<TRACE_MINIMO_CHUNK → nenhum chunk
     let mut camada_chunk = CamadaHibrida::new(
         n_chunk, "chunk_bench",
         TipoNeuronal::RS,
         Some((TipoNeuronal::FS, 0.2)),
-        None, 40.0,
+        None, 1.0,
     );
 
     let n_ticks_chunk = 3000usize;
     let mut chunks_emergidos = 0usize;
     let mut ticks_ate_primeiro_chunk: Option<usize> = None;
+    // Inputs em pA equivalente — magnitude suficiente para cruzar threshold biológico
     let inputs_chunk: Vec<f32> = (0..n_chunk)
-        .map(|i| if i < n_chunk / 4 { 0.8 } else { 0.02 })
+        .map(|i| if i < n_chunk / 4 { 8.0 } else { 0.2 })
         .collect();
 
     let t_chunk = Instant::now();

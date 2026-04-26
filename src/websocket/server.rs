@@ -667,6 +667,19 @@ fn fase_n2_podar(state: &mut crate::websocket::bridge::BrainState) {
     } else {
         println!("   ✂️  [N2] swap locked — skipped");
     }
+
+    // V3.2 — Reset Neural global do pool: recicla blocos C0/C1/C2 inativos > 1h.
+    // Memórias C3/C4 (contextual/abstrato) NÃO são recicladas — preservam LTM.
+    let t_now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64() * 1000.0)
+        .unwrap_or(0.0);
+    let reciclados = state.reciclar_pool_inativo(t_now, 60.0 * 60.0 * 1000.0); // 1h
+    let em_uso = state.neural_pool.n_em_uso();
+    let dist_p = state.neural_pool.dist_precisao();
+    println!("   ♻️  [N2] Pool: {} reciclados | {}/{} em uso | FP4:{} FP8:{} FP16:{} FP32:{} INT32:{}",
+        reciclados, em_uso, state.neural_pool.capacity,
+        dist_p[0], dist_p[1], dist_p[2], dist_p[3], dist_p[4]);
 }
 
 /// N3 — REM: replay hipocampal + fechamento transitivo via swap_manager.
@@ -2622,6 +2635,16 @@ pub async fn handle_connection(
 
                                     let energia_fft: f32 = bandas_fft.iter().map(|b| b * b).sum::<f32>()
                                         / bandas_fft.len() as f32;
+                                    // Localist Coding (V3.2): aloca bloco no pool por token + LTP.
+                                    // C2 Lexical = palavra falada/ouvida. Cada bloco = grandmother cell.
+                                    let pool_valence = score * energia_fft.sqrt() * 0.2;
+                                    let now_ms = state.ultimo_passive_hear_ts.elapsed().as_secs_f64() * 1000.0;
+                                    state.localist_observar(
+                                        &tokens,
+                                        crate::neural_pool::CorticalLevel::C2Lexical,
+                                        pool_valence,
+                                        now_ms,
+                                    );
                                     let swap_arc = state.swap_manager.clone();
                                     drop(state); // libera lock antes do swap
 

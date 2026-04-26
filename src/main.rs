@@ -26,6 +26,7 @@ mod learning;
 mod meta;
 mod glia;
 mod synthesis;
+mod neural_pool;
 
 // Imports necessários
 use std::sync::mpsc::{channel, Sender, Receiver};

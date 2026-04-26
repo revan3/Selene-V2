@@ -19,6 +19,7 @@ use crate::learning::pattern_engine::PatternEngine;
 use crate::learning::ontogeny::OntogenyState;
 use crate::learning::multimodal::ConvergenciaMultimodal;
 use crate::sensors::audio::WordAccumulator;
+use crate::neural_pool::{NeuralPool, CorticalLevel};
 
 /// Evento episódico rico — registra um momento de experiência com contexto perceptual completo.
 /// Substitui o antigo `(String, String, f32)` do historico_episodico, adicionando:
@@ -358,6 +359,13 @@ pub struct BrainState {
     /// Saída de áudio nativa (cpal). Some() quando rodando localmente com device de saída disponível.
     /// None em servidores headless ou clientes remotos (eles recebem voz via voz_params WS).
     pub audio_output: Option<std::sync::Arc<crate::synthesis::cpal_output::AudioOutput>>,
+
+    /// Pool global de neurônios em repouso (V3.2 — Localist Coding + Metaplasticidade).
+    /// Capacidade fixa pré-alocada como blocos u32. Cada bloco representa um conceito
+    /// único (Grandmother Cell). Precisão promovida dinamicamente via LTP (FP4→INT32)
+    /// sem realocação de memória — apenas mudança da máscara lógica.
+    /// Reset Neural: blocos inativos retornam ao pool via reciclar_inativos().
+    pub neural_pool: NeuralPool,
 }
 
 pub struct EgoVoiceState {
@@ -604,6 +612,23 @@ impl BrainState {
             }
         }
 
+        // Seed mínimo de frases_padrao quando não há nenhuma persistida.
+        // Evita Selene "muda" em sessão totalmente nova — capacidade básica de articulação
+        // a partir do verbo "eu" + estado interno. Frases curtas que o graph-walk pode
+        // estender via grafo de associações conforme aprende.
+        if frases_padrao.is_empty() {
+            for s in &[
+                "eu sinto", "eu penso", "eu aprendo", "eu lembro", "eu quero",
+                "eu sei", "eu vejo", "eu ouço", "eu existo",
+                "isso é", "como assim", "o que é", "por quê",
+            ] {
+                frases_padrao.push(
+                    s.split_whitespace().map(|w| w.to_string()).collect()
+                );
+            }
+            println!("🌱 frases_padrao seed inicial: {} frases básicas", frases_padrao.len());
+        }
+
         // Carrega HypothesisEngine persistido (selene_hypotheses.json).
         let hypothesis_engine_init = HypothesisEngine::carregar("selene_hypotheses.json");
         if hypothesis_engine_init.total_formuladas > 0 {
@@ -697,6 +722,9 @@ impl BrainState {
             audio_frames: HashMap::new(),
             audio_output: crate::synthesis::cpal_output::AudioOutput::try_new()
                 .map(std::sync::Arc::new),
+            // Pool de 4096 blocos u32 = 16 KB de RAM física, suporta até 4096 conceitos
+            // únicos simultâneos. Excede com folga vocabulário humano ativo (~3-5k palavras).
+            neural_pool: NeuralPool::new(4096),
             pending_wernicke_tokens: std::collections::VecDeque::new(),
             ultimo_passive_tokens_hash: 0,
             ultimo_passive_hear_ts: std::time::Instant::now()
@@ -719,6 +747,38 @@ impl BrainState {
                     .push(i);
             }
         }
+    }
+
+    /// Localist Coding: aloca/registra LTP em blocos do neural_pool para os tokens.
+    ///
+    /// Para cada token: aloca um bloco se for novo (Grandmother Cell), ou registra
+    /// um evento LTP no bloco existente — promove precisão FP4→FP8→FP16→FP32→INT32
+    /// conforme o conceito ganha relevância. Atualiza valência emocional do bloco.
+    ///
+    /// `level`: nível cortical do conteúdo (C0 áudio puro, C2 lexical, C3 contextual...).
+    /// `valence`: peso emocional [-1, 1] usado como índice secundário no banco.
+    pub fn localist_observar(
+        &mut self,
+        tokens: &[String],
+        level: crate::neural_pool::CorticalLevel,
+        valence: f32,
+        t_ms: f64,
+    ) {
+        for tok in tokens {
+            if tok.len() < 2 { continue; }
+            let _ = self.neural_pool.aloca_para_tarefa(tok.clone(), level, t_ms);
+            self.neural_pool.ltp_em_conceito(tok, t_ms);
+            if valence.abs() > 0.01 {
+                self.neural_pool.atualizar_valencia(tok, valence);
+            }
+        }
+    }
+
+    /// Reset Neural global: recicla blocos não-utilizados há mais de `idade_ms`.
+    /// Chamado periodicamente (ex: durante sono N2 — poda).
+    /// Retorna o número de blocos reciclados.
+    pub fn reciclar_pool_inativo(&mut self, t_ms_atual: f64, idade_ms: f64) -> usize {
+        self.neural_pool.reciclar_inativos(t_ms_atual, idade_ms)
     }
 
     /// Reconstrói o cache de trigramas de frases_padrao.
