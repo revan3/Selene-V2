@@ -726,6 +726,30 @@ impl SwapManager {
             .collect()
     }
 
+    /// Versão concept_id (u32) do grafo — elimina strings no hot path do benchmark.
+    /// Chaves e valores são FNV-1a hashes das palavras (word_to_concept_id).
+    pub fn grafo_conceitos(&mut self) -> HashMap<u32, Vec<(u32, f32)>> {
+        use crate::neural_pool::word_to_concept_id;
+        self.grafo_palavras_ref()
+            .iter()
+            .map(|(palavra, vizinhos)| {
+                let cid = word_to_concept_id(palavra);
+                let vs: Vec<(u32, f32)> = vizinhos.iter()
+                    .map(|(v, p)| (word_to_concept_id(v), *p))
+                    .collect();
+                (cid, vs)
+            })
+            .collect()
+    }
+
+    /// Versão concept_id (u32) das valências — zero alocações de String no benchmark.
+    pub fn valencias_conceitos(&self) -> HashMap<u32, f32> {
+        use crate::neural_pool::word_to_concept_id;
+        self.palavra_para_id.keys()
+            .filter_map(|p| self.valencia_populacao(p).map(|v| (word_to_concept_id(p), v)))
+            .collect()
+    }
+
     /// Retorna uma sequência de palavras-guia baseada no template que melhor
     /// corresponde aos conceitos fornecidos. Os slots do template são preenchidos
     /// com as palavras mais frequentes no histórico de cada slot (restrição emergente).
