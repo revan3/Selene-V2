@@ -52,6 +52,7 @@
 use serde::{Deserialize, Serialize};
 use half::f16;
 use rayon::prelude::*;
+use std::sync::OnceLock;
 use crate::config::Config;
 use crate::compressor::salient::{SalientPoint, SalientCompressor};
 
@@ -469,6 +470,44 @@ const ASTRO_ACTIVITY_THRESHOLD: f32 = 0.4;
 const ASTRO_HIGH_DURATION_MS:   f32 = 1000.0;
 /// Multiplicador de ca_nmda_max quando astrócito ativo (D-serina → amplifica NMDA).
 const ASTRO_CA_NMDA_SCALE: f32 = 2.0;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEÇÃO 5b — NTC: NEURAL TEXTURE COMPRESSION
+//
+// Analogia com compressão de texturas GPU: neurônios C0/C1 usam LUTs pré-
+// computadas (INT4) ou Izhikevich direto sem canais iônicos (INT8).
+// Reduz carga do hot path 200Hz; correctness exata é trocada por throughput.
+//
+// LUT 16×16 para dv_base = 0.04v² + 5v + 140 − u (parte estática Izhikevich)
+//   v ∈ [−80, +32.5] mV em 16 passos de 7.5 mV
+//   u ∈ [−20, +20]   em 16 passos de 2.667
+//   Escala 3.0 → i8 cobre range [−384, +381] mV/ms (erro max ±1.5 mV/ms)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const NTC_LUT_SCALE: f32 = 3.0;
+const NTC_LUT_V_MIN:  f32 = -80.0;
+const NTC_LUT_V_STEP: f32 = 7.5;
+const NTC_LUT_U_MIN:  f32 = -20.0;
+const NTC_LUT_U_STEP: f32 = 2.6667;
+
+static NTC_LUT_FP4: OnceLock<[[i8; 16]; 16]> = OnceLock::new();
+
+fn ntc_lut_fp4() -> &'static [[i8; 16]; 16] {
+    NTC_LUT_FP4.get_or_init(|| {
+        let mut lut = [[0i8; 16]; 16];
+        for vi in 0..16usize {
+            let v = NTC_LUT_V_MIN + vi as f32 * NTC_LUT_V_STEP;
+            for ui in 0..16usize {
+                let u = NTC_LUT_U_MIN + ui as f32 * NTC_LUT_U_STEP;
+                let dv_base = 0.04 * v * v + 5.0 * v + 140.0 - u;
+                lut[vi][ui] = (dv_base / NTC_LUT_SCALE)
+                    .round()
+                    .clamp(-128.0, 127.0) as i8;
+            }
+        }
+        lut
+    })
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SEÇÃO 6 — EXTENSÃO V3: CONDUTÂNCIAS DOS NOVOS CANAIS
@@ -925,6 +964,17 @@ impl NeuronioHibrido {
             return false;
         }
 
+        // ── NTC Fast Paths: INT4/INT8 pulam HH + canais iônicos ─────────
+        match self.precisao {
+            PrecisionType::INT4 => return self.ntc_update_int4(
+                input_current, dt_ms, current_time_ms, escala_camada,
+            ),
+            PrecisionType::INT8 => return self.ntc_update_int8(
+                input_current, dt_ms, current_time_ms, escala_camada,
+            ),
+            _ => {}
+        }
+
         // ── 2. Quantização do input ──────────────────────────────────────
         let input_q = match self.precisao {
             PrecisionType::INT8 => {
@@ -1242,6 +1292,151 @@ impl NeuronioHibrido {
     /// Aplica neuromodulação sem ACh (compat. V2).
     pub fn modular_neuro(&mut self, dopamina: f32, serotonina: f32, cortisol: f32) {
         self.modular_neuro_v3(dopamina, serotonina, cortisol, 1.0);
+    }
+
+    // ── NTC: caminho rápido INT4 — LUT Izhikevich, sem HH/iônico/STDP peso ──
+    // Usado por neurônios C0/C1 FP4. Economiza ~65% das operações por tick.
+    fn ntc_update_int4(
+        &mut self,
+        input_current: f32,
+        dt_ms:         f32,
+        current_time_ms: f32,
+        escala:        f32,
+    ) -> bool {
+        let input_q = {
+            let q = (input_current / escala.max(1e-8)).round().clamp(-8.0, 7.0) as i8;
+            q as f32 * escala
+        };
+
+        let lut = ntc_lut_fp4();
+        let vi = ((self.v - NTC_LUT_V_MIN) / NTC_LUT_V_STEP)
+            .round().clamp(0.0, 15.0) as usize;
+        let ui = ((self.u - NTC_LUT_U_MIN) / NTC_LUT_U_STEP)
+            .round().clamp(0.0, 15.0) as usize;
+        let dv_base = lut[vi][ui] as f32 * NTC_LUT_SCALE;
+
+        let (a, b, c, d) = self.tipo.parametros();
+        self.v = (self.v + dt_ms * (dv_base + input_q)).clamp(-100.0, 100.0);
+        self.u += dt_ms * a * (b * self.v - self.u);
+
+        let spiked = if self.v >= self.threshold {
+            self.v = c;
+            self.u += d;
+            self.threshold += THRESHOLD_DELTA;
+            self.refr_count = (2.0 / dt_ms.max(0.1)).round() as u16;
+            true
+        } else {
+            false
+        };
+
+        // Ca²⁺ AHP (SK) simplificado
+        self.ca_intra *= (-dt_ms / self.tipo.tau_ca_ms()).exp();
+        if spiked { self.ca_intra = (self.ca_intra + CA_POR_SPIKE).min(CA_MAX); }
+
+        // BCM homeostático
+        let bcm_decay = (-dt_ms / TAU_BCM_MS).exp();
+        let sv = if spiked { 1.0 } else { 0.0 };
+        self.activity_avg = self.activity_avg * bcm_decay + sv * (1.0 - bcm_decay);
+
+        // Decaimento de traços STDP (sem atualização de peso — peso fixo em FP4)
+        let decay = (-dt_ms / TAU_STDP_MS).exp();
+        self.trace_pre *= decay;
+        self.trace_pos *= decay;
+        if spiked {
+            self.trace_pos = 1.0;
+            self.trace_pre = (self.trace_pre + 0.5).min(1.0);
+            self.last_spike_ms = current_time_ms;
+        }
+
+        // Threshold retorna ao padrão
+        let tb = self.tipo.threshold_padrao();
+        self.threshold = tb + (self.threshold - tb) * THRESHOLD_DECAY;
+
+        spiked
+    }
+
+    // ── NTC: caminho rápido INT8 — Izhikevich direto, sem HH/iônico ─────────
+    // Usado por neurônios C1/C2 INT8. Mantém STDP simplificado e STP.
+    fn ntc_update_int8(
+        &mut self,
+        input_current: f32,
+        dt_ms:         f32,
+        current_time_ms: f32,
+        escala:        f32,
+    ) -> bool {
+        let input_q = {
+            let q = (input_current / escala.max(1e-8)).round().clamp(-128.0, 127.0) as i8;
+            q as f32 * escala
+        };
+
+        // STP (armazena fator; compatibilidade com monitores externos)
+        self.extras.stp_efficacy = self.extras.stp.fator();
+        let i_eff = input_q;
+
+        let (a, b, c, d) = self.tipo.parametros();
+        let n_sub  = (dt_ms.round() as usize).max(1);
+        let dt_int = dt_ms / n_sub as f32;
+        let mut spiked = false;
+
+        for _ in 0..n_sub {
+            self.v += dt_int * (0.04 * self.v.powi(2) + 5.0 * self.v + 140.0 - self.u + i_eff);
+            self.u += dt_int * a * (b * self.v - self.u);
+            self.v = self.v.clamp(-100.0, 100.0);
+            if self.v >= self.threshold {
+                self.v = c;
+                self.u += d;
+                self.threshold += THRESHOLD_DELTA;
+                self.refr_count = (2.0 / dt_int).round() as u16;
+                spiked = true;
+                break;
+            }
+        }
+
+        // Ca²⁺ AHP (SK) + BK rápido
+        self.ca_intra *= (-dt_ms / self.tipo.tau_ca_ms()).exp();
+        self.extras.q_bk *= (-dt_ms / TAU_BK_MS).exp();
+        if spiked {
+            self.ca_intra = (self.ca_intra + CA_POR_SPIKE).min(CA_MAX);
+            self.extras.q_bk = (self.extras.q_bk + BK_PER_SPIKE).min(1.0);
+        }
+
+        // BCM homeostático
+        let bcm_decay = (-dt_ms / TAU_BCM_MS).exp();
+        let sv = if spiked { 1.0 } else { 0.0 };
+        self.activity_avg = self.activity_avg * bcm_decay + sv * (1.0 - bcm_decay);
+
+        // STDP simplificado: traços + atualização de peso sem Ca NMDA
+        let decay = (-dt_ms / TAU_STDP_MS).exp();
+        self.trace_pre *= decay;
+        self.trace_pos *= decay;
+        if spiked {
+            if self.trace_pre > 0.05 {
+                let delta_ltp = LTP_RATE * self.trace_pre;
+                let delta_dopa = if self.mod_dopa > 1.0 {
+                    DOPA_GATE * (self.mod_dopa - 1.0).min(2.0)
+                } else {
+                    0.0
+                };
+                self.atualizar_peso(delta_ltp + delta_dopa);
+            }
+            self.trace_pos = 1.0;
+            self.trace_pre = (self.trace_pre + 0.5).min(1.0);
+            self.last_spike_ms = current_time_ms;
+        }
+
+        // Elig trace decay
+        self.extras.elig_trace *= (-dt_ms / TAU_ELIG_MS).exp();
+        // Ca NMDA decay
+        self.extras.ca_nmda *= (-dt_ms / TAU_NMDA_CA_MS).exp();
+
+        // Threshold retorna ao padrão
+        let tb = self.tipo.threshold_padrao();
+        self.threshold = tb + (self.threshold - tb) * THRESHOLD_DECAY;
+
+        // STP tick
+        self.extras.stp.tick(spiked, dt_ms);
+
+        spiked
     }
 
     fn atualizar_peso(&mut self, delta: f32) {

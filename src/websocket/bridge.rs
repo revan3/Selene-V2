@@ -766,10 +766,11 @@ impl BrainState {
     ) {
         for tok in tokens {
             if tok.len() < 2 { continue; }
-            let _ = self.neural_pool.aloca_para_tarefa(tok.clone(), level, t_ms);
-            self.neural_pool.ltp_em_conceito(tok, t_ms);
+            let cid = crate::neural_pool::word_to_concept_id(tok);
+            let _ = self.neural_pool.aloca_para_tarefa(cid, level, t_ms);
+            self.neural_pool.ltp_em_conceito(cid, t_ms);
             if valence.abs() > 0.01 {
-                self.neural_pool.atualizar_valencia(tok, valence);
+                self.neural_pool.atualizar_valencia(cid, valence);
             }
         }
     }
