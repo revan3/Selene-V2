@@ -275,9 +275,12 @@ async fn async_main() {
 
     // --- 4. SETUP DO SWAP MANAGER ---
     println!("🧬 Inicializando Swap Manager com neurogênese...");
-    let max_neurons_dinamico = calcular_max_neurons();
+    // RAM tier cap = n_neurons (já clamped em [1024, 8192]).
+    // calcular_max_neurons() retorna milhões em máquinas com muita RAM — NÃO usar
+    // diretamente em SwapManager::new() pois HashMap::with_capacity(milhões) tenta
+    // pré-alocar gigabytes e causa STATUS_STACK_BUFFER_OVERRUN no Windows.
     let swap_manager = Arc::new(TokioMutex::new(
-        SwapManager::new(max_neurons_dinamico, SWAP_THRESHOLD_SECONDS)
+        SwapManager::new(n_neurons, SWAP_THRESHOLD_SECONDS)
     ));
     // Restaura pesos sinápticos STDP da sessão anterior (se existir)
     if let Ok(mut sw) = swap_manager.try_lock() {

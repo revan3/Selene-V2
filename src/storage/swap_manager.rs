@@ -255,7 +255,10 @@ impl SwapManager {
 
     pub fn new(max_ram_neurons: usize, swap_threshold_seconds: u64) -> Self {
         Self {
-            ram: HashMap::with_capacity(max_ram_neurons),
+            // HashMap::new() — cresce sob demanda.
+            // Nunca usar with_capacity(max_ram_neurons): em máquinas com muita RAM
+            // calcular_max_neurons() retorna milhões, causando alocação de GB e crash.
+            ram: HashMap::new(),
             ssd: HashMap::new(),
             indices: HashMap::new(),
             ultimo_acesso: HashMap::new(),
