@@ -21,12 +21,18 @@ pub enum ModoOperacao {
     Economia,    // 5–50 Hz  | CPU ≤ 25% | apenas em hardware < 16 GB
     Normal,      // 5–100 Hz | CPU ≤ 50% | hardware ≥ 8 GB
     Turbo,       // 200–300 Hz | CPU ≤ 90% | requer RAM ≥ 20 GB + temp < 85 °C
+    // V3.4 Fase F — Cenário C (Quiescência) para Ryzen 3500U (4 cores físicos).
+    // Vozes Censor/Criativa do Multi-Self rodam apenas 1/4 dos ticks; loop
+    // principal cai para 5–15 Hz quando ocioso. Não satura os 4 núcleos.
+    Quiescencia, // 5–15 Hz  | CPU ≤ 15% | poupar cores em idle (Ryzen 3500U-class)
 }
 
 /// Retorna o Hz alvo para o modo e carga de CPU atual.
 /// `carga_cpu` em 0.0–1.0 (ex: 0.5 = 50%).
 pub fn hz_alvo(modo: ModoOperacao, carga_cpu: f32) -> u32 {
     match modo {
+        // Cenário C — Quiescência: 5–15 Hz quando idle. Ryzen 3500U respira.
+        ModoOperacao::Quiescencia => (15.0 * (1.0 - carga_cpu)).max(5.0) as u32,
         ModoOperacao::Economia => (50.0 * (1.0 - carga_cpu)).max(5.0) as u32,
         ModoOperacao::Normal | ModoOperacao::Humano =>
             (100.0 * (1.0 - carga_cpu)).max(5.0) as u32,
@@ -205,12 +211,32 @@ impl Config {
                 use_mixed_precision: true,
                 swap_threshold_seconds: 1800, // 30 minutos
             },
+
+            // V3.4 Fase F — Cenário C (Quiescência) para Ryzen 3500U-class.
+            // Hz baixo, alta proporção INT8/INT4 para reduzir ALU pressure.
+            ModoOperacao::Quiescencia => Self {
+                modo,
+                frequencia_base_hz: 10.0,           // centro da faixa 5–15 Hz
+                dt_simulacao: 0.10,                 // 100ms
+                energia_watts: 4.0,                 // mínimo absoluto
+                tempo_refratario_ms: 100.0,
+                taxa_aprendizado: 0.0002,
+                precision_distribution: vec![
+                    (crate::synaptic_core::PrecisionType::FP32, 0.01),
+                    (crate::synaptic_core::PrecisionType::FP16, 0.19),
+                    (crate::synaptic_core::PrecisionType::INT8, 0.60),
+                    (crate::synaptic_core::PrecisionType::INT4, 0.20),
+                ],
+                use_mixed_precision: true,
+                swap_threshold_seconds: 14400, // 4 horas — pouca atividade, swap raro
+            },
         }
     }
 
     pub fn fator_boost(&self) -> f32 {
         match self.modo {
             ModoOperacao::Humano  => 1.0,
+            ModoOperacao::Quiescencia => 0.10, // mínimo absoluto — tick raro
             ModoOperacao::Economia => 0.25,
             ModoOperacao::Normal  => 0.5,
             ModoOperacao::Boost200 | ModoOperacao::Turbo => 2.0,

@@ -18,6 +18,8 @@ use crate::learning::hypothesis::HypothesisEngine;
 use crate::learning::pattern_engine::PatternEngine;
 use crate::learning::ontogeny::OntogenyState;
 use crate::learning::multimodal::ConvergenciaMultimodal;
+use crate::learning::active_context::ActiveContext;
+use crate::learning::go_nogo::GoNoGoFilter;
 use crate::sensors::audio::WordAccumulator;
 use crate::neural_pool::{NeuralPool, CorticalLevel};
 
@@ -302,6 +304,24 @@ pub struct BrainState {
     /// Negativo = contexto associado a punições → Selene mais cautelosa/reservada.
     pub ofc_value_bias: f32,
 
+    /// V3.4 Multi-Self: janela de contexto ativo lock-free, compartilhada com o
+    /// loop neural e as 4 vozes do VoiceArbiter. O server.rs injeta tokens de
+    /// chat (incluindo fragmentos do chat_chunk) como concept_ids — as vozes
+    /// percebem mudanças via `current_generation()` sem precisar de Mutex.
+    pub active_context: Arc<ActiveContext>,
+
+    /// V3.4 — Palavras da última injeção lateral (chat_chunk ou chat one-shot).
+    /// Janela deslizante, máx 8 palavras. Consumida por `gerar_resposta_emergente`
+    /// quando o checkpoint detecta mudança no ActiveContext durante o walk —
+    /// candidatos contidos aqui recebem boost no scoring (Repolarização Sináptica).
+    pub last_lateral_words: VecDeque<String>,
+
+    /// V3.4 — Filtro executivo Go/NoGo + ForceInterrupt. O AtomicBool interno
+    /// (`force_interrupt`) é checado pelo walk em vôo para abortar
+    /// cooperativamente. Compartilhado entre loop neural (escreve) e
+    /// chat handler (lê para enviar evento WS de interrupção).
+    pub go_nogo: Arc<GoNoGoFilter>,
+
     /// Score de compreensão da área de Wernicke [0.0, 1.0].
     /// Alto = input bem compreendido → resposta mais elaborada.
     /// Baixo = input com muitas palavras desconhecidas → Selene faz perguntas.
@@ -387,7 +407,13 @@ pub struct EgoVoiceState {
 }
 
 impl BrainState {
-    pub fn new(swap: Arc<TokioMutex<SwapManager>>, cfg: &Config, sensor_flags: SensorFlags) -> Self {
+    pub fn new(
+        swap: Arc<TokioMutex<SwapManager>>,
+        cfg: &Config,
+        sensor_flags: SensorFlags,
+        active_context: Arc<ActiveContext>,
+        go_nogo: Arc<GoNoGoFilter>,
+    ) -> Self {
         // Pré-carrega léxico → swap_manager (valência inicial dos conceitos)
         if let Ok(content) = std::fs::read_to_string("selene_lexicon.json") {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -709,6 +735,9 @@ impl BrainState {
             acc_conflict: 0.0,
             acc_social_pain: 0.0,
             ofc_value_bias: 0.0,
+            active_context,
+            last_lateral_words: VecDeque::with_capacity(8),
+            go_nogo,
             wernicke_comprehension: 0.5,
             broca_fluency: 0.5,
             oxytocin_level: 0.5,

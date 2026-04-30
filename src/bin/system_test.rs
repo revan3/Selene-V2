@@ -44,6 +44,7 @@ use selene_kernel::{
         inter_lobe::BrainConnections,
         lobe_router::{LobeRouter, EMBED_DIM},
         chunking::ChunkingEngine,
+        active_context::ActiveContext,
     },
     brain_zones::RegionType,
     meta::MetaCognitive,
@@ -811,7 +812,7 @@ fn test_grounding_score_aumenta() -> usize {
     let cfg    = Config::new(ModoOperacao::Normal);
     let swap   = Arc::new(tokio::sync::Mutex::new(SwapManager::new(256, 3600)));
     let flags  = SensorFlags::new_desativados();
-    let mut bs = BrainState::new(swap, &cfg, flags);
+    let mut bs = BrainState::new(swap, &cfg, flags, Arc::new(ActiveContext::new()), Arc::new(selene_kernel::learning::go_nogo::GoNoGoFilter::new()));
 
     // Antes do binding: grounding deve ser 0
     let g_antes = bs.grounding.get("quente").copied().unwrap_or(0.0);
@@ -937,7 +938,7 @@ fn test_grounding_rpe() -> usize {
     let cfg   = Config::new(ModoOperacao::Normal);
     let swap  = Arc::new(tokio::sync::Mutex::new(SwapManager::new(256, 3600)));
     let flags = SensorFlags::new_desativados();
-    let mut bs = BrainState::new(swap, &cfg, flags);
+    let mut bs = BrainState::new(swap, &cfg, flags, Arc::new(ActiveContext::new()), Arc::new(selene_kernel::learning::go_nogo::GoNoGoFilter::new()));
 
     // Coloca palavras no neural_context
     bs.neural_context.push_back("aprender".to_string());
@@ -993,7 +994,7 @@ fn test_grounding_rem_replay() -> usize {
     let cfg   = Config::new(ModoOperacao::Normal);
     let swap  = Arc::new(tokio::sync::Mutex::new(SwapManager::new(256, 3600)));
     let flags = SensorFlags::new_desativados();
-    let mut bs = BrainState::new(swap, &cfg, flags);
+    let mut bs = BrainState::new(swap, &cfg, flags, Arc::new(ActiveContext::new()), Arc::new(selene_kernel::learning::go_nogo::GoNoGoFilter::new()));
 
     // Pré-popula grafo com associações
     if let Ok(mut sw) = bs.swap_manager.try_lock() {

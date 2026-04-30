@@ -31,6 +31,7 @@ use selene_kernel::{
         inter_lobe::BrainConnections,
         lobe_router::LobeRouter,
         chunking::{ChunkingEngine, TipoChunk},
+        active_context::ActiveContext,
     },
     brain_zones::RegionType,
     config::{Config, ModoOperacao},
@@ -1108,7 +1109,7 @@ async fn main() {
     println!("\n⏳ Inicializando BrainState com dados reais...");
     let swap  = Arc::new(TokioMutex::new(SwapManager::new(256, 3600)));
     let flags = SensorFlags::new_desativados();
-    let mut state = BrainState::new(swap, &config, flags);
+    let mut state = BrainState::new(swap, &config, flags, Arc::new(ActiveContext::new()), Arc::new(selene_kernel::learning::go_nogo::GoNoGoFilter::new()));
     println!("✓ BrainState carregado.");
 
     benchmark_neural(&config);

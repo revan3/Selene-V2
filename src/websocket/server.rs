@@ -189,6 +189,14 @@ fn gerar_resposta_emergente(
     estado_corpo: &[f32; 5],
     template_scaffold: &[String],
     trigrama_cache: &HashMap<(String, String), Vec<String>>,
+    // V3.4 — Recálculo em Voo. Quando `active_context` é Some, o walk verifica
+    // mudança de geração a cada 3 palavras. Se mudou, candidatos contidos em
+    // `lateral_words` recebem boost de score (Repolarização Sináptica).
+    active_context: Option<&std::sync::Arc<crate::learning::active_context::ActiveContext>>,
+    lateral_words: &[String],
+    // V3.4 Fase E — AtomicBool compartilhado com GoNoGoFilter. Quando setado,
+    // o walk encerra cooperativamente no próximo checkpoint (ForceInterrupt).
+    force_abort: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> String {
     // P4: extrai sinalizadores do estado corporal
     // noradrenalina (idx 2) alta → arousal → prefere grounding
@@ -367,6 +375,16 @@ fn gerar_resposta_emergente(
     // Evita reconstrução O(frases×trigramas) a cada resposta.
     let trigrama_bonus = trigrama_cache;
 
+    // V3.4 — Checkpoint para Recálculo em Voo (Diretriz 3).
+    // A cada CHECKPOINT_EVERY palavras geradas, verifica se o ActiveContext mudou
+    // (nova injeção lateral via chat_chunk). Se mudou, ativa boost de scoring
+    // para palavras em `lateral_words` — Repolarização Sináptica.
+    const CHECKPOINT_EVERY: u32 = 3;
+    let mut last_ctx_gen: u64 = active_context.map(|c| c.current_generation()).unwrap_or(0);
+    let mut lateral_active: bool = false;
+    let mut palavras_geradas: u32 = 0;
+    let mut repolarizacoes: u32 = 0;
+
     for _ in 0..n_passos {
         if visitados.contains(&atual) { break; }
         visitados.insert(atual.clone());
@@ -464,12 +482,50 @@ fn gerar_resposta_emergente(
                     if let Some(&qv2) = qvalores.get(b.0.as_str()) {
                         s2 -= (qv2 * 0.20).clamp(-0.20, 0.20);
                     }
+                    // V3.4 Repolarização Sináptica: se um checkpoint detectou
+                    // mudança no ActiveContext, candidatos contidos nas
+                    // `lateral_words` recebem boost forte (-0.40) — efetivamente
+                    // redirecionando o final da frase em direção à nova variável.
+                    if lateral_active && !lateral_words.is_empty() {
+                        if lateral_words.iter().any(|w| w == &a.0) { s1 -= 0.40; }
+                        if lateral_words.iter().any(|w| w == &b.0) { s2 -= 0.40; }
+                    }
                     s1.partial_cmp(&s2).unwrap_or(std::cmp::Ordering::Equal)
                 });
             match prox {
                 Some(entry) => {
                     caminho_out.push(atual.clone()); // registra aresta atual→prox
                     atual = entry.0.clone();
+                    palavras_geradas += 1;
+
+                    // V3.4 Checkpoint a cada CHECKPOINT_EVERY palavras: lê
+                    // `current_generation` do ActiveContext (atomic, lock-free).
+                    // Se mudou desde a última leitura → uma nova variável foi
+                    // injetada (chat_chunk lateral) → ativa boost para refletir
+                    // a mudança no resto do walk.
+                    if palavras_geradas % CHECKPOINT_EVERY == 0 {
+                        // Fase E: ForceInterrupt — aborto cooperativo. Sai do walk
+                        // imediatamente, deixando o caller decidir como tratar
+                        // (chat_interrupt event, log de pensamento interno, etc).
+                        if let Some(flag) = force_abort {
+                            if flag.load(std::sync::atomic::Ordering::Acquire) {
+                                println!("⚡ [ForceInterrupt] Walk abortado em {} palavras", palavras_geradas);
+                                break;
+                            }
+                        }
+                        if let Some(ctx) = active_context {
+                            let cur_gen = ctx.current_generation();
+                            if cur_gen != last_ctx_gen {
+                                last_ctx_gen = cur_gen;
+                                lateral_active = true;
+                                repolarizacoes += 1;
+                            } else {
+                                // Decai gradualmente: o boost dura ~6 palavras antes
+                                // de desligar, para não dominar toda a frase.
+                                lateral_active = false;
+                            }
+                        }
+                    }
                 }
                 // Sem vizinhos disponíveis: para o walk aqui.
                 // Não pula para palavra aleatória — evita deriva semântica.
@@ -479,6 +535,11 @@ fn gerar_resposta_emergente(
             // Palavra sem arestas no grafo: encerra o walk.
             break;
         }
+    }
+    // Telemetria: log esparso quando houve repolarização.
+    if repolarizacoes > 0 {
+        println!("🔁 [Repolarização Sináptica] {} checkpoints ativados durante walk de {} passos",
+            repolarizacoes, n_passos);
     }
 
     // 4. Cadeia curta — complementa com palavra do estado emocional
@@ -1059,6 +1120,8 @@ pub async fn handle_connection(
                             &state.ultimo_estado_corpo,
                             &scaffold_esp,
                             &state.trigrama_cache,
+                            // Pensamento espontâneo: sem injeção lateral nem abort.
+                            None, &[], None,
                         );
                         if !reply.is_empty() {
                             let event_type = if e_curiosidade { "curiosidade_espontanea" } else { "pensamento_espontaneo" };
@@ -1242,6 +1305,56 @@ pub async fn handle_connection(
                                     println!("[SENSOR] {} → {}", sensor, if active { "ATIVO" } else { "INATIVO" });
                                 }
 
+                                Some("chat_chunk") => {
+                                    // V3.4 — Escuta Ativa: fragmento de input streaming.
+                                    // Cliente envia múltiplos chunks enquanto digita/fala;
+                                    // cada chunk é injetado no ActiveContext via Atomics
+                                    // (sem Mutex no caminho quente). As 4 vozes percebem a
+                                    // mudança via current_generation() e podem reavaliar
+                                    // sua deliberação em pleno voo (Repolarização Sináptica).
+                                    let texto = json["text"].as_str()
+                                        .or_else(|| json["fragment"].as_str())
+                                        .or_else(|| json["transcript"].as_str())
+                                        .unwrap_or("");
+                                    let is_final = json["final"].as_bool().unwrap_or(false);
+                                    if !texto.is_empty() {
+                                        // Tokeniza e injeta no ActiveContext.
+                                        let tokens: Vec<&str> = texto
+                                            .split(|c: char| !c.is_alphanumeric())
+                                            .filter(|t| t.len() > 1)
+                                            .collect();
+                                        let (ctx_clone, current_tick) = {
+                                            let mut bs = brain.lock().await;
+                                            // V3.4: também atualiza last_lateral_words para
+                                            // alimentar a Repolarização Sináptica do walk em
+                                            // voo (Diretriz 3 — Recálculo em Voo).
+                                            for tok in &tokens {
+                                                let w = tok.to_lowercase();
+                                                if bs.last_lateral_words.len() >= 8 {
+                                                    bs.last_lateral_words.pop_front();
+                                                }
+                                                bs.last_lateral_words.push_back(w);
+                                            }
+                                            (bs.active_context.clone(), bs.atividade.0)
+                                        };
+                                        let injected = crate::learning::active_context::inject_tokens(
+                                            &ctx_clone, &tokens, 0.85, current_tick,
+                                        );
+                                        // ACK opcional para o cliente.
+                                        let ack = serde_json::json!({
+                                            "event": "chunk_ack",
+                                            "tokens": injected,
+                                            "final": is_final,
+                                            "id": json["id"].as_str().unwrap_or(""),
+                                        }).to_string();
+                                        if ws_tx.send(Message::text(ack)).await.is_err() { break; }
+                                        if is_final {
+                                            println!("💬 [CHUNK final] {} tokens injetados (gen={})",
+                                                injected, ctx_clone.current_generation());
+                                        }
+                                    }
+                                }
+
                                 Some("chat") | Some("audio_chat") => {
                                     // Mensagem de chat vinda da interface mobile/desktop.
                                     // audio_chat: interface enviou bandas FFT fonéticas do texto digitado.
@@ -1277,6 +1390,22 @@ pub async fn handle_connection(
                                     let msg_id = json["id"].as_str().map(|s| s.to_string());
 
                                     if !mensagem.is_empty() {
+                                        // V3.4: injeta tokens da mensagem no ActiveContext —
+                                        // alimenta as 4 vozes do VoiceArbiter mesmo quando o
+                                        // cliente envia chat one-shot (sem chat_chunk).
+                                        {
+                                            let tokens: Vec<&str> = mensagem
+                                                .split(|c: char| !c.is_alphanumeric())
+                                                .filter(|t| t.len() > 1)
+                                                .collect();
+                                            let (ctx_clone, current_tick) = {
+                                                let bs = brain.lock().await;
+                                                (bs.active_context.clone(), bs.atividade.0)
+                                            };
+                                            crate::learning::active_context::inject_tokens(
+                                                &ctx_clone, &tokens, 0.9, current_tick,
+                                            );
+                                        }
                                         // ── Fase 1: thinking event imediato (antes do lock) ───
                                         // Cliente recebe feedback visual ANTES de esperar o lock.
                                         // Elimina a percepção de "interface travada" em respostas lentas.
@@ -1742,6 +1871,13 @@ pub async fn handle_connection(
                                             }
                                             ctx
                                         };
+                                        // V3.4 — Recálculo em Voo: passa o ActiveContext para
+                                        // que o walk possa detectar novas variáveis injetadas
+                                        // durante a geração da resposta (chat_chunk).
+                                        let v34_active_ctx = Arc::clone(&state.active_context);
+                                        let v34_lateral_words: Vec<String> =
+                                            state.last_lateral_words.iter().cloned().collect();
+                                        let v34_abort_flag = Arc::clone(&state.go_nogo.force_interrupt);
                                         let reply = gerar_resposta_emergente(
                                             &mensagem, diversity_seed, emocao_resposta,
                                             emocao_bias, n_passos,
@@ -1770,7 +1906,26 @@ pub async fn handle_connection(
                                             &state.ultimo_estado_corpo,
                                             &scaffold_chat,
                                             &state.trigrama_cache,
+                                            Some(&v34_active_ctx),
+                                            &v34_lateral_words,
+                                            Some(&v34_abort_flag),
                                         );
+
+                                        // V3.4 Fase E: se ForceInterrupt foi disparado durante o
+                                        // walk, sinaliza ao cliente e zera o flag para o próximo chat.
+                                        let was_interrupted =
+                                            v34_abort_flag.load(std::sync::atomic::Ordering::Acquire);
+                                        if was_interrupted {
+                                            let kind = state.go_nogo.last_kind();
+                                            state.go_nogo.clear_interrupt();
+                                            let interrupt_msg = serde_json::json!({
+                                                "event": "chat_interrupt",
+                                                "kind":  format!("{:?}", kind),
+                                                "id":    msg_id,
+                                            }).to_string();
+                                            let _ = ws_tx.send(Message::text(interrupt_msg)).await;
+                                            println!("⚡ [chat_interrupt → cliente] tipo={:?}", kind);
+                                        }
 
                                         // ── LOG DE AJUSTE FINO ──────────────────────────────
                                         {
@@ -3957,6 +4112,11 @@ pub async fn handle_connection(
                                     ctx.extend(state.frontal_goal_words.iter().cloned());
                                     ctx
                                 };
+                                // V3.4 — Recálculo em Voo via ActiveContext.
+                                let v34_active_ctx2 = Arc::clone(&state.active_context);
+                                let v34_lateral_words2: Vec<String> =
+                                    state.last_lateral_words.iter().cloned().collect();
+                                let v34_abort_flag2 = Arc::clone(&state.go_nogo.force_interrupt);
                                 let reply = gerar_resposta_emergente(
                                     &text, diversity_seed, emocao_resp,
                                     emocao_bias, n_passos,
@@ -3977,6 +4137,9 @@ pub async fn handle_connection(
                                     &state.ultimo_estado_corpo,
                                     &scaffold_s,
                                     &state.trigrama_cache,
+                                    Some(&v34_active_ctx2),
+                                    &v34_lateral_words2,
+                                    Some(&v34_abort_flag2),
                                 );
                                 // ── LOG ─────────────────────────────────────────
                                 {

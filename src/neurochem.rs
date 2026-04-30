@@ -140,6 +140,9 @@ impl NeuroChem {
 
         // Dopamina - CORRIGIDO: todos os modos cobertos
         let target_dopa = match config.modo {
+            // V3.4 Fase F: Quiescência libera dopa baixíssima — Selene em modo
+            // descanso só sustenta atividade tônica mínima.
+            ModoOperacao::Quiescencia => (ram_usage / 130.0).clamp(0.2, 0.6),
             ModoOperacao::Economia => (ram_usage / 110.0).clamp(0.3, 0.8),
             ModoOperacao::Humano | ModoOperacao::Normal => (ram_usage / 100.0).clamp(0.5, 1.0),
             ModoOperacao::Boost200 | ModoOperacao::Turbo => (ram_usage / 90.0).clamp(0.6, 1.2),
@@ -154,6 +157,7 @@ impl NeuroChem {
 
         // Noradrenalina - CORRIGIDO: todos os modos cobertos
         self.noradrenaline = match config.modo {
+            ModoOperacao::Quiescencia => (temp / 130.0).clamp(0.2, 0.6),
             ModoOperacao::Economia => (temp / 110.0).clamp(0.3, 0.8),
             ModoOperacao::Humano | ModoOperacao::Normal => (temp / 100.0).clamp(0.5, 1.0),
             ModoOperacao::Boost200 | ModoOperacao::Turbo => (temp / 95.0).clamp(0.6, 1.1),

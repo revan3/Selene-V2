@@ -70,6 +70,9 @@ use learning::rl::ReinforcementLearning;
 // Sinapses inter-lobe e atenção seletiva
 use learning::inter_lobe::BrainConnections;
 use learning::attention::AttentionGate;
+use learning::active_context::ActiveContext;
+use learning::voices::{VoiceArbiter, VoiceTick, VoteAction};
+use learning::go_nogo::{GoNoGoFilter, GoNoGoDecision, InterruptKind};
 use learning::lobe_router::{LobeRouter, LobeId};
 
 // Imports dos novos módulos
@@ -346,8 +349,29 @@ async fn async_main() {
     let mut rl = ReinforcementLearning::restaurar_ou_novo("selene_qtable.bin");
     // Sinapses inter-lobe com STDP — vias de longa distância entre regiões
     let mut brain_conn = BrainConnections::new(n_neurons);
-    // Gate de atenção seletiva (bottom-up saliência + top-down frontal)
+    // Gate de atenção seletiva (bottom-up saliência + top-down frontal) — V3.3.
     let mut attention = AttentionGate::new(n_neurons);
+
+    // ── V3.4 Multi-Self: 4 vozes paralelas (Exército de Idiotas) ─────────────────
+    // ActiveContext compartilhado: comunicação inter-vozes via Atomics
+    // (sem Mutex no caminho quente do loop 200Hz no Ryzen 3500U).
+    let active_context = std::sync::Arc::new(ActiveContext::new());
+    // VoiceArbiter contém as 4 vozes (Analítica/Censor/Dopamina/Criativa) e
+    // arbitra um Verdict polifônico por tick. Telemetria via Atomics.
+    let mut voice_arbiter = VoiceArbiter::new(n_neurons);
+    let arbiter_telemetry = voice_arbiter.telemetry.clone();
+    // Filtro executivo Go/NoGo + ForceInterrupt (Fase E). O AtomicBool
+    // `force_interrupt` é compartilhado com o walk de gerar_resposta_emergente,
+    // que aborta cooperativamente se setado. Sem Mutex no caminho quente.
+    let go_nogo = std::sync::Arc::new(GoNoGoFilter::new());
+    println!(
+        "🎭 Multi-Self V3.4: VoiceArbiter online — 4 vozes (peso A:1.0 C:0.8 D:0.7 Cr:0.4) | ctx_slots={}",
+        learning::active_context::CONTEXT_SLOTS
+    );
+    println!(
+        "🚦 Go/NoGo online — urgency_threshold={:.2} confidence_floor={:.2}",
+        go_nogo.urgency_threshold, go_nogo.confidence_floor
+    );
     // Roteador dinâmico de lóbulos — decide quais constelações ativar por tick.
     // Especialização emerge via competitive Hebbian learning nas chaves de cada lóbulo.
     let mut lobe_router = LobeRouter::new();
@@ -402,7 +426,13 @@ async fn async_main() {
     // --- 11. INICIAR SERVIDOR WEB INTEGRADO ---
     println!("🌐 Iniciando interface neural integrada...");
     
-    let brain_state = Arc::new(TokioMutex::new(BrainState::new(Arc::clone(&swap_manager), &config, sensor_flags)));
+    let brain_state = Arc::new(TokioMutex::new(BrainState::new(
+        Arc::clone(&swap_manager),
+        &config,
+        sensor_flags,
+        Arc::clone(&active_context),
+        Arc::clone(&go_nogo),
+    )));
     // Injeta o storage de ondas e inicializa o schema wave-first
     {
         let mut bs = brain_state.lock().await;
@@ -760,6 +790,20 @@ async fn async_main() {
         // Top-down bias: frontal direciona onde olhar (supressão de V1 durante deliberação)
         attention.set_topdown(&prev_frontal_rates);
         let retina_attended = attention.attend(&retina_input, dt * 1000.0);
+
+        // ── V3.4: popula ActiveContext com o foco atencional do tick (a cada 25 ticks
+        // ~ 8Hz, suficiente para o arbiter perceber mudança sem saturar o context).
+        // Quando o canal_foco está acima de saliência mínima, vira concept_id virtual.
+        if step % 25 == 0 {
+            let foco = attention.canal_foco;
+            let nivel = attention.nivel_atencao;
+            if nivel > 0.2 && foco < n_neurons {
+                // concept_id derivado do canal foco — não colide com IDs reais
+                // (que vêm do swap_manager) porque adicionamos offset alto.
+                let virtual_cid = 0xF000_0000u32 | (foco as u32 & 0x0FFF_FFFF);
+                active_context.inject_concept(virtual_cid, nivel.clamp(0.0, 1.0));
+            }
+        }
 
         // Top-down suppression: quando frontal está deliberando (foco interno), atenua V1
         let suppression_mean = frontal.suppression_signal.iter().sum::<f32>()
@@ -1460,6 +1504,33 @@ async fn async_main() {
             let d1 = &temporal.depth_stack.d1;
             let src_len = d1.len().min(h_len);
             prev_hippo_rates[..src_len].copy_from_slice(&d1[..src_len]);
+        }
+
+        // ── V3.4: arbitragem polifônica das 4 vozes (telemetria por enquanto).
+        // O Verdict é exposto via Atomics para o Go/NoGo (Fase E) consumir.
+        // Skip interno se ActiveContext não mudou — economiza ciclos no Ryzen 3500U.
+        {
+            let voice_tick = VoiceTick {
+                ctx:           &active_context,
+                reward:        rl.recompensa_media_recente(10).clamp(0.0, 1.0),
+                dopamine:      neuro.dopamine,
+                serotonin:     neuro.serotonin,
+                tick:          step as u64,
+                frontal_rates: &prev_frontal_rates,
+                quiescencia:   matches!(config.modo, ModoOperacao::Quiescencia),
+            };
+            let verdict = voice_arbiter.arbitrate(&retina_attended, &voice_tick);
+            // V3.4 — Fase E: filtro executivo Go/NoGo. Pode setar
+            // `force_interrupt` (AtomicBool) lido pelo walk em vôo.
+            let decision = go_nogo.evaluate(&verdict);
+            // Log esparso (a cada 1000 ticks ~ 5s) quando há voto não-trivial.
+            if step % 1000 == 0 && verdict.action != VoteAction::Abstain {
+                println!("🎭 {} → decisão={:?}", voice_arbiter.debug_summary(), decision);
+            }
+            if matches!(decision, GoNoGoDecision::ForceInterrupt { .. }) {
+                let kind = go_nogo.last_kind();
+                println!("⚡ ForceInterrupt disparado: {:?} (urg={:.2})", kind, verdict.urgency);
+            }
         }
 
         // P3 — depth_stack D1/D2 → neural_context (a cada 100 ticks ≈ 0.5s).

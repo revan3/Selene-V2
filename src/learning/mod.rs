@@ -12,3 +12,6 @@ pub mod templates;
 pub mod pattern_engine;
 pub mod ontogeny;
 pub mod multimodal;
+pub mod active_context;
+pub mod voices;
+pub mod go_nogo;
