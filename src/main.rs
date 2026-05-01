@@ -602,8 +602,8 @@ async fn async_main() {
             // Biologicamente: projeções colinérgicas do núcleo basal → CA1/CA3.
             // Efeito: ACh alta reduz cortisol efetivo no hipocampo (neurônios mais sensíveis).
             let cor_hippo = (cor * (1.0 - neuro.acetylcholine * 0.3)).clamp(0.0, 1.0);
-            hippocampus.ca1_encoding.modular_neuro(da, ser * neuro.acetylcholine.clamp(0.5, 1.2), cor_hippo);
-            hippocampus.ca3_recurrent.modular_neuro(da, ser, cor_hippo);
+            hippocampus.ca1_encoding.modular_neuro_v3(da, ser * neuro.acetylcholine.clamp(0.5, 1.2), cor_hippo, ach);
+            hippocampus.ca3_recurrent.modular_neuro_v3(da, ser, cor_hippo, ach);
             parietal.integration_layer.modular_neuro_v3(da, ser, cor, ach);
             cerebelo.purkinje_layer.modular_neuro_v3(da, ser, cor, ach);
             cerebelo.granular_layer.modular_neuro_v3(da, ser, cor, ach);

@@ -1110,9 +1110,13 @@ impl BrainState {
     /// Propaga RPE ao grounding das palavras no neural_context.
     /// RPE > 0 (predição correta) → grounding aumenta.
     /// RPE < 0 (predição errada) → grounding diminui levemente.
+    /// Usa as 8 palavras MAIS RECENTES (final da fila) — relevantes ao tick atual.
     pub fn grounding_rpe(&mut self, rpe: f32) {
         if rpe.abs() < 0.05 { return; }
-        let palavras: Vec<String> = self.neural_context.iter().cloned().take(8).collect();
+        // VecDeque: push_back insere no fim → últimas N são as mais recentes.
+        // rev().take(8) pega as 8 últimas em ordem inversa (irrelevante p/ RPE).
+        let palavras: Vec<String> = self.neural_context.iter()
+            .rev().take(8).cloned().collect();
         for w in palavras {
             let g = self.grounding.entry(w).or_insert(0.0);
             if rpe > 0.0 {

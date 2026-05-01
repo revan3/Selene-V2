@@ -3474,6 +3474,12 @@ pub async fn handle_connection(
                                     let mut state = brain.lock().await;
                                     let reforcos;
 
+                                    // Propaga feedback como RPE direto: grounding das palavras
+                                    // recentes do contexto se reforça (👍) ou enfraquece (👎).
+                                    // Também atualiza ultimo_rpe para o próximo tick neural usar.
+                                    state.grounding_rpe(valence);
+                                    state.ultimo_rpe = valence;
+
                                     if valence > 0.0 {
                                         // Reforço: reforça as arestas do último walk
                                         let caminho = state.ultimo_caminho_walk.clone();

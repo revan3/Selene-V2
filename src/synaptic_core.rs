@@ -873,7 +873,11 @@ impl EstadoCanaisExtras {
             stp:                SinapseSTP::para_tipo(tipo),
             burst_remaining_ms: 0.0,
             dan_hyperpol_ms:    0.0,
-            chin_window_open:   false,
+            // Default true: janela DA-STDP aberta quando nenhum ChIN existe/ativa.
+            // CamadaHibrida sobrescreve via chin_paused antes de cada update paralelo
+            // (Pre-tick B). Sem isso, neurônios isolados (testes, ou layers sem ChIN
+            // no pool) nunca consolidam por dopamina — bug que zerava o 3º fator STDP.
+            chin_window_open:   true,
             ca_nmda_max:        2.0,
         }
     }
