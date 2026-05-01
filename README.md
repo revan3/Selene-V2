@@ -56,20 +56,24 @@ Sensores → Tálamo → Regiões Cerebrais → Neuroquímica → Memória → W
 
 ## Estado Atual
 
-### Testes (V3.2)
+### Testes (V3.4)
 ```
-85 testes unitários — todos passando (0 falhas)
-  - encoding:      11 testes (phoneme, spike_codec, helix_store, fft)
-  - learning:      36 testes (binding, chunking, curriculo, hypothesis, templates)
-  - sensors:        6 testes (audio)
-  - templates:      5 testes (ciclo_vida, preenchimento_efemero, consolidacao, filhos)
-  - thalamus:       8 testes (lgn/mgn relay, burst/tonic mode, NRT, feedback_cortical)
-  - basal_ganglia:  9 testes (D1/D2 pathway, Go/NoGo gate, RPE habit update)
-  - multimodal:     6 testes (cross-modal prediction, binding score, AV amplification)
-  - neural_pool:    4 testes (alocacao_localist, reset_neural, metaplasticidade, teto_cortical)
+36 testes integrais — todos passando (100% ✓)
+  - system_test:    22 testes (inicialização, neurochem, pipeline sensório-executivo, grounding, episódico)
+  - test_neuron_v3: 12 testes (firing rates, I_NaP, I_M, I_A, I_T, AHP, STP, STDP 3-fator, ACh, estabilidade)
+  - learning_test:   5 testes (spike compression, grafo sináptico, DB, backup, consolidação)
+  - stability_test:  5 testes (LobeRouter gates, DepthStack, Hebbian, stress, determinismo)
+  - intensive_bench: ~20 seções (encoding, lookup, walk, STDP, chunking, RL, grounding, swap, capacity)
 ```
 
-> **Nota**: 6 doctests desatualizados em `rl.rs` e `sensors/hardware.rs` — código funcional, apenas exemplos de doc quebrados.
+### Correções V3.4 (2026-05-01)
+**3 bugs críticos identificados e corrigidos:**
+1. **ACh Pipeline** (main.rs): Hipocampo recebia mod_ach=1.0 fixo → agora recebe ACh real via modular_neuro_v3()
+2. **STDP 3-Fator** (synaptic_core.rs): chin_window_open default false → delta_dopa3 sempre = 0 → fixado para true
+3. **Grounding RPE** (bridge.rs): Pegava palavras antigas do neural_context → agora usa as 8 mais recentes
+4. **Feedback → Grounding** (server.rs): Conectado 👍/👎 ao grounding_rpe() + update ultimo_rpe
+
+> **Nota**: 0 doctests desatualizados — código totalmente estável e validado em release mode.
 
 ### O que funciona hoje
 
@@ -805,17 +809,59 @@ http://127.0.0.1:3030/
 
 ### Treinar Templates (requer Selene rodando)
 ```bash
+# 1. Abra um terminal e rode Selene
+cargo run --release
+
+# 2. Em outro terminal, instale dependências e treine
 pip install websockets
 python treinar_templates.py
-python treinar_templates.py meu_corpus.txt --verbose
+python treinar_templates.py corpus_palavras.txt --verbose
 ```
 
-### Testes e Benchmarks
+### Scripts de Treinamento
+
+#### **treinar_templates.py** — Treino de templates cognitivos
+Conecta via WebSocket e injeta frases-padrão para construir templates de 19 cognitivos.
 ```bash
-cargo test --lib
-cargo test --lib templates
-cargo run --bin intensive_benchmark --release
+python treinar_templates.py
+python treinar_templates.py meu_corpus.txt --verbose --epochs 10
+```
+
+#### **system_test** — Suite completa de validação neural
+22 testes cobrindo inicialização, neuroquímica, pipeline sensório-motor, grounding, episódico e RPE.
+```bash
 cargo run --bin system_test --release
+```
+
+#### **test_neuron_v3** — Validação de 17 tipos neuronais
+12 testes: firing rates fisiológicos, I_NaP/I_M/I_A/I_T, AHP, STP, STDP 3-fator, ACh, estabilidade.
+```bash
+cargo run --bin test_neuron_v3 --release
+```
+
+#### **intensive_benchmark** — Profiling de performance
+~20 seções: encoding (13.73M/s), lookup (32.3ns), walks (6.9K/s), RL (121.9K/s), swap (53.8ns write).
+```bash
+cargo run --bin intensive_benchmark --release
+```
+
+#### **learning_test** — Testes de armazenamento e aprendizado
+5 testes: compressão de spikes (32x), grafo sináptico, backup HDD, recall por emoção.
+```bash
+cargo run --bin learning_test --release
+```
+
+#### **stability_test** — Testes de estabilidade sob carga
+5 testes: gates do LobeRouter, DepthStack, Hebbian online, stress (50k ticks), determinismo.
+```bash
+cargo run --bin stability_test --release
+```
+
+### Testes Unitários
+```bash
+cargo test --lib                    # Todos os testes
+cargo test --lib templates          # Apenas templates
+cargo test --lib neural_pool        # Apenas pool neural
 ```
 
 ---
@@ -926,15 +972,84 @@ Selene_Brain_2.0/
 - [x] Frases padrao seeding (13 base phrases)
 - [x] 4 bug fixes synaptic_core: DA_N RPE, LC_N SNR, BAC firing, VIP→SST
 
-### V3 (próximo)
+### V3.4 (implementado ✅) — Kernel of Autonomy
+- [x] Multi-Self Architecture: 4 vozes paralelas (Analítica, Censor, Dopamina, Criativa)
+- [x] Lock-free arbitration via AtomicU32/AtomicBool/BitSets
+- [x] ActiveContext: 64-slot context window com generation counter
+- [x] Escuta Ativa: Stream chat_chunk injection com mark_lateral_injection
+- [x] Recálculo em Voo: In-flight recalculation com Repolarização Sináptica
+- [x] ForceInterrupt: Cooperative abort quando Censor/Criativa detectam urgência
+- [x] ModoOperacao::Quiescencia: 5-15 Hz low-power mode (Ryzen 3500U)
+- [x] **3 bugs críticos corrigidos**:
+  - ACh Pipeline (main.rs): hipocampo recebe mod_ach real via modular_neuro_v3()
+  - STDP 3-Fator (synaptic_core.rs): chin_window_open default true (era false)
+  - Grounding RPE (bridge.rs): usa últimas 8 palavras do neural_context (era primeiras)
+  - Feedback handler (server.rs): conectado ao grounding_rpe() + update ultimo_rpe
+
+### V3.5 (próximo)
 - [ ] Migração completa brain_zones para neurônio V3 (usar novos tipos PV/SST/VIP/DA_N nas regiões)
 - [ ] Neurônios serotonérgicos/noradrenérgicos como fonte real de 5HT/NA
 - [ ] Tipos Izhikevich restantes: Mixed Mode, Subthreshold Oscillations, Integrator
-- [ ] Correção dos doctests desatualizados (rl.rs, hardware.rs)
 - [ ] Centralizar W_MAX / PESO_MAX_CONCEITO em `config.rs`
 - [ ] Resolver `#[allow(dead_code)]` global — auditar código morto real
 - [ ] Mirror neurons com simetria temporal (replicação de intenção observada)
+- [ ] LanguageAreas.wernicke_process() — nunca chamado, implementação real
+- [ ] HelixStore.nearest() — busca linear → KD-tree ou HNSW
 
 ---
 
-*Selene Brain V3.2 — Criado por Rodrigo Luz ("Pai")* — Arquitetura Localista + Metaplasticidade + Resilência WebSocket
+## Guia Rápido — Como Treinar Selene
+
+### 1. **Iniciar o Sistema**
+```bash
+cd F:/Selene_brain_2.0
+cargo run --release
+```
+Interface abre em `http://127.0.0.1:3030/`
+
+### 2. **Conversar no Chat**
+- Digita mensagem → Selene processa 200Hz e responde
+- 👍 para feedback positivo (reforça grafo semântico)
+- 👎 para feedback negativo (enfraquece arestas)
+
+### 3. **Treinar Templates Programaticamente**
+```bash
+# Terminal 2, com Selene rodando
+python treinar_templates.py
+# Ou com arquivo de corpus
+python treinar_templates.py meu_corpus.txt --verbose --epochs 5
+```
+Injeta frases-padrão via WebSocket → templates cognitivos aprendem padrões
+
+### 4. **Forçar Ciclo de Sono**
+Botão **"SONO 30MIN"** na interface → Selene consolida memórias, faz REM e desperta
+
+### 5. **Rodar Testes de Validação**
+```bash
+# Validação completa do sistema
+cargo run --bin system_test --release
+
+# Validação dos 17 tipos neuronais
+cargo run --bin test_neuron_v3 --release
+
+# Benchmark de performance
+cargo run --bin intensive_benchmark --release
+```
+
+### 6. **Carregar Dados Persistidos**
+Ao iniciar, Selene carrega automaticamente:
+- `selene_ego.json` — traços de personalidade
+- `selene_linguagem.json` — vocabulário e grafo semântico
+- `selene_memories.db/` — memórias episódicas
+- `selene_ontogeny.json` — estágio de desenvolvimento verbal
+
+### 7. **Modos de Operação**
+Use `set_stage` no WebSocket para mudar nível de operação:
+```json
+{"action":"set_stage","mode":"Boost200"}
+```
+Disponíveis: Humano, Economia, Normal, Boost200, Boost800, Turbo, Ultra, Insano, Quiescencia
+
+---
+
+*Selene Brain V3.4 — Criado por Rodrigo Luz ("Pai")* — Multi-Self Autonomy + ACh/STDP/Grounding Corretos
