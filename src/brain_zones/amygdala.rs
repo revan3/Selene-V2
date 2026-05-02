@@ -124,6 +124,7 @@ impl Amygdala {
         dt: f32,
         current_time: f32,
         config: &Config,
+        oxytocin_gate: Option<f32>,
     ) -> (f32, f32) {
         let t_ms = current_time * 1000.0;
         let mut rng = thread_rng();
@@ -152,7 +153,9 @@ impl Amygdala {
 
         // 4. Fear signal: BLA rate - extinção
         let raw_fear = (bla_rate - self.extinction_trace * 0.6).max(0.0);
-        self.fear_signal = (self.fear_signal * 0.88 + raw_fear * 0.12).clamp(0.0, 1.0);
+        // Oxytocin inactivates BLA (Kirsch 2005) — gate [0.3, 1.0]
+        let raw_fear_gated = raw_fear * oxytocin_gate.unwrap_or(1.0);
+        self.fear_signal = (self.fear_signal * 0.88 + raw_fear_gated * 0.12).clamp(0.0, 1.0);
 
         // 5. Condicionamento contextual: medo repetido consolida
         if self.fear_signal > FEAR_THRESHOLD {

@@ -1369,8 +1369,9 @@ async fn async_main() {
             // Roda a cada 5 ticks — muda mais lentamente que o tick neural.
             if step % 5 == 0 {
                 let amy_inhib_acc = cingulate.amygdala_inhibition();
+                let ot_gate = Some(neuro.oxytocin_bla_gate());
                 let (fear_sig, arousal_boost) = amygdala.update(
-                    emotion, amy_inhib_acc, neuro.noradrenaline, dt, current_time, &config
+                    emotion, amy_inhib_acc, neuro.noradrenaline, dt, current_time, &config, ot_gate
                 );
                 // CeA → cortisol: medo ativa eixo HPA
                 let cortisol_drive = amygdala.cortisol_drive();
