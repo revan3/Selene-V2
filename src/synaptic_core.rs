@@ -912,6 +912,11 @@ pub struct NeuronioHibrido {
     /// Injetado pelo CamadaHibrida ou chamador antes de cada tick.
     /// Consumido (resetado para 0.0) ao final de update().
     pub input_apical:  f32,
+
+    /// BDNF concentration [0.0, 2.0] — mediador early→late LTP (Turrigiano 2022).
+    /// Incrementado quando delta_ltp > 0. Amplifica eligibility trace (up 2x).
+    /// Decai com τ=30s. Convertido para late-LTP em reconsolidacao.rs quando > threshold.
+    pub bdnf:          f32,
 }
 
 impl NeuronioHibrido {
@@ -939,6 +944,7 @@ impl NeuronioHibrido {
             modelo:        ModeloDinamico::para_tipo(tipo),
             extras:        Box::new(EstadoCanaisExtras::para_tipo(tipo)),
             input_apical:    0.0,
+            bdnf:            0.0,
         }
     }
 
@@ -1112,12 +1118,21 @@ impl NeuronioHibrido {
                 1.0 + BCM_RATE * deficit.min(5.0)
             };
 
-            let elig_bump = ELIG_RATE * self.extras.ca_nmda * bcm_mod.max(0.0);
+            // BDNF amplifies eligibility uptake (early→late LTP mediator)
+            let bdnf_amp = (1.0 + self.bdnf * 0.5).min(2.0); // up to 2x boost
+            let elig_bump = ELIG_RATE * self.extras.ca_nmda * bcm_mod.max(0.0) * bdnf_amp;
             self.extras.elig_trace = (self.extras.elig_trace + elig_bump).min(1.0);
 
             let hz_atual = 1000.0 / dt_ms;
             let ltd_threshold = crate::config::janela_stdp_atual(hz_atual);
             let delta_ltp = LTP_RATE * self.trace_pre * bcm_mod.max(0.1);
+
+            // BDNF release: proportional to LTP induction (Turrigiano 2022)
+            if delta_ltp > 0.0 {
+                const BDNF_RELEASE_RATE: f32 = 0.15; // molar equivalents
+                self.bdnf = (self.bdnf + BDNF_RELEASE_RATE * delta_ltp).min(2.0);
+            }
+
             let delta_ltd = if self.trace_pre < ltd_threshold {
                 -LTD_RATE * (1.0 - self.trace_pre) / bcm_mod.max(0.1)
             } else { 0.0 };
@@ -1158,6 +1173,10 @@ impl NeuronioHibrido {
         // ── 12. Decaimentos finais ────────────────────────────────────────
         self.extras.elig_trace *= (-dt_ms / TAU_ELIG_MS).exp();
         self.extras.ca_nmda   *= (-dt_ms / TAU_NMDA_CA_MS).exp();
+
+        // BDNF decay: τ = 30s (slow consolidation window)
+        const TAU_BDNF_MS: f32 = 30_000.0;
+        self.bdnf *= (-dt_ms / TAU_BDNF_MS).exp();
 
         // ── 13. Threshold retorna ao padrão ──────────────────────────────
         let tb = self.tipo.threshold_padrao();

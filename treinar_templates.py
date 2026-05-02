@@ -195,7 +195,7 @@ async def treinar(frases: list[str], uri: str, delay: float, verbose: bool):
             t0 = time.time()
 
             for i, frase in enumerate(frases, 1):
-                msg = json.dumps({"type": "chat", "message": frase})
+                msg = json.dumps({"action": "chat", "text": frase})
                 await ws.send(msg)
 
                 # Aguarda reply para não sobrecarregar o buffer

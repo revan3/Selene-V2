@@ -45,6 +45,11 @@ pub enum RegionType {
     Cerebellum,
     Brainstem,
     CorpusCallosum,
+    Amygdala,
+    Cingulate,
+    OrbitofrontalCortex,
+    Thalamus,
+    Striatum,
 }
 
 pub fn step(_dt: f32, _current_time: f32) {
@@ -63,10 +68,15 @@ impl RegionType {
             6 => RegionType::Cerebellum,
             7 => RegionType::Brainstem,
             8 => RegionType::CorpusCallosum,
+            9 => RegionType::Amygdala,
+            10 => RegionType::Cingulate,
+            11 => RegionType::OrbitofrontalCortex,
+            12 => RegionType::Thalamus,
+            13 => RegionType::Striatum,
             _ => RegionType::Frontal,
         }
     }
-    
+
     pub fn nome(&self) -> &'static str {
         match self {
             RegionType::Frontal => "FRONTAL",
@@ -78,6 +88,11 @@ impl RegionType {
             RegionType::Cerebellum => "CEREBELO",
             RegionType::Brainstem => "TRONCO",
             RegionType::CorpusCallosum => "CALOSO",
+            RegionType::Amygdala => "AMÍGDALA",
+            RegionType::Cingulate => "CINGULADO",
+            RegionType::OrbitofrontalCortex => "OFC",
+            RegionType::Thalamus => "TÁLAMO",
+            RegionType::Striatum => "ESTRATO",
         }
     }
 }

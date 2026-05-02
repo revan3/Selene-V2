@@ -202,7 +202,8 @@ impl NeuroChem {
         // Biologicamente: D2Rs são pré-sinápticos autorreceptores + pós-sinápticos no estriado.
         let target_d2 = (1.0 / (1.0 + (-6.0 * (self.dopamine - 0.5)).exp()))
             .clamp(0.1, 1.0);
-        self.d2_signal += (target_d2 - self.d2_signal) * decay_rate * 2.0;
+        let target_d2_aden = target_d2 * (1.0 - self.adenosine * 0.3).clamp(0.1, 1.0); // adenosine antagonism
+        self.d2_signal += (target_d2_aden - self.d2_signal) * decay_rate * 2.0;
 
         // Ocitocina — decai lentamente na ausência de interações positivas.
         // Cresce por chamadas externas (registrar_interacao_positiva).
@@ -226,5 +227,12 @@ impl NeuroChem {
     pub fn registrar_rejeicao(&mut self, intensidade: f32) {
         self.oxytocin = (self.oxytocin - intensidade * 0.1).clamp(0.1, 1.5);
         self.cortisol = (self.cortisol + intensidade * 0.08).clamp(0.0, 2.0);
+    }
+
+    /// Oxytocin→BLA gate: reduces fear signal in amygdala when oxytocin is high.
+    /// Returns multiplicative gate [0.3, 1.0]: high oxytocin (e.g., 1.0) → gate ~0.6 (fear reduced).
+    /// Based on Kirsch 2005, oxytocin inactivates basolateral amygdala.
+    pub fn oxytocin_bla_gate(&self) -> f32 {
+        (1.0 - self.oxytocin * 0.4).clamp(0.3, 1.0)
     }
 }

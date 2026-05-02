@@ -2156,7 +2156,11 @@ async fn async_main() {
                     bs.ontogeny.tick(vocab_n, edges_n, Some(rpe), None)
                 } else { false };
                 if let Ok(bs) = brain_state.try_lock() {
-                    bs.ontogeny.salvar("selene_ontogeny.json");
+                    let onto = bs.ontogeny.clone();
+                    // Spawn async save to avoid blocking the 200Hz loop
+                    tokio::spawn(async move {
+                        onto.salvar_async("selene_ontogeny.json").await;
+                    });
                     if progressou {
                         println!("🧒 [ONTOGENY] Progressão automática → {}", bs.ontogeny.stage);
                     }
