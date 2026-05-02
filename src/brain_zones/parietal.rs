@@ -17,6 +17,7 @@ pub struct ParietalLobe {
     pub attention_map: Vec<f32>,
     pub attention_global: f32,
     pub noise_std: f32,
+    pub spike_rate_out: f32,
 }
 
 impl ParietalLobe {
@@ -57,6 +58,7 @@ impl ParietalLobe {
             attention_map: attention,
             attention_global: 1.0,
             noise_std,
+            spike_rate_out: 0.0,
         }
     }
 
@@ -69,6 +71,14 @@ impl ParietalLobe {
         config: &Config,
     ) -> Vec<f32> {
         let n = self.integration_layer.neuronios.len();
+
+        // Early-exit: lobo quiescente — decai spatial_map e retorna sem processar.
+        let input_max = visual_in.iter().chain(sensory_in.iter()).copied().fold(0.0f32, f32::max);
+        if input_max < 0.02 && self.spike_rate_out < 0.005 {
+            for v in &mut self.spatial_map { *v *= 0.995; }
+            return self.spatial_map.clone();
+        }
+
         let mut rng = thread_rng();
         let t_ms = current_time * 1000.0;
         let mut combined = vec![0.0; n];
@@ -85,6 +95,9 @@ impl ParietalLobe {
         }
 
         let spikes = self.integration_layer.update(&combined, dt, t_ms);
+
+        let n_spikes = spikes.iter().filter(|&&s| s).count();
+        self.spike_rate_out = if n > 0 { n_spikes as f32 / n as f32 } else { 0.0 };
 
         let mut output = vec![0.0; n];
         for i in 0..n {

@@ -344,6 +344,16 @@ pub struct BrainState {
     /// Alto = medo suprimido por experiências seguras / sono → Selene mais à vontade.
     pub amygdala_extinction: f32,
 
+    /// Episodic Buffer — palavras dos episódios hipocampais mais recentes (arousal > 0.4).
+    /// Sincronizado do FrontalLobe (main.rs) a cada tick hipocampal saliente.
+    /// Usado por gerar_resposta_emergente() como boost no contexto inicial do walk.
+    pub episodic_buffer_words: VecDeque<String>,
+
+    /// Memória Prospectiva — intenções agendadas para execução futura (Pfeiffer 2020).
+    /// Cada entrada: (texto_da_intencao, step_alvo, prioridade).
+    /// O loop neural verifica a cada 1000 ticks e injeta no neural_context quando step_alvo atingido.
+    pub prospective_queue: VecDeque<(String, u64, f32)>,
+
     /// Índice invertido de frases_padrao: palavra → índices de frases que contêm essa palavra.
     /// Permite scoring O(topico × hits) ao invés de O(frases × words).
     pub indice_prefixo: HashMap<String, Vec<usize>>,
@@ -743,6 +753,8 @@ impl BrainState {
             oxytocin_level: 0.5,
             amygdala_fear: 0.0,
             amygdala_extinction: 0.3,
+            episodic_buffer_words: VecDeque::with_capacity(4),
+            prospective_queue: VecDeque::new(),
             indice_prefixo: HashMap::new(),
             trigrama_cache: HashMap::new(),
             pattern_engine: PatternEngine::novo(),
@@ -762,6 +774,20 @@ impl BrainState {
         state.reconstruir_indice_prefixo();
         state.reconstruir_trigrama_cache();
         state
+    }
+
+    /// Agenda uma intenção para execução futura (Memória Prospectiva).
+    /// `texto`: descrição da intenção (palavras-chave injetadas no neural_context no momento certo).
+    /// `step_atual`: tick neural atual (de main.rs).
+    /// `delay_ticks`: quantos ticks esperar (200 ticks ≈ 1s a 200Hz).
+    /// `prioridade`: [0.0, 1.0] — alta prioridade → injeta mais tokens no contexto.
+    pub fn agendar_intencao(&mut self, texto: &str, step_atual: u64, delay_ticks: u64, prioridade: f32) {
+        let step_alvo = step_atual + delay_ticks;
+        self.prospective_queue.push_back((texto.to_string(), step_alvo, prioridade.clamp(0.0, 1.0)));
+        // Ordena por step_alvo (mais próximos primeiro) para facilitar pop eficiente
+        let mut v: Vec<_> = self.prospective_queue.drain(..).collect();
+        v.sort_by_key(|(_, t, _)| *t);
+        self.prospective_queue.extend(v);
     }
 
     /// Reconstrói o índice invertido de frases_padrao.

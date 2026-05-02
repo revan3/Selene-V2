@@ -22,6 +22,7 @@ pub struct Cerebellum {
     pub granular_layer: CamadaHibrida,
     pub error_signal: Vec<f32>,
     pub ltd_factor: Vec<f32>,
+    pub spike_rate_out: f32,
 }
 
 impl Cerebellum {
@@ -79,6 +80,7 @@ impl Cerebellum {
             granular_layer: granular,
             error_signal: vec![0.0; n_purkinje],
             ltd_factor: vec![1.0; n_purkinje],
+            spike_rate_out: 0.0,
         }
     }
 
@@ -93,6 +95,13 @@ impl Cerebellum {
         let t_ms = current_time * 1000.0;
         let n_g = self.granular_layer.neuronios.len();
         let n_p = self.purkinje_layer.neuronios.len();
+
+        // Early-exit: sem fibras musgosas nem erro de treino — cerebelo silencioso.
+        let input_max = mossy_fiber_input.iter().chain(climbing_fiber_error.iter())
+            .copied().fold(0.0f32, f32::max);
+        if input_max < 0.02 && self.spike_rate_out < 0.005 {
+            return vec![0.0; n_p];
+        }
 
         // Fibras musgosas → granulares
         let granular_spikes = self.granular_layer.update(
@@ -130,6 +139,9 @@ impl Cerebellum {
         }
 
         let purkinje_spikes = self.purkinje_layer.update(&purkinje_input, dt, t_ms);
+
+        let n_spikes = purkinje_spikes.iter().filter(|&&s| s).count();
+        self.spike_rate_out = if n_p > 0 { n_spikes as f32 / n_p as f32 } else { 0.0 };
 
         // Purkinje → output (sinal inibitório para núcleos cerebelares)
         purkinje_spikes.iter()

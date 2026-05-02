@@ -415,8 +415,10 @@ const CA_MAX:       f32 = 12.0;
 const G_AHP:        f32 = 1.8;
 
 // BCM homeostático
-const TAU_BCM_MS: f32 = 5000.0;
-const BCM_RATE:   f32 = 0.002;
+const TAU_BCM_MS:       f32 = 5000.0;
+const BCM_RATE:         f32 = 0.002;
+/// θ_M slide tau: 6× mais lento que activity_avg (BCM 1982, θ_M tracking)
+const TAU_BCM_THETA_MS: f32 = 30_000.0;
 
 // Plasticidade 3 fatores
 const TAU_ELIG_MS:    f32 = 500.0;
@@ -917,6 +919,11 @@ pub struct NeuronioHibrido {
     /// Incrementado quando delta_ltp > 0. Amplifica eligibility trace (up 2x).
     /// Decai com τ=30s. Convertido para late-LTP em reconsolidacao.rs quando > threshold.
     pub bdnf:          f32,
+
+    /// Limiar de modificação BCM por neurônio [0.001, 0.5].
+    /// Inicializado com `tipo.bcm_theta()`; desliza com activity_avg² (τ=30s).
+    /// LTP quando activity_avg > theta_m; LTD quando abaixo (BCM 1982).
+    pub theta_m:       f32,
 }
 
 impl NeuronioHibrido {
@@ -945,6 +952,7 @@ impl NeuronioHibrido {
             extras:        Box::new(EstadoCanaisExtras::para_tipo(tipo)),
             input_apical:    0.0,
             bdnf:            0.0,
+            theta_m:         tipo.bcm_theta(),
         }
     }
 
@@ -1093,6 +1101,9 @@ impl NeuronioHibrido {
         let bcm_decay = (-dt_ms / TAU_BCM_MS).exp();
         let spike_val = if spiked { 1.0 } else { 0.0 };
         self.activity_avg = self.activity_avg * bcm_decay + spike_val * (1.0 - bcm_decay);
+        // θ_M desliza com activity² — regra BCM dinâmica (Bienenstock-Cooper-Munro 1982)
+        self.theta_m += (self.activity_avg.powi(2) - self.theta_m) * dt_ms / TAU_BCM_THETA_MS;
+        self.theta_m = self.theta_m.clamp(0.001, 0.5);
 
         // ── 10. Decaimento dos traços STDP ────────────────────────────────
         let decay = (-dt_ms / TAU_STDP_MS).exp();
@@ -1109,14 +1120,13 @@ impl NeuronioHibrido {
                 self.extras.ca_nmda = (self.extras.ca_nmda + nmda_in).min(nmda_cap);
             }
 
-            let bcm_theta = self.tipo.bcm_theta();
-            let bcm_mod = if self.activity_avg > bcm_theta {
-                let excess = (self.activity_avg - bcm_theta) / bcm_theta.max(0.01);
-                1.0 - BCM_RATE * excess.min(5.0)
-            } else {
-                let deficit = (bcm_theta - self.activity_avg) / bcm_theta.max(0.01);
-                1.0 + BCM_RATE * deficit.min(5.0)
-            };
+            // BCM canônica (Bienenstock-Cooper-Munro 1982): θ_M por neurônio, desliza com activity².
+            // bcm_raw > 0 → zona LTP (activity acima de θ_M → fortalecer sinapses ativas).
+            // bcm_raw < 0 → zona LTD (activity abaixo de θ_M → enfraquecer sinapses fracas).
+            let bcm_raw = self.activity_avg * (self.activity_avg - self.theta_m);
+            // Normalizar por θ_M² para escala adimensional; mapear para gate multiplicativo [0.1, 2.0]
+            let bcm_scaled = (bcm_raw / self.theta_m.powi(2).max(1e-4)).clamp(-3.0, 5.0);
+            let bcm_mod = (1.0 + bcm_scaled * BCM_RATE * 100.0).clamp(0.1, 2.0);
 
             // BDNF amplifies eligibility uptake (early→late LTP mediator)
             let bdnf_amp = (1.0 + self.bdnf * 0.5).min(2.0); // up to 2x boost
@@ -1360,6 +1370,8 @@ impl NeuronioHibrido {
         let bcm_decay = (-dt_ms / TAU_BCM_MS).exp();
         let sv = if spiked { 1.0 } else { 0.0 };
         self.activity_avg = self.activity_avg * bcm_decay + sv * (1.0 - bcm_decay);
+        self.theta_m += (self.activity_avg.powi(2) - self.theta_m) * dt_ms / TAU_BCM_THETA_MS;
+        self.theta_m = self.theta_m.clamp(0.001, 0.5);
 
         // Decaimento de traços STDP (sem atualização de peso — peso fixo em FP4)
         let decay = (-dt_ms / TAU_STDP_MS).exp();
@@ -1427,6 +1439,8 @@ impl NeuronioHibrido {
         let bcm_decay = (-dt_ms / TAU_BCM_MS).exp();
         let sv = if spiked { 1.0 } else { 0.0 };
         self.activity_avg = self.activity_avg * bcm_decay + sv * (1.0 - bcm_decay);
+        self.theta_m += (self.activity_avg.powi(2) - self.theta_m) * dt_ms / TAU_BCM_THETA_MS;
+        self.theta_m = self.theta_m.clamp(0.001, 0.5);
 
         // STDP simplificado: traços + atualização de peso sem Ca NMDA
         let decay = (-dt_ms / TAU_STDP_MS).exp();

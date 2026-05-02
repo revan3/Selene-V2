@@ -1825,6 +1825,9 @@ pub async fn handle_connection(
                                             ctx.extend(state.neural_context.iter().cloned());
                                             ctx.extend(state.pensamento_consciente.iter().cloned().take(5));
                                             ctx.extend(state.frontal_goal_words.iter().cloned());
+                                            // Episodic Buffer (Baddeley 2000): episódios hipocampais
+                                            // de alta saliência têm boost preferencial no walk inicial
+                                            ctx.extend(state.episodic_buffer_words.iter().cloned());
                                             // P1-A: conceitos neuralmente ativos entram no contexto
                                             ctx.extend(conceitos_ativos_ctx.iter().cloned());
 
@@ -3136,6 +3139,29 @@ pub async fn handle_connection(
                                         "data": js,
                                     }).to_string();
                                     let _ = ws_tx.send(Message::text(ack)).await;
+                                }
+
+                                // ── SET_INTENTION: agenda memória prospectiva ────────────────────
+                                // {"action":"set_intention","text":"lembrar de perguntar sobre X","delay_min":30}
+                                Some("set_intention") => {
+                                    let texto = json["text"].as_str().unwrap_or("").to_string();
+                                    let delay_min = json["delay_min"].as_f64().unwrap_or(5.0) as f32;
+                                    let prioridade = json["priority"].as_f64().unwrap_or(0.7) as f32;
+                                    if !texto.is_empty() {
+                                        let mut state = brain.lock().await;
+                                        let step_atual = state.atividade.0;
+                                        // 200Hz × 60s × delay_min
+                                        let delay_ticks = (200.0 * 60.0 * delay_min) as u64;
+                                        state.agendar_intencao(&texto, step_atual, delay_ticks, prioridade);
+                                        let ack = serde_json::json!({
+                                            "event": "intention_scheduled",
+                                            "text": texto,
+                                            "delay_min": delay_min,
+                                            "step_alvo": step_atual + delay_ticks,
+                                        }).to_string();
+                                        drop(state);
+                                        let _ = ws_tx.send(Message::text(ack)).await;
+                                    }
                                 }
 
                                 // ── LIST_SNAPSHOTS: lista snapshots do grafo disponíveis ─────────

@@ -1129,6 +1129,23 @@ async fn async_main() {
             }
         }
 
+        // Episodic Buffer: quando hipocampo processou episódio saliente (arousal > 0.4),
+        // injeta palavras do neural_context no buffer do frontal e sincroniza ao brain_state.
+        if arousal > 0.4 {
+            if let Ok(mut bs) = brain_state.try_lock() {
+                let ctx_snapshot: Vec<String> = bs.neural_context.iter().take(4).cloned().collect();
+                let spike_zero: [u64; 8] = [0u64; 8]; // spike placeholder — spike real via spike_vocab
+                for palavra in &ctx_snapshot {
+                    frontal.push_episodio(palavra, spike_zero, arousal);
+                }
+                // Sincroniza snapshot para server.rs usar no walk
+                bs.episodic_buffer_words.clear();
+                for w in frontal.episodic_words() {
+                    bs.episodic_buffer_words.push_back(w);
+                }
+            }
+        }
+
         frontal.set_dopamine(neuro.dopamine + emotion);
         // Corrente inter-lobe para o frontal (limbic bias + parietal + temporal)
         let frontal_inter: Vec<f32> = inter_lobe_currents.para_frontal.iter()
@@ -1754,6 +1771,25 @@ async fn async_main() {
         if step % 1000 == 0 {
             if let Ok(mut bs) = brain_state.try_lock() {
                 bs.grounding_decay();
+
+                // Memória Prospectiva: verifica se alguma intenção agendada atingiu o step-alvo.
+                // Injeta palavras-chave no neural_context para ativar o tema no próximo walk.
+                while let Some((texto, step_alvo, prio)) = bs.prospective_queue.front().cloned() {
+                    if step as u64 >= step_alvo {
+                        bs.prospective_queue.pop_front();
+                        let n_tokens = ((prio * 3.0) as usize).max(1); // prioridade → tokens injetados
+                        for token in texto.split_whitespace().take(n_tokens) {
+                            let t = token.to_lowercase();
+                            if t.len() > 2 && !bs.neural_context.contains(&t) {
+                                bs.neural_context.push_back(t);
+                            }
+                        }
+                        while bs.neural_context.len() > 20 { bs.neural_context.pop_front(); }
+                        log::info!("[ProspMem] Intenção disparada: '{}' (prio={:.2})", texto, prio);
+                    } else {
+                        break; // fila ordenada por step_alvo — pode parar no primeiro não-vencido
+                    }
+                }
             }
         }
 

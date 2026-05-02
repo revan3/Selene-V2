@@ -25,6 +25,7 @@ pub struct LimbicSystem {
     pub arousal_level: f32,
     pub dopamine_mod: f32,
     pub habituation_counter: Vec<u32>,
+    pub spike_rate_out: f32,
 }
 
 impl LimbicSystem {
@@ -70,6 +71,7 @@ impl LimbicSystem {
             arousal_level: 1.0,
             dopamine_mod: 1.0,
             habituation_counter: vec![0; n_sub],
+            spike_rate_out: 0.0,
         }
     }
 
@@ -81,6 +83,13 @@ impl LimbicSystem {
         current_time: f32,
         config: &Config,
     ) -> (f32, f32) {
+        // Early-exit: decai estado emocional mas evita processamento completo.
+        let input_max = sensory_valence.iter().copied().fold(0.0f32, f32::max);
+        if input_max < 0.02 && self.spike_rate_out < 0.005 && reward_signal.abs() < 0.02 {
+            self.emotional_state *= 0.92;
+            return (self.emotional_state, self.arousal_level);
+        }
+
         let mut rng = thread_rng();
         let n = self.amygdala.neuronios.len();
         let t_ms = current_time * 1000.0;
@@ -124,6 +133,10 @@ impl LimbicSystem {
             .clamp(0.5, 3.5);
 
         self.dopamine_mod = (1.0 + self.emotional_state * 0.4).clamp(0.5, 2.5);
+
+        let n_amy = self.amygdala.neuronios.len().max(1);
+        self.spike_rate_out = fear_factor + pleasure_score / 2.0;
+        let _ = n_amy; // usado via fear_factor acima
 
         (self.emotional_state, self.arousal_level)
     }

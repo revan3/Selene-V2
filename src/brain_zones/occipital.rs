@@ -24,6 +24,8 @@ pub struct OccipitalLobe {
     pub flicker_buffer: Vec<f32>,
     pub orientation_pref: Vec<f32>,
     pub noise_std_base: f32,
+    /// Taxa de spike de saída do tick anterior (para gating de silêncio).
+    pub spike_rate_out: f32,
 }
 
 impl OccipitalLobe {
@@ -77,6 +79,7 @@ impl OccipitalLobe {
             flicker_buffer: vec![0.0; n_v1],
             orientation_pref: ori_pref,
             noise_std_base,
+            spike_rate_out: 0.0,
         }
     }
 
@@ -89,6 +92,17 @@ impl OccipitalLobe {
         config: &Config,
     ) -> Vec<f32> {
         let n_v1 = self.v1_primary_layer.neuronios.len();
+
+        // Early-exit: se input e output anteriores são ambos quiescentes, não processa.
+        let input_max = retinal_input.iter().copied().fold(0.0f32, f32::max);
+        if input_max < 0.02 && self.spike_rate_out < 0.005 {
+            // Mantém flicker_buffer atualizado para evitar artefatos de motion ao retomar.
+            let len = n_v1.min(retinal_input.len());
+            self.flicker_buffer[..len].copy_from_slice(&retinal_input[..len]);
+            let n_features = (self.v2_feature_layer.neuronios.len() + 19) / 20;
+            return vec![0.0; n_features];
+        }
+
         let mut rng = thread_rng();
         let mut v1_input = vec![0.0; n_v1];
         let t_ms = current_time * 1000.0;
@@ -127,6 +141,11 @@ impl OccipitalLobe {
         }
 
         let v2_spikes = self.v2_feature_layer.update(&v2_input, dt, t_ms);
+
+        // Atualiza spike_rate_out para o gate do próximo tick.
+        let n_v2 = v2_spikes.len();
+        let n_spikes = v2_spikes.iter().filter(|&&s| s).count();
+        self.spike_rate_out = if n_v2 > 0 { n_spikes as f32 / n_v2 as f32 } else { 0.0 };
 
         // Agrega em features (taxa de disparo por janela de 20 neurônios)
         v2_spikes.chunks(20).map(|chunk| {

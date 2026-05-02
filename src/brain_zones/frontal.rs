@@ -18,16 +18,23 @@
 #![allow(dead_code)]
 
 use crate::synaptic_core::{CamadaHibrida, PrecisionType, TipoNeuronal};
+use crate::encoding::spike_codec::SpikePattern;
 use rand::{Rng, thread_rng};
 use crate::config::Config;
 use std::collections::VecDeque;
+
+/// Capacidade do Episodic Buffer (Baddeley 2000): 4 episódios simultâneos.
+const EPISODIC_BUFFER_CAP: usize = 4;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Working Memory — Modelo de Baddeley (1974) + Hasselmo (2006)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Número de slots de working memory (Miller's Law: 7 ± 2).
+/// Slots alocados estruturalmente (capacidade máxima do buffer).
 const WM_SLOTS: usize = 7;
+/// Capacidade real de chunks ativos (Cowan 2001, revisão de Miller 1956: 4±1).
+/// Acima deste limite, o item menos saliente é evictado antes do encoding.
+const WM_CHUNK_LIMIT: usize = 4;
 /// Threshold de dopamina para gravar novo item na working memory.
 const WM_ENCODE_THRESHOLD: f32 = 0.85;
 /// Decay da working memory por tick (recorrência sustentada).
@@ -92,6 +99,15 @@ pub struct FrontalLobe {
     pub inhibition_strength: f32,
     pub noise_std: f32,
     n_exec: usize,
+
+    /// Número de chunks ativos na WM agora [0, WM_CHUNK_LIMIT].
+    /// Atualizado a cada tick de decide(). Expõe carga de WM externamente.
+    pub wm_chunk_count: usize,
+
+    /// Episodic Buffer de Baddeley (2000) — interface WM ↔ LTM.
+    /// Armazena até 4 episódios hipocampais de alta saliência (arousal > 0.4).
+    /// Palavras aqui têm boost no walk semântico inicial (acesso preferencial).
+    episodic_buffer: VecDeque<(String, SpikePattern, f32)>,
 }
 
 impl FrontalLobe {
@@ -144,6 +160,8 @@ impl FrontalLobe {
             inhibition_strength: 6.5,
             noise_std,
             n_exec: n_executive,
+            wm_chunk_count: 0,
+            episodic_buffer: VecDeque::with_capacity(EPISODIC_BUFFER_CAP),
         }
     }
 
@@ -233,21 +251,36 @@ impl FrontalLobe {
         // ── 5. Grava na working memory se saliente ────────────────────────
         if self.dopamine_level >= WM_ENCODE_THRESHOLD {
             let sal_nova = (self.dopamine_level - WM_ENCODE_THRESHOLD) / (1.0 - WM_ENCODE_THRESHOLD);
-            // Encontra slot vazio ou o menos saliente
-            let slot_idx = self.wm_slots.iter().enumerate()
-                .min_by(|a, b| {
-                    let sa = if a.1.ativo { a.1.saliencia } else { -1.0 };
-                    let sb = if b.1.ativo { b.1.saliencia } else { -1.0 };
-                    sa.partial_cmp(&sb).unwrap()
-                })
-                .map(|(i, _)| i)
-                .unwrap_or(0);
+            let n_ativos = self.wm_slots.iter().filter(|s| s.ativo).count();
+
+            // Cowan (2001): limite real = 4±1 chunks — acima do limite, evicta o menos saliente
+            let slot_idx = if n_ativos >= WM_CHUNK_LIMIT {
+                self.wm_slots.iter().enumerate()
+                    .filter(|(_, s)| s.ativo)
+                    .min_by(|a, b| a.1.saliencia.partial_cmp(&b.1.saliencia).unwrap())
+                    .map(|(i, _)| i)
+                    .unwrap_or(0)
+            } else {
+                // Abaixo do limite: prefere slot vazio, senão o menos saliente
+                self.wm_slots.iter().enumerate()
+                    .min_by(|a, b| {
+                        let sa = if a.1.ativo { a.1.saliencia } else { -1.0 };
+                        let sb = if b.1.ativo { b.1.saliencia } else { -1.0 };
+                        sa.partial_cmp(&sb).unwrap()
+                    })
+                    .map(|(i, _)| i)
+                    .unwrap_or(0)
+            };
+
             let slot = &mut self.wm_slots[slot_idx];
             slot.padrao = output.clone();
             slot.saliencia = sal_nova;
             slot.idade = 0;
             slot.ativo = true;
         }
+
+        // Mantém wm_chunk_count sincronizado (inclui decays do passo 1)
+        self.wm_chunk_count = self.wm_slots.iter().filter(|s| s.ativo).count();
 
         // ── 6. Top-down suppression ────────────────────────────────────────
         // Quando o frontal está ativamente deliberando (muitos spikes executivos),
@@ -324,9 +357,9 @@ impl FrontalLobe {
         self.serotonin_level = level.clamp(0.0, 2.0);
     }
 
-    /// Número de slots de WM ativos (0..7).
+    /// Número de chunks ativos na WM [0..WM_CHUNK_LIMIT].
     pub fn wm_ocupacao(&self) -> usize {
-        self.wm_slots.iter().filter(|s| s.ativo).count()
+        self.wm_chunk_count
     }
 
     /// Retorna os padrões de ativação média dos slots de WM ativos.
@@ -341,6 +374,21 @@ impl FrontalLobe {
                 (s.saliencia, media)
             })
             .collect()
+    }
+
+    /// Registra um episódio hipocampal no Episodic Buffer se arousal > 0.4.
+    /// Se buffer cheio, descarta o item mais antigo (FIFO — recência importa).
+    pub fn push_episodio(&mut self, palavra: &str, spike: SpikePattern, arousal: f32) {
+        if arousal <= 0.4 { return; }
+        if self.episodic_buffer.len() >= EPISODIC_BUFFER_CAP {
+            self.episodic_buffer.pop_front();
+        }
+        self.episodic_buffer.push_back((palavra.to_string(), spike, arousal));
+    }
+
+    /// Retorna as palavras atualmente no Episodic Buffer (mais antigas primeiro).
+    pub fn episodic_words(&self) -> Vec<String> {
+        self.episodic_buffer.iter().map(|(w, _, _)| w.clone()).collect()
     }
 
     pub fn estatisticas(&self) -> FrontalStats {

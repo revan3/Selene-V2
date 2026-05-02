@@ -42,6 +42,8 @@ pub struct TemporalLobe {
     /// D0 = output bruto do lóbulo, D1 = comprimido (n/2), D2 = super-comprimido (n/4).
     /// A saída multi-profundidade enriquece o sinal enviado ao frontal e hipocampo.
     pub depth_stack: DepthStack,
+    /// Taxa de spike de saída do tick anterior (para gating de silêncio).
+    pub spike_rate_out: f32,
 }
 
 impl TemporalLobe {
@@ -85,6 +87,7 @@ impl TemporalLobe {
             hebbian_traces: vec![0.0; n_neurons],
             hebbian_weights: vec![Vec::new(); n_neurons],
             depth_stack: DepthStack::new(n_neurons),
+            spike_rate_out: 0.0,
         }
     }
 
@@ -154,6 +157,15 @@ impl TemporalLobe {
         config: &Config,
     ) -> Vec<f32> {
         let n = self.recognition_layer.neuronios.len();
+
+        // Early-exit: decai auditory_buffer e traços Hebbianos mas não processa.
+        let input_max = stimulus_in.iter().chain(context_bias.iter()).copied().fold(0.0f32, f32::max);
+        if input_max < 0.02 && self.spike_rate_out < 0.005 {
+            for b in &mut self.auditory_buffer { *b *= 0.88; }
+            for t in &mut self.hebbian_traces  { *t *= HEBBIAN_TRACE_DECAY; }
+            return vec![0.0; n];
+        }
+
         let mut rng = thread_rng();
         let mut combined_input = vec![0.0; n];
         let t_ms = current_time * 1000.0;
@@ -175,6 +187,9 @@ impl TemporalLobe {
         let spikes = self.recognition_layer.update(&combined_input, dt, t_ms);
         // Atualiza pesos Hebbianos com os spikes deste tick — aprendizado online imediato.
         self.hebbian_update(&spikes);
+
+        let n_spikes = spikes.iter().filter(|&&s| s).count();
+        self.spike_rate_out = if n > 0 { n_spikes as f32 / n as f32 } else { 0.0 };
 
         let mut output = vec![0.0; n];
         for i in 0..n {

@@ -199,6 +199,9 @@ impl InterLobeProjection {
         }
     }
 
+    /// Número de neurônios destino (para criar vetores zero sem project()).
+    pub(crate) fn n_target(&self) -> usize { self.n_target }
+
     /// Telemetria: peso médio, número de conexões, traço médio.
     pub fn stats(&self) -> InterLobeStats {
         let total: usize = self.weights.iter().map(|c| c.len()).sum();
@@ -299,29 +302,34 @@ impl BrainConnections {
         limbic_rates:   &[f32],
         hippo_rates:    &[f32],
     ) -> InterLobeCurrents {
+        // Gating esparso: só projeta lobe fonte se ele tem alguma atividade.
+        // Evita alocação + iteração de project() para fontes completamente silenciosas.
+        let active = |rates: &[f32]| rates.iter().any(|&r| r >= 0.01);
+        let proj = |proj: &InterLobeProjection, rates: &[f32]| -> Vec<f32> {
+            if active(rates) { proj.project(rates) } else { vec![0.0; proj.n_target()] }
+        };
+
+        let v1_to_temporal  = proj(&self.v1_temporal,      v1_rates);
+        let hippo_to_temp   = proj(&self.hippo_temporal,   hippo_rates);
+        let front_to_temp   = proj(&self.frontal_temporal, frontal_rates);
+
+        let temp_to_front   = proj(&self.temporal_frontal, temporal_rates);
+        let limbic_to_front = proj(&self.limbic_frontal,   limbic_rates);
+        let par_to_front    = proj(&self.parietal_frontal, parietal_rates);
+        let hippo_to_front  = proj(&self.hippo_frontal,    hippo_rates);
+
+        let temp_to_hippo   = proj(&self.temporal_hippo,   temporal_rates);
+        let par_to_hippo    = proj(&self.parietal_hippo,   parietal_rates);
+
         InterLobeCurrents {
-            // Temporal: V1 (bottom-up) + hippo (recall episódico) + frontal (top-down supressão)
-            para_temporal: add_vecs(
-                &add_vecs(&self.v1_temporal.project(v1_rates), &self.hippo_temporal.project(hippo_rates)),
-                &self.frontal_temporal.project(frontal_rates),
-            ),
-            // Parietal: V1 (onde o objeto está)
-            para_parietal: self.v1_parietal.project(v1_rates),
-            // Frontal: temporal (o quê) + limbic (emoção) + parietal (onde) + hippo (memória episódica)
+            para_temporal: add_vecs(&add_vecs(&v1_to_temporal, &hippo_to_temp), &front_to_temp),
+            para_parietal: proj(&self.v1_parietal, v1_rates),
             para_frontal: add_vecs(
-                &add_vecs(
-                    &add_vecs(&self.temporal_frontal.project(temporal_rates), &self.limbic_frontal.project(limbic_rates)),
-                    &self.parietal_frontal.project(parietal_rates),
-                ),
-                &self.hippo_frontal.project(hippo_rates),
+                &add_vecs(&add_vecs(&temp_to_front, &limbic_to_front), &par_to_front),
+                &hippo_to_front,
             ),
-            // Limbic: frontal (regulação top-down)
-            para_limbic: self.frontal_limbic.project(frontal_rates),
-            // Hippo: temporal (codificação episódica) + parietal (contexto espacial)
-            para_hippo: add_vecs(
-                &self.temporal_hippo.project(temporal_rates),
-                &self.parietal_hippo.project(parietal_rates),
-            ),
+            para_limbic: proj(&self.frontal_limbic, frontal_rates),
+            para_hippo: add_vecs(&temp_to_hippo, &par_to_hippo),
         }
     }
 
