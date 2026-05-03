@@ -116,6 +116,16 @@ const POPULACAO_N: usize = 20;
 /// Previne crescimento ilimitado de sinapses_conceito — ~160 MB estimado.
 const SINAPSES_CAP: usize = 500_000;
 
+// ── V3.6: Ciclo de vida neural ────────────────────────────────────────────────
+/// Diretório no NVMe onde neurônios dormentes são serializados.
+/// Cada neurônio gera um arquivo `{uuid}.bin` (bincode).
+pub const SWAP_POOL_PATH: &str = "F:/selene_pool_swap/";
+/// Quanto o activity_timer cresce por chamada a tick_atividade_neuronal().
+/// Chamada a cada 1000 ticks do loop 200Hz → timer sobe 1000/call.
+const TICK_BATCH_SIZE: u64 = 1000;
+/// Máx de neurônios por lote de escrita no NVMe por ciclo de evicção.
+const NVME_LOTE_MAX: usize = 200;
+
 pub struct SwapManager {
     // RAM: neurônios ativos
     pub ram: HashMap<Uuid, NeuronioHibrido>,
@@ -207,11 +217,19 @@ pub struct SwapManager {
 
     /// Reconsolidação de memória — gerencia a janela lábil após evocação.
     pub reconsolidacao: RegistroReconsolidacao,
+
+    // ── V3.6: Ciclo de Vida Neural — hierarquia RAM → SSD → NVMe ─────────────
+    /// UUIDs de neurônios serializados no NVMe (não estão em ram nem ssd).
+    /// Indexados aqui para que o sentinel talâmico possa detectar conceitos
+    /// que precisam ser restaurados sob demanda.
+    pub nvme_index: std::collections::HashSet<Uuid>,
+    /// Caminho do pool de swap no NVMe. Padrão: F:/selene_pool_swap/
+    pub swap_path: std::path::PathBuf,
 }
 
 impl SwapManager {
     pub fn ram_count(&self) -> usize { self.ram.len() }
-    pub fn total_count(&self) -> usize { self.ram.len() + self.ssd.len() }
+    pub fn total_count(&self) -> usize { self.ram.len() + self.ssd.len() + self.nvme_index.len() }
     pub fn synapses_ativas(&self) -> usize {
         self.ram.len() * SYNAPSES_PER_NEURON
     }
@@ -250,6 +268,7 @@ impl SwapManager {
         self.grafo_dirty = false;
         self.ticks_sem_spike = 0;
         self.tick_count = 0;
+        self.nvme_index.clear(); // UUIDs no NVMe são órfãos após reset; arquivos permanecem em disco
         log::info!("[RESET] Vocabulário e memória semântica apagados. Primitivos preservados: {}", ids_fixos.len());
     }
 
@@ -287,6 +306,8 @@ impl SwapManager {
             grafo_cache: None,
             grafo_dirty: true,
             reconsolidacao: RegistroReconsolidacao::novo(),
+            nvme_index: std::collections::HashSet::new(),
+            swap_path: std::path::PathBuf::from(SWAP_POOL_PATH),
         }
     }
     
@@ -509,6 +530,163 @@ impl SwapManager {
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // V3.6 — CICLO DE VIDA NEURAL: RAM → SSD → NVMe
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Incrementa activity_timer para neurônios inativos na RAM.
+    /// Neurônios com corrente > 0.1 têm timer resetado (estão recebendo input).
+    /// Quando timer ≥ INACTIVITY_THRESHOLD → status = Dormant.
+    /// Deve ser chamado a cada 1000 ticks pelo loop principal (try_lock).
+    pub fn tick_atividade_neuronal(&mut self) {
+        use crate::synaptic_core::{INACTIVITY_THRESHOLD, NeuronalStatus};
+        for (uuid, neuronio) in self.ram.iter_mut() {
+            if self.correntes.get(uuid).copied().unwrap_or(0.0) > 0.1 {
+                neuronio.activity_timer = 0;
+                neuronio.status = NeuronalStatus::Active;
+            } else if neuronio.status == NeuronalStatus::Active {
+                neuronio.activity_timer = neuronio.activity_timer.saturating_add(TICK_BATCH_SIZE);
+                if neuronio.activity_timer >= INACTIVITY_THRESHOLD {
+                    neuronio.status = NeuronalStatus::Dormant;
+                }
+            }
+        }
+    }
+
+    /// Move neurônios Dormant da RAM para SSD (dormente em memória).
+    /// Primitivos (fonemas/visuais) nunca são movidos.
+    /// Retorna o número de neurônios movidos.
+    pub fn evicir_dormentes_para_ssd(&mut self) -> usize {
+        use crate::synaptic_core::NeuronalStatus;
+        let ids_primitivos: std::collections::HashSet<Uuid> = self.fonemas_para_id.values()
+            .chain(self.visuais_para_id.values())
+            .cloned()
+            .collect();
+        let dormentes: Vec<Uuid> = self.ram.iter()
+            .filter(|(id, n)| n.status == NeuronalStatus::Dormant && !ids_primitivos.contains(*id))
+            .map(|(id, _)| *id)
+            .collect();
+        let n = dormentes.len();
+        for id in dormentes {
+            if let Some(neuronio) = self.ram.remove(&id) {
+                self.ultimo_acesso.remove(&id);
+                self.ssd.insert(id, neuronio);
+            }
+        }
+        if n > 0 {
+            log::debug!("[NeuralLifecycle] {} neurônios Dormant → SSD", n);
+        }
+        n
+    }
+
+    /// Prepara um lote do SSD para escrita no NVMe.
+    /// Remove do SSD — confirmar via confirmar_evicao_nvme() após escrita bem-sucedida.
+    /// Primitivos e UUIDs já no nvme_index são excluídos.
+    pub fn preparar_lote_nvme(&mut self, max_lote: usize) -> Vec<(Uuid, NeuronioHibrido)> {
+        let ids_primitivos: std::collections::HashSet<Uuid> = self.fonemas_para_id.values()
+            .chain(self.visuais_para_id.values())
+            .cloned()
+            .collect();
+        let candidatos: Vec<Uuid> = self.ssd.keys()
+            .filter(|id| !ids_primitivos.contains(*id) && !self.nvme_index.contains(*id))
+            .cloned()
+            .take(max_lote)
+            .collect();
+        let mut lote = Vec::with_capacity(candidatos.len());
+        for id in candidatos {
+            if let Some(neuronio) = self.ssd.remove(&id) {
+                lote.push((id, neuronio));
+            }
+        }
+        lote
+    }
+
+    /// Registra UUIDs como confirmados no NVMe após escrita bem-sucedida.
+    pub fn confirmar_evicao_nvme(&mut self, uuids: &[Uuid]) {
+        for id in uuids {
+            self.nvme_index.insert(*id);
+        }
+        if !uuids.is_empty() {
+            log::info!("[NVMe] {} neurônios evicados → {}", uuids.len(), self.swap_path.display());
+        }
+    }
+
+    /// Retorna UUIDs de uma população conceitual que estão no NVMe.
+    /// Usado pelo sentinel talâmico para detectar conceitos que precisam ser restaurados.
+    pub fn ids_nvme_para_conceito(&self, conceito: &str) -> Vec<Uuid> {
+        let chave = conceito.to_lowercase();
+        self.palavra_para_id.get(&chave)
+            .map(|pop| pop.iter().filter(|id| self.nvme_index.contains(id)).cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Integra um neurônio restaurado do NVMe de volta à RAM.
+    pub fn integrar_restaurado(&mut self, uuid: Uuid, mut neuronio: NeuronioHibrido) {
+        use crate::synaptic_core::NeuronalStatus;
+        neuronio.activity_timer = 0;
+        neuronio.status = NeuronalStatus::Active;
+        self.nvme_index.remove(&uuid);
+        self.ram.insert(uuid, neuronio);
+        self.ultimo_acesso.insert(uuid, current_time());
+    }
+
+    /// Fração de neurônios inativos (SSD + NVMe) sobre o total.
+    /// Usado pelo sentinel de lobe para decidir hibernação.
+    pub fn frac_dormentes(&self) -> f32 {
+        let total = self.ram.len() + self.ssd.len() + self.nvme_index.len();
+        if total == 0 { return 0.0; }
+        (self.ssd.len() + self.nvme_index.len()) as f32 / total as f32
+    }
+
+    /// true quando > 90% dos neurônios estão fora da RAM (dormentes ou no NVMe).
+    /// Sinaliza ao loop 200Hz que lobos com baixa saliência podem ser hibernados.
+    pub fn lobe_deve_hibernar(&self) -> bool {
+        self.frac_dormentes() > 0.90
+    }
+
+    /// Estatísticas de ciclo de vida: (ram, ssd, nvme).
+    pub fn lifecycle_stats(&self) -> (usize, usize, usize) {
+        (self.ram.len(), self.ssd.len(), self.nvme_index.len())
+    }
+
+    /// Serializa um lote de neurônios no NVMe de forma atômica (write-then-rename).
+    /// Retorna os UUIDs escritos com sucesso — passar para confirmar_evicao_nvme().
+    /// Não bloqueia o executor Tokio (tokio::fs).
+    pub async fn escrever_nvme(
+        swap_path: &std::path::Path,
+        lote: Vec<(Uuid, NeuronioHibrido)>,
+    ) -> Vec<Uuid> {
+        let mut sucesso = Vec::with_capacity(lote.len());
+        for (uuid, neuronio) in lote {
+            let path_final = swap_path.join(format!("{}.bin", uuid));
+            let path_tmp   = swap_path.join(format!("{}.tmp", uuid));
+            match bincode::serialize(&neuronio) {
+                Ok(bytes) => {
+                    if tokio::fs::write(&path_tmp, &bytes).await.is_ok()
+                        && tokio::fs::rename(&path_tmp, &path_final).await.is_ok()
+                    {
+                        sucesso.push(uuid);
+                    } else {
+                        let _ = tokio::fs::remove_file(&path_tmp).await;
+                    }
+                }
+                Err(e) => log::warn!("[NVMe] Falha ao serializar {}: {}", uuid, e),
+            }
+        }
+        sucesso
+    }
+
+    /// Lê um neurônio do NVMe de forma assíncrona.
+    /// Retorna None se o arquivo não existir ou falhar na desserialização.
+    pub async fn restaurar_do_nvme(
+        swap_path: &std::path::Path,
+        uuid: Uuid,
+    ) -> Option<NeuronioHibrido> {
+        let path = swap_path.join(format!("{}.bin", uuid));
+        let bytes = tokio::fs::read(&path).await.ok()?;
+        bincode::deserialize::<NeuronioHibrido>(&bytes).ok()
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     // APRENDIZADO SEMÂNTICO BIOLÓGICO
     // ═══════════════════════════════════════════════════════════════════
@@ -709,7 +887,8 @@ impl SwapManager {
         if precisa_rebuild || cache_vazio {
             self.rebuild_grafo_cache();
         }
-        self.grafo_cache.as_ref().unwrap()
+        self.grafo_cache.as_ref()
+            .expect("grafo_cache should be populated after rebuild_grafo_cache()")
     }
 
     /// Constrói um grafo de palavras a partir das sinapses_conceito neurais.
@@ -1571,7 +1750,12 @@ impl SwapManager {
 
         let json = serde_json::to_string_pretty(&payload)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        std::fs::write(caminho, json)
+
+        // Use atomic write-then-rename pattern to prevent corruption on crash
+        let tmp_path = format!("{}.tmp", caminho);
+        std::fs::write(&tmp_path, json)?;
+        std::fs::rename(&tmp_path, caminho)?;
+        Ok(())
     }
 
     /// Restaura o estado semântico a partir do arquivo salvo por `salvar_estado`.

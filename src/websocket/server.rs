@@ -1247,7 +1247,9 @@ pub async fn handle_connection(
                                 }
 
                                 Some("force_sleep") => {
-                                    let duration_min = json["duration_min"].as_u64().unwrap_or(30);
+                                    let duration_min = json["duration_min"].as_u64()
+                                        .unwrap_or(30)
+                                        .min(1440); // Max 24 hours
                                     {
                                         let mut st = brain.lock().await;
                                         if !st.dormindo {

@@ -145,6 +145,9 @@ fn calcular_max_neurons() -> usize {
     max_neurons.max(10_000)  // mínimo de 10k neurônios
 }
 
+// Track whether timeBeginPeriod was successfully called
+static TIME_PERIOD_SET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 // ================== FUNÇÃO PRINCIPAL ==================
 fn main() {
     // 1. Inicializa o Sistema de Logs
@@ -169,26 +172,31 @@ fn main() {
         .add_filter_ignore_str("kvs")
         .build();
 
+    let log_file = File::create("selene_debug.log")
+        .unwrap_or_else(|e| {
+            eprintln!("Warning: Could not create debug log file: {}. Logging to stderr only.", e);
+            // Create a dummy file that won't be written to
+            let null_path = if cfg!(windows) { "NUL" } else { "/dev/null" };
+            File::open(null_path).unwrap_or_else(|_| {
+                // If we can't open null device, just fail silently by creating a temp file
+                File::create("selene_debug_fallback.log")
+                    .unwrap_or_else(|_| panic!("Cannot open any log destination"))
+            })
+        });
+
     let _ = CombinedLogger::init(
         vec![
             TermLogger::new(LevelFilter::Info, term_config, TerminalMode::Mixed, ColorChoice::Auto),
-            WriteLogger::new(LevelFilter::Debug, debug_config, File::create("selene_debug.log").unwrap()),
+            WriteLogger::new(LevelFilter::Debug, debug_config, log_file),
         ]
     );
 
     // 2. Hook de Pânico
     panic::set_hook(Box::new(|panic_info| {
-        unsafe { windows::Win32::Media::timeEndPeriod(1) };
-        
-        let path_memoria_ativa = "F:/Selene/Memory_Active";
-        let path_memoria_fria = "D:/Selene_Archive";
-        let path_backup = "D:/Selene_Backup_RAM";
-
-        let _ = std::fs::create_dir_all(path_memoria_ativa);
-        let _ = std::fs::create_dir_all(path_memoria_fria);
-        let _ = std::fs::create_dir_all(path_backup);
-
-        let mut file = File::create("selene_crash_report.txt").unwrap_or_else(|_| panic!("Não foi possível criar crash report"));
+        // Only call timeEndPeriod if timeBeginPeriod was called
+        if TIME_PERIOD_SET.load(std::sync::atomic::Ordering::SeqCst) {
+            unsafe { windows::Win32::Media::timeEndPeriod(1) };
+        }
 
         let message = panic_info.payload()
             .downcast_ref::<&str>().map(|s| *s)
@@ -211,12 +219,18 @@ fn main() {
             Instant::now(), message, loc_file, loc_line
         );
 
-        let _ = file.write_all(report.as_bytes());
-        eprintln!("\n❌ CRASH DETECTADO: Relatório salvo em 'selene_crash_report.txt'");
+        // Try to write to file, but never panic in panic hook
+        if let Ok(mut file) = File::create("selene_crash_report.txt") {
+            let _ = file.write_all(report.as_bytes());
+            eprintln!("\n❌ CRASH DETECTADO: Relatório salvo em 'selene_crash_report.txt'");
+        } else {
+            eprintln!("\n❌ CRASH DETECTADO:\n{}", report);
+        }
     }));
 
     // 3. Inicia o Runtime Tokio
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = tokio::runtime::Runtime::new()
+        .expect("Failed to create Tokio runtime. Check system resources.");
     rt.block_on(async_main());
 }
 
@@ -243,7 +257,10 @@ async fn async_main() {
     // --- 1. SETUP DE HARDWARE E QUÍMICA ---
     println!("\n🔧 Inicializando hardware...");
     let sensor = match HardwareSensor::new() {
-        Ok(s) => Arc::new(TokioMutex::new(s)),
+        Ok(s) => {
+            TIME_PERIOD_SET.store(true, std::sync::atomic::Ordering::SeqCst);
+            Arc::new(TokioMutex::new(s))
+        },
         Err(e) => {
             println!("⚠️  Erro ao acessar sensores: {}. Usando simulação.", e);
             Arc::new(TokioMutex::new(HardwareSensor::dummy()))
@@ -277,6 +294,14 @@ async fn async_main() {
     };
 
     // --- 4. SETUP DO SWAP MANAGER ---
+    // V3.6 — Cria diretório do pool NVMe (F:/selene_pool_swap/)
+    if let Err(e) = std::fs::create_dir_all(storage::swap_manager::SWAP_POOL_PATH) {
+        log::warn!("[NVMe] Não foi possível criar pool de swap em '{}': {}",
+            storage::swap_manager::SWAP_POOL_PATH, e);
+    } else {
+        println!("💽 Pool NVMe pronto: {}", storage::swap_manager::SWAP_POOL_PATH);
+    }
+
     println!("🧬 Inicializando Swap Manager com neurogênese...");
     // RAM tier cap = n_neurons (já clamped em [1024, 8192]).
     // calcular_max_neurons() retorna milhões em máquinas com muita RAM — NÃO usar
@@ -1414,6 +1439,33 @@ async fn async_main() {
                 }
             }
 
+            // V3.6 — Ciclo de evicção NVMe a cada 20.000 ticks (~100s @ 200Hz).
+            // Fase 1 (dentro do lock): move Dormant→SSD, prepara lote para disco.
+            // Fase 2 (fora do lock):   escreve atomicamente (write+rename) sem bloquear cpal.
+            if step % 20_000 == 0 && step > 0 {
+                let (lote_nvme, swap_path_clone) = if let Ok(mut sw) = swap_manager.try_lock() {
+                    let n_mov = sw.evicir_dormentes_para_ssd();
+                    let lote  = sw.preparar_lote_nvme(200);
+                    let path  = sw.swap_path.clone();
+                    if n_mov > 0 || !lote.is_empty() {
+                        log::info!("[NVMe] Ciclo evicção: {}→SSD, {}→NVMe", n_mov, lote.len());
+                    }
+                    (lote, path)
+                } else {
+                    (vec![], std::path::PathBuf::from(storage::swap_manager::SWAP_POOL_PATH))
+                };
+                if !lote_nvme.is_empty() {
+                    let sm = Arc::clone(&swap_manager);
+                    tokio::spawn(async move {
+                        let uuids_ok = SwapManager::escrever_nvme(&swap_path_clone, lote_nvme).await;
+                        if !uuids_ok.is_empty() {
+                            let mut sw = sm.lock().await;
+                            sw.confirmar_evicao_nvme(&uuids_ok);
+                        }
+                    });
+                }
+            }
+
             // Embeddings: atualiza co-ativações semânticas a cada 50 ticks
             if step % 50 == 0 {
                 if let Ok(bs) = brain_state.try_lock() {
@@ -1604,6 +1656,41 @@ async fn async_main() {
             }
         }
 
+        // V3.6 — Sentinel Talâmico: se conceitos salientes têm neurônios no NVMe,
+        // dispara restauração assíncrona. O Episodic Buffer mantém contexto
+        // enquanto os neurônios "frios" são recarregados do NVMe para a RAM.
+        // Roda a cada 100 ticks (junto com o bloco P3 de d1_top_indices).
+        if step % 100 == 0 {
+            let nvme_targets: Vec<(uuid::Uuid, std::path::PathBuf)> = {
+                if let Ok(sw) = swap_manager.try_lock() {
+                    if sw.nvme_index.is_empty() {
+                        vec![] // atalho rápido quando não há nada no NVMe
+                    } else {
+                        // Coleta UUIDs no NVMe pertencentes a conceitos do neural_context
+                        let ctx_words: Vec<String> = if let Ok(bs) = brain_state.try_lock() {
+                            bs.neural_context.iter().cloned().collect()
+                        } else { vec![] };
+                        ctx_words.iter()
+                            .flat_map(|w| sw.ids_nvme_para_conceito(w))
+                            .map(|uuid| (uuid, sw.swap_path.clone()))
+                            .take(20) // limite por tick para não sobrecarregar o executor
+                            .collect()
+                    }
+                } else { vec![] }
+            };
+            if !nvme_targets.is_empty() {
+                let sm = Arc::clone(&swap_manager);
+                tokio::spawn(async move {
+                    for (uuid, path) in nvme_targets {
+                        if let Some(neuronio) = SwapManager::restaurar_do_nvme(&path, uuid).await {
+                            let mut sw = sm.lock().await;
+                            sw.integrar_restaurado(uuid, neuronio);
+                        }
+                    }
+                });
+            }
+        }
+
         // ── FASE 1d: Onda dominante → profundidade da caminhada no grafo ──────
         // Derivado do estado neurológico atual — a onda modula quantos passos
         // o graph-walk percorre, refletindo o estado atencional:
@@ -1768,6 +1855,23 @@ async fn async_main() {
         }
 
         // Decaimento global de grounding a cada 1000 ticks (~5s)
+        // V3.6 — Ciclo de vida neural: incrementa timers de inatividade e atualiza lobe_skip.
+        // Chamado a cada 1000 ticks (~5s @ 200Hz). try_lock() garante não-bloqueio.
+        if step % 1000 == 0 && step > 0 {
+            if let Ok(mut sw) = swap_manager.try_lock() {
+                sw.tick_atividade_neuronal();
+                let hibernar = sw.lobe_deve_hibernar();
+                let (n_ram, n_ssd, n_nvme) = sw.lifecycle_stats();
+                drop(sw);
+                if let Ok(mut bs) = brain_state.try_lock() {
+                    bs.lobe_skip = hibernar;
+                }
+                if hibernar {
+                    log::debug!("[NeuralLifecycle] Modo hibernação ativo: RAM={} SSD={} NVMe={}", n_ram, n_ssd, n_nvme);
+                }
+            }
+        }
+
         if step % 1000 == 0 {
             if let Ok(mut bs) = brain_state.try_lock() {
                 bs.grounding_decay();

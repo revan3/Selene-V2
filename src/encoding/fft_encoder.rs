@@ -119,7 +119,8 @@ fn suavizar_espectro(fft: &[(f32, f32)], raio_hz: f32) -> Vec<(f32, f32)> {
 fn pico_em(fft: &[(f32, f32)], f_min: f32, f_max: f32) -> Option<f32> {
     fft.iter()
         .filter(|&&(f, _)| f >= f_min && f <= f_max)
-        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+        .max_by(|a, b| a.1.partial_cmp(&b.1)
+            .unwrap_or(std::cmp::Ordering::Equal))
         .map(|&(f, _)| f)
 }
 

@@ -103,7 +103,8 @@ impl SalientCompressor {
     fn select_top_k(&self, points: Vec<SalientPoint>, k: usize) -> Vec<SalientPoint> {
         let mut sorted = points;
         sorted.sort_by(|a, b| {
-            b.amplitude.abs().partial_cmp(&a.amplitude.abs()).unwrap()
+            b.amplitude.abs().partial_cmp(&a.amplitude.abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
         
         let mut selected = Vec::new();

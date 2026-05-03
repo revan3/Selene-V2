@@ -14,8 +14,26 @@ use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 
 const DB_PATH: &str = "selene_memories.db";
-const BACKUP_ROOT: &str = "D:/Selene_Backup_RAM";
-const ARCHIVE_PATH: &str = "D:/Selene_Archive";
+
+/// Get backup root directory, preferring environment variable
+fn get_backup_root() -> String {
+    std::env::var("SELENE_BACKUP_ROOT")
+        .unwrap_or_else(|_| {
+            std::fs::canonicalize(".")
+                .map(|p| p.join("selene_backup").to_string_lossy().to_string())
+                .unwrap_or_else(|_| "./selene_backup".to_string())
+        })
+}
+
+/// Get archive path, preferring environment variable
+fn get_archive_path() -> String {
+    std::env::var("SELENE_ARCHIVE_PATH")
+        .unwrap_or_else(|_| {
+            std::fs::canonicalize(".")
+                .map(|p| p.join("selene_archive").to_string_lossy().to_string())
+                .unwrap_or_else(|_| "./selene_archive".to_string())
+        })
+}
 
 // ================== TIPOS AUXILIARES ==================
 
@@ -314,15 +332,17 @@ impl CicloSono {
         println!("\n💾 FASE 4: {}", FaseSono::N4.nome());
 
         // Garante que os diretórios de destino existem
-        let _ = std::fs::create_dir_all(BACKUP_ROOT);
-        let _ = std::fs::create_dir_all(ARCHIVE_PATH);
+        let backup_root = get_backup_root();
+        let archive_path = get_archive_path();
+        let _ = std::fs::create_dir_all(&backup_root);
+        let _ = std::fs::create_dir_all(&archive_path);
 
-        match backup_to_hdd(DB_PATH, BACKUP_ROOT).await {
+        match backup_to_hdd(DB_PATH, &backup_root).await {
             Ok(dest) => {
                 println!("   ✅ Backup concluído: {}", dest.display());
 
                 // Mantém apenas os 5 backups mais recentes para não lotar o HDD
-                Self::limpar_backups_antigos(BACKUP_ROOT, 5);
+                Self::limpar_backups_antigos(&backup_root, 5);
             }
             Err(e) => {
                 println!("   ❌ Falha no backup: {} — DB permanece íntegro no NVMe", e);
@@ -382,8 +402,9 @@ impl CicloSono {
         println!("   ✅ Memória ativa flushed para NVMe");
 
         // Backup de emergência
-        let _ = std::fs::create_dir_all(BACKUP_ROOT);
-        match backup_to_hdd(DB_PATH, BACKUP_ROOT).await {
+        let backup_root = get_backup_root();
+        let _ = std::fs::create_dir_all(&backup_root);
+        match backup_to_hdd(DB_PATH, &backup_root).await {
             Ok(dest) => println!("   ✅ Backup de shutdown salvo: {}", dest.display()),
             Err(e)   => println!("   ⚠️  Backup falhou: {} — DB intacto no NVMe", e),
         }
