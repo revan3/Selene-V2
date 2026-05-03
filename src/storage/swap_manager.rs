@@ -1566,6 +1566,16 @@ impl SwapManager {
         }
         grafo
     }
+
+    /// Limpa fast_weights expirados (TTL sem reforço).
+    /// Chamado periodicamente (ex: a cada 10s) para evitar crescimento unbounded.
+    pub fn cleanup_fast_weights_expired(&mut self) {
+        let agora = current_time();
+        self.fast_weights.retain(|_, fw| {
+            // Mantém se: foi reforçado O U ainda está dentro do TTL
+            fw.reforcos > 0 || (agora - fw.t_criacao) < FAST_WEIGHT_TTL_S
+        });
+    }
 }
 
 /// Gera embedding determinístico de 32 dimensões a partir do hash da string.

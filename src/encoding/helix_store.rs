@@ -53,16 +53,21 @@ fn write_record(buf: &mut [u8], pattern: &SpikePattern, label: &str) {
 }
 
 fn read_pattern(buf: &[u8]) -> SpikePattern {
-    debug_assert!(buf.len() >= 64);
+    if buf.len() < 64 {
+        return [0u64; 8]; // Return safe default if buffer too small
+    }
     let mut p = [0u64; 8];
     for i in 0..8 {
-        p[i] = u64::from_le_bytes(buf[i*8..(i+1)*8].try_into().unwrap());
+        p[i] = u64::from_le_bytes(buf[i*8..(i+1)*8].try_into()
+            .unwrap_or([0u8; 8])); // Safe fallback instead of panic
     }
     p
 }
 
 fn read_label(buf: &[u8]) -> &str {
-    debug_assert!(buf.len() >= 96);
+    if buf.len() < 96 {
+        return ""; // Return empty string if buffer too small
+    }
     let label_bytes = &buf[64..96];
     // Find null terminator
     let end = label_bytes.iter().position(|&b| b == 0).unwrap_or(LABEL_SIZE);

@@ -104,6 +104,11 @@ pub struct SwapStatus {
     pub fonemas_ativos: usize,
     /// Visuais ativos na camada 0 (dos 20 totais).
     pub visuais_ativos: usize,
+    // ── V3.6: Ciclo de Vida Neural ─────────────────────────────────────────
+    /// Neurônios em SSD in-memory (Dormant — candidatos ao NVMe).
+    pub neuronios_dormentes: usize,
+    /// Neurônios serializados no NVMe (fora da RAM e SSD).
+    pub neuronios_swapped: usize,
 }
 
 // O Objeto de sincronização que o main.rs usa
@@ -179,6 +184,10 @@ pub struct BrainState {
     /// true quando Selene está no ciclo de sono noturno (00:00–05:00).
     /// Qualquer interação de chat/audio/video desperta imediatamente.
     pub dormindo: bool,
+    /// V3.6 — true quando >90% dos neurônios semânticos estão fora da RAM.
+    /// O loop 200Hz usa este flag para hibernar lobos de baixa saliência
+    /// (complementa o LobeRouter existente sem substituí-lo).
+    pub lobe_skip: bool,
     /// Fase atual do sono: "N1 - Consolidação", "N2 - Poda", "N3 - REM", "N4 - Backup"
     /// Vazio quando acordada.
     pub fase_sono: String,
@@ -711,6 +720,7 @@ impl BrainState {
             ultima_atividade: Instant::now(),
             auto_learn_contagem: auto_learn_init,
             dormindo: false,
+            lobe_skip: false,
             fase_sono: String::new(),
             emocao_palavras: emocao_palavras_init,
             // grafo_causal removed
@@ -1227,16 +1237,21 @@ pub async fn collect_neural_status(state: &BrainState) -> NeuralStatus {
         },
         swap: {
             // try_lock único para ler todos os campos de uma vez
-            let (total, sinapses, n_fonemas, n_visuais, cap) = state.swap_manager
+            let (total, sinapses, n_fonemas, n_visuais, cap, n_ssd, n_nvme) = state.swap_manager
                 .try_lock()
-                .map(|g| (
-                    g.total_count(),
-                    g.sinapses_semanticas_ativas(),
-                    g.fonemas_para_id.len(),
-                    g.visuais_para_id.len(),
-                    g.max_ram_neurons,
-                ))
-                .unwrap_or((55, 0, 35, 20, 1_000_000));
+                .map(|g| {
+                    let (_, n_ssd, n_nvme) = g.lifecycle_stats();
+                    (
+                        g.total_count(),
+                        g.sinapses_semanticas_ativas(),
+                        g.fonemas_para_id.len(),
+                        g.visuais_para_id.len(),
+                        g.max_ram_neurons,
+                        n_ssd,
+                        n_nvme,
+                    )
+                })
+                .unwrap_or((55, 0, 35, 20, 1_000_000, 0, 0));
             SwapStatus {
                 neuronios_ativos,
                 total_conceitos:    total,
@@ -1244,6 +1259,8 @@ pub async fn collect_neural_status(state: &BrainState) -> NeuralStatus {
                 sinapses_aprendidas: sinapses,
                 fonemas_ativos:     n_fonemas,
                 visuais_ativos:     n_visuais,
+                neuronios_dormentes: n_ssd,
+                neuronios_swapped:   n_nvme,
             }
         },
         ondas: OndasCerebrais {

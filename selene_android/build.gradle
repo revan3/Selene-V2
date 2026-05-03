@@ -1,0 +1,17 @@
+// Projeto raiz — apenas classpath dos plugins
+// Repositórios declarados centralmente em settings.gradle (Gradle 8+ / FAIL_ON_PROJECT_REPOS)
+buildscript {
+    ext.kotlin_version = '2.0.21'
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.7.3'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+
+tasks.register('clean', Delete) {
+    delete rootProject.buildDir
+}

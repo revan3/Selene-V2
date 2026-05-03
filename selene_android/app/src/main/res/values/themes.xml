@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Tema escuro full-screen sem barra de título -->
+    <style name="Theme.Selene" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">#060a0f</item>
+        <item name="android:statusBarColor">#060a0f</item>
+        <item name="android:navigationBarColor">#060a0f</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowFullscreen">false</item>
+    </style>
+</resources>

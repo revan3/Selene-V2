@@ -1,0 +1,4 @@
+#Fri Apr 24 18:28:49 BRT 2026
+base.0=F\:\\Selene_brain_2.0\\selene_android\\app\\build\\intermediates\\dex\\debugAndroidTest\\mergeProjectDexDebugAndroidTest\\0\\classes.dex
+path.0=0/classes.dex
+renamed.0=classes.dex

@@ -148,6 +148,17 @@ fn calcular_max_neurons() -> usize {
 // Track whether timeBeginPeriod was successfully called
 static TIME_PERIOD_SET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+// ================== ESTADO PERSISTIDO - Caminhos ==================
+/// Construir caminho para arquivo de estado, permitindo override via env var
+fn get_state_path(filename: &str) -> String {
+    std::env::var("SELENE_STATE_DIR")
+        .unwrap_or_else(|_| ".".to_string())
+        .trim_end_matches('/')
+        .trim_end_matches('\\')
+        .to_string()
+        + "/" + filename
+}
+
 // ================== FUNÇÃO PRINCIPAL ==================
 fn main() {
     // 1. Inicializa o Sistema de Logs
@@ -312,7 +323,7 @@ async fn async_main() {
     ));
     // Restaura pesos sinápticos STDP da sessão anterior (se existir)
     if let Ok(mut sw) = swap_manager.try_lock() {
-        sw.carregar_estado("selene_swap_state.json");
+        sw.carregar_estado(&get_state_path("selene_swap_state.json"));
         println!("💾 SwapManager restaurado: {} conceitos | {} sinapses",
             sw.palavra_para_id.len(), sw.sinapses_conceito.len());
     }
@@ -354,7 +365,7 @@ async fn async_main() {
     let mut temporal = TemporalLobe::new(n_neurons, 0.005, 0.2, &config);
     let mut limbic = LimbicSystem::new(n_neurons / 2, &config);
     let mut hippocampus = Hippocampus::new(n_neurons / 2, &config);
-    hippocampus.load_ltp("selene_hippo_ltp.json"); // restaura pesos sinápticos persistidos
+    hippocampus.load_ltp(&get_state_path("selene_hippo_ltp.json")); // restaura pesos sinápticos persistidos
     // Restaura estado semântico do swap_manager (palavra_para_id + sinapses_conceito)
     {
         let mut swap = swap_manager.lock().await;
@@ -1436,6 +1447,8 @@ async fn async_main() {
                     sw.criar_snapshot(step as u64);
                     // One-shot: consolida ou descarta fast_weights
                     sw.consolidar_fast_weights();
+                    // Cleanup: remove fast_weights expirados sem reforço
+                    sw.cleanup_fast_weights_expired();
                 }
             }
 
@@ -2259,23 +2272,23 @@ async fn async_main() {
 
             // Fase 2: escreve fora do lock — tokio::fs não bloqueia o executor
             if let Some((json, tracos_json, pens_json, autobiografia_json, hypotheses_json, (nv, na, nc, ng))) = export_payload {
-                if let Err(e) = tokio::fs::write("selene_linguagem.json", json).await {
+                if let Err(e) = tokio::fs::write(get_state_path("selene_linguagem.json"), json).await {
                     log::warn!("[AUTO-EXPORT] Falha ao salvar linguagem: {}", e);
                 } else {
                     println!("💾 [AUTO-EXPORT] Linguagem salva: {} palavras, {} assoc, {} causal, {} grounded",
                         nv, na, nc, ng);
                 }
                 if let Some(tj) = tracos_json {
-                    let _ = tokio::fs::write("selene_ego.json", tj).await;
+                    let _ = tokio::fs::write(get_state_path("selene_ego.json"), tj).await;
                 }
                 if let Some(pj) = pens_json {
-                    let _ = tokio::fs::write("selene_memoria_ego.json", pj).await;
+                    let _ = tokio::fs::write(get_state_path("selene_memoria_ego.json"), pj).await;
                 }
                 if let Some(aj) = autobiografia_json {
-                    let _ = tokio::fs::write("selene_autobiografia.json", aj).await;
+                    let _ = tokio::fs::write(get_state_path("selene_autobiografia.json"), aj).await;
                 }
                 if let Some(hj) = hypotheses_json {
-                    let _ = tokio::fs::write("selene_hypotheses.json", hj).await;
+                    let _ = tokio::fs::write(get_state_path("selene_hypotheses.json"), hj).await;
                 }
             }
             // Auto-save do estado semântico do swap_manager
@@ -2300,7 +2313,7 @@ async fn async_main() {
                     let onto = bs.ontogeny.clone();
                     // Spawn async save to avoid blocking the 200Hz loop
                     tokio::spawn(async move {
-                        onto.salvar_async("selene_ontogeny.json").await;
+                        onto.salvar_async(&get_state_path("selene_ontogeny.json")).await;
                     });
                     if progressou {
                         println!("🧒 [ONTOGENY] Progressão automática → {}", bs.ontogeny.stage);

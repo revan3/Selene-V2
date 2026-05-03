@@ -342,6 +342,26 @@ impl ModeloDinamico {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum PrecisionType { FP32, FP16, INT8, INT4 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SEÇÃO 4b — CICLO DE VIDA NEURAL (V3.6)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Número de ticks sem corrente/spike para um neurônio tornar-se Dormant.
+/// 100.000 ticks @ 200Hz ≈ 8.3 minutos de inatividade absoluta.
+pub const INACTIVITY_THRESHOLD: u64 = 100_000;
+
+/// Estado do ciclo de vida de um NeuronioHibrido.
+/// Active  → processando correntes ou disparando recentemente.
+/// Dormant → inativo por INACTIVITY_THRESHOLD ticks; elegível para evicção SSD.
+/// Swapped → serializado no NVMe (swap_manager.nvme_index); não está em RAM nem SSD.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+pub enum NeuronalStatus {
+    #[default]
+    Active,
+    Dormant,
+    Swapped,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Int4Par(u8);
 
@@ -924,6 +944,15 @@ pub struct NeuronioHibrido {
     /// Inicializado com `tipo.bcm_theta()`; desliza com activity_avg² (τ=30s).
     /// LTP quando activity_avg > theta_m; LTD quando abaixo (BCM 1982).
     pub theta_m:       f32,
+
+    // ── V3.6: Ciclo de Vida Neural ────────────────────────────────────────────
+    /// Contador de inatividade em ticks. Incrementado a cada chamada a
+    /// SwapManager::tick_atividade_neuronal(); resetado a 0 quando a corrente
+    /// do neurônio é > 0.1 (neurônio recebendo input). Quando ≥ INACTIVITY_THRESHOLD
+    /// o status passa para Dormant e o neurônio é elegível para evicção ao NVMe.
+    pub activity_timer: u64,
+    /// Estado do ciclo de vida: Active (processando), Dormant (inativo), Swapped (no NVMe).
+    pub status: NeuronalStatus,
 }
 
 impl NeuronioHibrido {
@@ -953,6 +982,8 @@ impl NeuronioHibrido {
             input_apical:    0.0,
             bdnf:            0.0,
             theta_m:         tipo.bcm_theta(),
+            activity_timer:  0,
+            status:          NeuronalStatus::Active,
         }
     }
 

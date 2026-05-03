@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Permite HTTP cleartext para IPs locais (192.168.x.x, 10.x.x.x, 172.16-31.x.x).
+  Também permite Tailscale (100.x.x.x) e localhost.
+  NUNCA use cleartextTrafficPermitted="true" para produção pública.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+    <!-- Rede local (classe C) -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">192.168.0.0</domain>
+        <domain includeSubdomains="true">10.0.0.0</domain>
+    </domain-config>
+    <!-- Tailscale mesh VPN -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">100.64.0.0</domain>
+    </domain-config>
+    <!-- Qualquer IP não coberto acima — necessário para ranges variáveis de LAN -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system"/>
+        </trust-anchors>
+    </base-config>
+</network-security-config>

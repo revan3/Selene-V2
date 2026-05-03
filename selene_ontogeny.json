@@ -1,0 +1,14 @@
+{
+  "stage": "Discurso",
+  "metrics": {
+    "vocab_count": 0,
+    "graph_edges": 0,
+    "avg_reward": -0.09917821,
+    "horas_escuta": 0.0,
+    "total_palavras_ouvidas": 0,
+    "total_interacoes": 0
+  },
+  "auto_progress": true,
+  "stage_start_ts": 0.0,
+  "progressoes": []
+}
