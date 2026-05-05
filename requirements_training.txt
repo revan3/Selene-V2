@@ -1,0 +1,20 @@
+# Selene V3.5 — Módulo de Treinamento Auditivo Bio-Inspirado
+# =========================================================
+
+# Core audio/TTS
+pyttsx3>=2.90          # Text-to-speech (TTS)
+sounddevice>=0.4.6     # Reprodução de áudio em tempo real
+soundfile>=0.12.1      # Leitura/escrita de arquivos de áudio
+
+# Processamento de sinal
+numpy>=1.24.0          # Operações numéricas
+scipy>=1.10.0          # Processamento de sinal (ruído)
+
+# Data logging
+pandas>=2.0.0          # (opcional) para análise de logs
+
+# Opcional: aceleração
+numba>=0.57.0          # (opcional) JIT compilation para áudio
+
+# Compatibilidade
+tqdm>=4.65.0           # (opcional) barras de progresso customizadas
