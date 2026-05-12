@@ -120,7 +120,12 @@ const STOP_WORDS: &[&str] = &[
 ///
 /// Modulado pelos neurotransmissores atuais (dopamina/serotonina/noradrenaline)
 /// para que o "tom" percebido reflita o estado emocional do momento.
-fn texto_para_bandas_fft(
+///
+/// IMPORTANTE: Esta função é o ÚNICO ponto onde texto vira sinal de áudio.
+/// É um pré-processador TTS — o núcleo neural recebe apenas FFT bands daqui.
+/// Não é chamada diretamente pelas estruturas semânticas, apenas pelo handler
+/// chat para converter input em formato áudio antes do pipeline neural.
+fn tts_para_bandas(
     texto: &str,
     dopa:  f32,
     sero:  f32,
@@ -1309,43 +1314,50 @@ pub async fn handle_connection(
 
                                 Some("chat_chunk") => {
                                     // V3.4 — Escuta Ativa: fragmento de input streaming.
-                                    // Cliente envia múltiplos chunks enquanto digita/fala;
-                                    // cada chunk é injetado no ActiveContext via Atomics
-                                    // (sem Mutex no caminho quente). As 4 vozes percebem a
-                                    // mudança via current_generation() e podem reavaliar
-                                    // sua deliberação em pleno voo (Repolarização Sináptica).
-                                    let texto = json["text"].as_str()
-                                        .or_else(|| json["fragment"].as_str())
-                                        .or_else(|| json["transcript"].as_str())
-                                        .unwrap_or("");
+                                    // Agora aceita APENAS json["bands"] (FFT). Tokens são
+                                    // derivados via spike similarity contra spike_vocab.
+                                    // Texto bruto não é mais injetado no ActiveContext.
+                                    let bands32: Option<[f32; 32]> = json["bands"].as_array().map(|arr| {
+                                        let mut b = [0f32; 32];
+                                        for (i, v) in arr.iter().take(32).enumerate() {
+                                            b[i] = v.as_f64().unwrap_or(0.0) as f32;
+                                        }
+                                        b
+                                    });
                                     let is_final = json["final"].as_bool().unwrap_or(false);
-                                    if !texto.is_empty() {
-                                        // Tokeniza e injeta no ActiveContext.
-                                        let tokens: Vec<&str> = texto
-                                            .split(|c: char| !c.is_alphanumeric())
-                                            .filter(|t| t.len() > 1)
-                                            .collect();
-                                        let (ctx_clone, current_tick) = {
+                                    if let Some(bands) = bands32 {
+                                        let pat = bands_to_spike_pattern(&bands);
+                                        // Lookup no spike_vocab: encontra a melhor correspondência
+                                        // entre as bands recebidas e os padrões já aprendidos.
+                                        let (matched_token, ctx_clone, current_tick) = {
                                             let mut bs = brain.lock().await;
-                                            // V3.4: também atualiza last_lateral_words para
-                                            // alimentar a Repolarização Sináptica do walk em
-                                            // voo (Diretriz 3 — Recálculo em Voo).
-                                            for tok in &tokens {
-                                                let w = tok.to_lowercase();
+                                            let mut best: Option<(String, f32)> = None;
+                                            for (k, p) in bs.spike_vocab.iter() {
+                                                if !k.starts_with("audio:") { continue; }
+                                                let sim = spike_similarity(&pat, p);
+                                                if sim >= 0.55 && best.as_ref().map_or(true, |b| sim > b.1) {
+                                                    best = Some((k.trim_start_matches("audio:").to_string(), sim));
+                                                }
+                                            }
+                                            if let Some((ref w, _)) = best {
                                                 if bs.last_lateral_words.len() >= 8 {
                                                     bs.last_lateral_words.pop_front();
                                                 }
-                                                bs.last_lateral_words.push_back(w);
+                                                bs.last_lateral_words.push_back(w.clone());
                                             }
-                                            (bs.active_context.clone(), bs.atividade.0)
+                                            (best.map(|(w, _)| w), bs.active_context.clone(), bs.atividade.0)
                                         };
-                                        let injected = crate::learning::active_context::inject_tokens(
-                                            &ctx_clone, &tokens, 0.85, current_tick,
-                                        );
-                                        // ACK opcional para o cliente.
+                                        let tokens_owned: Vec<String> = matched_token.into_iter().collect();
+                                        let tokens_ref: Vec<&str> = tokens_owned.iter().map(|s| s.as_str()).collect();
+                                        let injected = if !tokens_ref.is_empty() {
+                                            crate::learning::active_context::inject_tokens(
+                                                &ctx_clone, &tokens_ref, 0.85, current_tick,
+                                            )
+                                        } else { 0 };
                                         let ack = serde_json::json!({
                                             "event": "chunk_ack",
                                             "tokens": injected,
+                                            "matched": tokens_owned,
                                             "final": is_final,
                                             "id": json["id"].as_str().unwrap_or(""),
                                         }).to_string();
@@ -1470,76 +1482,26 @@ pub async fn handle_connection(
                                         let (dopa, sero, _nor) = state.neurotransmissores;
                                         let (step, alerta, emocao) = state.atividade;
 
-                                        // ── SÍNTESE FONÉTICA: texto → padrão auditivo ────────
-                                        // Quando não há microfone ativo, convertemos o texto em
-                                        // um padrão de 32 bandas FFT sintético via formantes PT-BR.
-                                        // Isso garante que TODA mensagem (digitada ou transcrita)
-                                        // seja processada como experiência auditiva real pela Selene,
-                                        // habilitando grounding som→símbolo mesmo sem microfone.
+                                        // ── TTS → FFT: texto vira sinal auditivo sintético ────
+                                        // O texto NUNCA alimenta diretamente estruturas semânticas.
+                                        // É convertido em 32 bandas FFT via formantes PT-BR e injetado
+                                        // como ultimo_padrao_audio — a partir daí o pipeline neural
+                                        // processa como se fosse um microfone real. Grounding e
+                                        // aprendizado conceitual emergem do spike_vocab lookup,
+                                        // não de tokens de texto bruto.
                                         {
                                             let nor_val = state.neurotransmissores.2;
-                                            let bands = texto_para_bandas_fft(&mensagem, dopa, sero, nor_val);
+                                            let bands = tts_para_bandas(&mensagem, dopa, sero, nor_val);
                                             let audio_pat = bands_to_spike_pattern(&bands);
-                                            // Só atualiza o padrão de áudio se nenhum sinal real
-                                            // chegou recentemente (evita sobrescrever mic real).
-                                            // Heurística: padrão zerado = nenhum áudio real recente.
+                                            // Sempre sobrescreve com o sinal TTS quando texto chega
+                                            // via chat. (audio_chat com bands reais já atualizou antes.)
                                             let ultimo = state.ultimo_padrao_audio;
                                             if !crate::encoding::spike_codec::is_active(&ultimo) {
                                                 state.ultimo_padrao_audio = audio_pat;
                                             }
-                                            // Grounding fonético para todas as palavras da mensagem
-                                            let palavras_msg: Vec<String> = mensagem
-                                                .to_lowercase()
-                                                .split(|c: char| !c.is_alphabetic()
-                                                    && !"áéíóúâêôãõçàü".contains(c))
-                                                .filter(|w| w.len() >= 2)
-                                                .map(|w| w.to_string())
-                                                .collect();
-                                            if !palavras_msg.is_empty() {
-                                                let vpad = state.ultimo_padrao_visual;
-                                                state.grounding_bind(
-                                                    &palavras_msg,
-                                                    vpad,
-                                                    audio_pat,
-                                                    emocao,
-                                                    alerta,
-                                                    0.0,
-                                                );
-                                                log::debug!("[SinteseAudio] {} palavras com grounding fonético sintético", palavras_msg.len());
-                                            }
+                                            log::debug!("[TTS→FFT] mensagem convertida em padrão de áudio sintético");
                                         }
-
-                                        // ── INNER SPEECH: áudio sintético → ativa swap (txt→áudio→processamento) ─
-                                        // Fecha o primeiro elo do loop: o padrão auditivo gerado da mensagem
-                                        // reforça os conceitos via importar_causal no swap, como se Selene
-                                        // "ouvisse" internamente as palavras antes de formular a resposta.
-                                        {
-                                            let audio_pat_is = state.ultimo_padrao_audio;
-                                            if crate::encoding::spike_codec::is_active(&audio_pat_is) {
-                                                let energia_is = audio_pat_is.iter()
-                                                    .map(|b| b.count_ones()).sum::<u32>() as f32 / 512.0;
-                                                let palavras_is: Vec<String> = mensagem
-                                                    .to_lowercase()
-                                                    .split(|c: char| !c.is_alphabetic()
-                                                        && !"áéíóúâêôãõçàü".contains(c))
-                                                    .filter(|w| w.len() >= 2 && !STOP_WORDS.contains(w))
-                                                    .map(|w| w.to_string())
-                                                    .collect();
-                                                if let Ok(mut sw) = state.swap_manager.try_lock() {
-                                                    for palavra in &palavras_is {
-                                                        sw.aprender_conceito(palavra, energia_is * 0.1);
-                                                    }
-                                                    for par in palavras_is.windows(2) {
-                                                        sw.importar_causal(vec![(
-                                                            par[0].clone(), par[1].clone(),
-                                                            energia_is * 0.15,
-                                                        )]);
-                                                    }
-                                                }
-                                                log::debug!("[InnerSpeech] {} conceitos ativados (energia={:.2})",
-                                                    palavras_is.len(), energia_is);
-                                            }
-                                        }
+                                        let _ = (alerta, emocao); // mantém vars usadas adiante
 
                                         // ── HIPÓTESES: testa predições do turno anterior ──
                                         // Confronta o que Selene previu com o que o usuário realmente disse.
@@ -2330,35 +2292,14 @@ pub async fn handle_connection(
                                         // Coleta neurotransmissores para voz ANTES de liberar o lock
                                         let (dop2, ser2, nor2) = state.neurotransmissores;
 
-                                        // ── SELF-HEAR: Selene "ouve" a própria resposta (processamento→áudio→txt) ─
-                                        // Fecha o loop de saída: cada palavra da resposta recebe um padrão
-                                        // fonético no spike_vocab, tornando-as reconhecíveis via audio_raw
-                                        // em interações futuras — Selene aprende como suas palavras "soam".
-                                        if !reply.is_empty() {
-                                            let palavras_sh: Vec<String> = reply
-                                                .to_lowercase()
-                                                .split(|c: char| !c.is_alphabetic()
-                                                    && !"áéíóúâêôãõçàü".contains(c))
-                                                .filter(|w| w.len() >= 2 && !STOP_WORDS.contains(w))
-                                                .map(|w| w.to_string())
-                                                .collect();
-                                            let mut n_novas_sh = 0usize;
-                                            for palavra in &palavras_sh {
-                                                let chave = format!("audio:{}", palavra);
-                                                if !state.spike_vocab.contains_key(&chave) {
-                                                    let bands_sh = texto_para_bandas_fft(palavra, dop2, ser2, nor2);
-                                                    let pat_sh = bands_to_spike_pattern(&bands_sh);
-                                                    state.inserir_spike_vocab(chave.clone(), pat_sh);
-                                                    if let Some(ref mut helix) = state.helix {
-                                                        let _ = helix.insert(&chave, &pat_sh);
-                                                    }
-                                                    n_novas_sh += 1;
-                                                }
-                                            }
-                                            if n_novas_sh > 0 {
-                                                log::debug!("[SelfHear] {} palavras novas no spike_vocab", n_novas_sh);
-                                            }
-                                        }
+                                        // ── SELF-HEAR REMOVIDO ────────────────────────────────
+                                        // Antes: cada palavra gerada virava spike_pattern via TTS
+                                        // sintético. Isso criava entradas no spike_vocab a partir
+                                        // de texto bruto, violando o princípio áudio-primeiro.
+                                        // Auto-aprendizado fonético agora só ocorre quando o
+                                        // áudio real da resposta (cpal_output) for capturado pelo
+                                        // microfone ou enviado via audio_raw.
+                                        let _ = (dop2, ser2, nor2); // mantém vars usadas adiante
 
                                         // Registra episódio de chat no PatternEngine
                                         {
@@ -2773,18 +2714,21 @@ pub async fn handle_connection(
                                     state.ultimo_passive_tokens_hash = tokens_hash;
                                     state.ultimo_passive_hear_ts = std::time::Instant::now();
 
-                                    let (dop, ser, nor) = state.neurotransmissores;
-                                    let bandas_fft = texto_para_bandas_fft(&transcript, dop, ser, nor);
+                                    // Bands reais do STT engine (se enviadas pelo cliente) — sem
+                                    // mais texto→FFT sintético. Se ausentes, audio_pat fica zero
+                                    // (transcript vira só label de display, sem alimentar áudio).
+                                    let bandas_fft: [f32; 32] = json["bands"].as_array()
+                                        .map(|arr| {
+                                            let mut b = [0f32; 32];
+                                            for (i, v) in arr.iter().take(32).enumerate() {
+                                                b[i] = v.as_f64().unwrap_or(0.0) as f32;
+                                            }
+                                            b
+                                        })
+                                        .unwrap_or([0f32; 32]);
                                     let audio_pat = crate::encoding::spike_codec::bands_to_spike_pattern(&bandas_fft);
-                                    state.ultimo_padrao_audio = audio_pat;
-
-                                    for palavra in &tokens {
-                                        if !state.neural_context.contains(palavra) {
-                                            state.neural_context.push_back(palavra.clone());
-                                        }
-                                    }
-                                    while state.neural_context.len() > 20 {
-                                        state.neural_context.pop_front();
+                                    if crate::encoding::spike_codec::is_active(&audio_pat) {
+                                        state.ultimo_padrao_audio = audio_pat;
                                     }
 
                                     // Enfileira para Wernicke (fila FIFO — não sobrescreve mais)
@@ -3144,26 +3088,53 @@ pub async fn handle_connection(
                                 }
 
                                 // ── SET_INTENTION: agenda memória prospectiva ────────────────────
-                                // {"action":"set_intention","text":"lembrar de perguntar sobre X","delay_min":30}
+                                // Agora exige uma chave de spike_vocab já aprendida (via áudio).
+                                // Aceita: {"action":"set_intention","key":"audio:agua","delay_min":30}
+                                // O texto bruto não cria mais intenções — a Selene só pode
+                                // se lembrar de "pensar sobre X" quando X já foi experienciado.
                                 Some("set_intention") => {
-                                    let texto = json["text"].as_str().unwrap_or("").to_string();
+                                    let chave = json["key"].as_str()
+                                        .or_else(|| json["text"].as_str())  // compat: aceita texto, mas valida
+                                        .unwrap_or("")
+                                        .to_string();
                                     let delay_min = json["delay_min"].as_f64().unwrap_or(5.0) as f32;
                                     let prioridade = json["priority"].as_f64().unwrap_or(0.7) as f32;
-                                    if !texto.is_empty() {
-                                        let mut state = brain.lock().await;
-                                        let step_atual = state.atividade.0;
-                                        // 200Hz × 60s × delay_min
-                                        let delay_ticks = (200.0 * 60.0 * delay_min) as u64;
-                                        state.agendar_intencao(&texto, step_atual, delay_ticks, prioridade);
-                                        let ack = serde_json::json!({
-                                            "event": "intention_scheduled",
-                                            "text": texto,
-                                            "delay_min": delay_min,
-                                            "step_alvo": step_atual + delay_ticks,
+                                    if chave.is_empty() {
+                                        let err = serde_json::json!({
+                                            "event": "intention_error",
+                                            "reason": "missing_key"
                                         }).to_string();
-                                        drop(state);
-                                        let _ = ws_tx.send(Message::text(ack)).await;
+                                        let _ = ws_tx.send(Message::text(err)).await;
+                                        continue;
                                     }
+                                    let mut state = brain.lock().await;
+                                    // Valida: a chave deve já existir em spike_vocab (aprendida via áudio)
+                                    let chave_audio = if chave.starts_with("audio:") {
+                                        chave.clone()
+                                    } else {
+                                        format!("audio:{}", chave.to_lowercase())
+                                    };
+                                    if !state.spike_vocab.contains_key(&chave_audio) {
+                                        drop(state);
+                                        let err = serde_json::json!({
+                                            "event": "intention_error",
+                                            "reason": "unknown_concept",
+                                            "hint": "a Selene só pode lembrar de conceitos já experienciados via áudio"
+                                        }).to_string();
+                                        let _ = ws_tx.send(Message::text(err)).await;
+                                        continue;
+                                    }
+                                    let step_atual = state.atividade.0;
+                                    let delay_ticks = (200.0 * 60.0 * delay_min) as u64;
+                                    state.agendar_intencao(&chave_audio, step_atual, delay_ticks, prioridade);
+                                    let ack = serde_json::json!({
+                                        "event": "intention_scheduled",
+                                        "key": chave_audio,
+                                        "delay_min": delay_min,
+                                        "step_alvo": step_atual + delay_ticks,
+                                    }).to_string();
+                                    drop(state);
+                                    let _ = ws_tx.send(Message::text(ack)).await;
                                 }
 
                                 // ── LIST_SNAPSHOTS: lista snapshots do grafo disponíveis ─────────
@@ -3249,109 +3220,107 @@ pub async fn handle_connection(
                                 }
 
                                 // ── LEARN ─────────────────────────────────────────────
+                                // Agora aceita APENAS bands FFT. Texto bruto não alimenta
+                                // mais o núcleo. Se o cliente quiser ensinar uma palavra,
+                                // deve sintetizá-la em áudio primeiro e enviar as 32 bandas.
+                                // O campo opcional "label" serve só para display (não
+                                // alimenta estruturas neurais como key de aprendizado).
                                 Some("learn") => {
-                                    // Aceita tanto "text" (chat nativo) quanto "word" (tutor background)
-                                    let texto = json["text"].as_str()
-                                        .or_else(|| json["word"].as_str())
-                                        .unwrap_or("").to_string();
+                                    // Bands FFT obrigatório — sem texto bruto
+                                    let bands32: Option<[f32; 32]> = json["bands"].as_array().map(|arr| {
+                                        let mut b = [0f32; 32];
+                                        for (i, v) in arr.iter().take(32).enumerate() {
+                                            b[i] = v.as_f64().unwrap_or(0.0) as f32;
+                                        }
+                                        b
+                                    });
                                     let valence = json["valence"].as_f64().unwrap_or(0.0) as f32;
                                     let context = json["context"].as_str().unwrap_or("Realidade").to_string();
+                                    // Label opcional: usado apenas para display/serialização
+                                    let label = json["label"].as_str()
+                                        .or_else(|| json["text"].as_str())
+                                        .or_else(|| json["word"].as_str())
+                                        .unwrap_or("")
+                                        .to_lowercase();
 
-                                    if !texto.is_empty() {
-                                        let mut state = brain.lock().await;
-                                        let (dopa, sero, nor) = state.neurotransmissores;
-                                        let (step, alerta, emocao) = state.atividade;
-
-                                        // Valência modula neurotransmissores
-                                        let nova_dopa = (dopa + valence * 0.04).clamp(0.0, 2.0);
-                                        let nova_sero = (sero + if valence >= 0.0 { 0.015 } else { -0.02 }).clamp(0.0, 1.5);
-                                        let nova_nor  = (nor  + valence.abs() * 0.01).clamp(0.0, 2.0);
-                                        state.neurotransmissores = (nova_dopa, nova_sero, nova_nor);
-
-                                        // Estado emocional se aproxima da valência (EMA α=0.1)
-                                        let nova_emocao = (emocao * 0.9 + valence * 0.1).clamp(-1.0, 1.0);
-                                        state.atividade = (step, alerta, nova_emocao);
-
-                                        // Sinaliza atividade WS → mantém 200Hz durante treinamento
-                                        state.ws_atividade = 1.0;
-                                        // Aprende conceito no swap (EMA de valência via aprender_conceito)
-                                        let texto_lower = texto.to_lowercase();
-                                        if let Ok(mut sw) = state.swap_manager.try_lock() {
-                                            sw.aprender_conceito(&texto_lower, valence * 0.3);
+                                    let bands32 = match bands32 {
+                                        Some(b) => b,
+                                        None => {
+                                            let err = serde_json::json!({
+                                                "event": "learn_error",
+                                                "reason": "missing_bands",
+                                                "hint": "envie json[\"bands\"] com 32 floats FFT — texto não é mais aceito como entrada"
+                                            }).to_string();
+                                            let _ = ws_tx.send(Message::text(err)).await;
+                                            continue;
                                         }
+                                    };
 
-                                        // ── SPIKE ENCODING (Helix) ─────────────────────
-                                        // Codifica a palavra em padrão spike e persiste no HelixStore.
-                                        let spike_pat = spike_encode(&texto_lower);
-                                        state.inserir_spike_vocab(texto_lower.clone(), spike_pat);
-                                        if let Some(ref mut helix) = state.helix {
-                                            let _ = helix.insert(&texto_lower, &spike_pat);
-                                        }
+                                    let mut state = brain.lock().await;
+                                    let (dopa, sero, nor) = state.neurotransmissores;
+                                    let (step, alerta, emocao) = state.atividade;
 
-                                        // ── APRENDIZADO BIOLÓGICO — CAMADAS 1 + CONCEITUAL ──
-                                        // Camada 1: reforça sinapses STDP entre fonemas primitivos
-                                        //   (a palavra existe como cadeia sináptica fonêmica)
-                                        // Conceitual: cria/atualiza população de POPULACAO_N neurônios
-                                        //   para o conceito (codificação em população)
-                                        {
-                                            use crate::encoding::phoneme::word_to_phonemes;
-                                            let fonemas = word_to_phonemes(&texto_lower);
-                                            let tags: Vec<String> = fonemas.iter()
-                                                .filter(|&&ph| ph != crate::encoding::phoneme::Phoneme::SIL)
-                                                .map(|ph| format!("ph:{}", format!("{:?}", ph).to_lowercase()))
-                                                .collect();
-                                            let mut swap = state.swap_manager.lock().await;
-                                            if !tags.is_empty() {
-                                                swap.aprender_sequencia_fonemas(&tags, valence);
-                                            }
-                                            // Camada conceitual: população de neurônios por palavra
-                                            swap.aprender_conceito(&texto_lower, valence);
-                                        }
+                                    // Valência modula neurotransmissores
+                                    let nova_dopa = (dopa + valence * 0.04).clamp(0.0, 2.0);
+                                    let nova_sero = (sero + if valence >= 0.0 { 0.015 } else { -0.02 }).clamp(0.0, 1.5);
+                                    let nova_nor  = (nor  + valence.abs() * 0.01).clamp(0.0, 2.0);
+                                    state.neurotransmissores = (nova_dopa, nova_sero, nova_nor);
 
-                                        // Registra episódio no PatternEngine
-                                        {
-                                            use crate::learning::pattern_engine::FonteEpisodio;
-                                            let t_s = std::time::SystemTime::now()
-                                                .duration_since(std::time::UNIX_EPOCH)
-                                                .unwrap_or_default()
-                                                .as_secs_f64();
-                                            let (da, ht, na) = state.neurotransmissores;
-                                            let neuro = [da, ht, na, 0.5, 0.0];
-                                            let contexto_ep = state.neural_context.iter().cloned().collect::<Vec<_>>();
-                                            state.pattern_engine.gravar(
-                                                t_s,
-                                                FonteEpisodio::Aprendizado,
-                                                contexto_ep,
-                                                texto_lower.clone(),
-                                                Some(context.clone()),
-                                                valence,
-                                                neuro,
-                                            );
-                                        }
+                                    // Estado emocional se aproxima da valência (EMA α=0.1)
+                                    let nova_emocao = (emocao * 0.9 + valence * 0.1).clamp(-1.0, 1.0);
+                                    state.atividade = (step, alerta, nova_emocao);
 
-                                        // Registra pensamento no ego
-                                        let pensamento = format!("[{}] {} (val={:.2})", context, texto, valence);
-                                        if state.ego.pensamentos_recentes.len() >= 10 {
-                                            state.ego.pensamentos_recentes.pop_front();
-                                        }
-                                        state.ego.pensamentos_recentes.push_back(pensamento);
+                                    // Sinaliza atividade WS → mantém 200Hz durante treinamento
+                                    state.ws_atividade = 1.0;
 
-                                        let ack = serde_json::json!({
-                                            "event":        "learn_ack",
-                                            "word":         texto,
-                                            "valence":      valence,
-                                            "context":      context,
-                                            "dopamine":     nova_dopa,
-                                            "serotonin":    nova_sero,
-                                            "noradrenaline": nova_nor,
-                                            "emotion":      nova_emocao,
-                                            "step":         step,
-                                        }).to_string();
-                                        // Libera o lock antes do I/O de rede
-                                        drop(state);
-                                        let _ = ws_tx.send(Message::text(ack)).await;
-                                        log::debug!("[LEARN] '{}' val={:.2} ctx={}", texto, valence, context);
+                                    // ── SPIKE PATTERN DAS BANDS ───────────────────────
+                                    // Padrão derivado APENAS do sinal FFT (não do texto).
+                                    let spike_pat = bands_to_spike_pattern(&bands32);
+
+                                    // Chave do spike_vocab: hash do padrão se sem label,
+                                    // ou "audio:{label}" se houver label de display.
+                                    let chave = if label.is_empty() {
+                                        let h = spike_pat.iter().fold(0u64, |a, &b| a.wrapping_mul(0x100000001b3).wrapping_add(b));
+                                        format!("audio:#{:x}", h)
+                                    } else {
+                                        format!("audio:{}", label)
+                                    };
+                                    state.inserir_spike_vocab(chave.clone(), spike_pat);
+                                    if let Some(ref mut helix) = state.helix {
+                                        let _ = helix.insert(&chave, &spike_pat);
                                     }
+                                    state.ultimo_padrao_audio = spike_pat;
+
+                                    // SwapManager: usa a chave do spike como label de conceito
+                                    // (será trocado por u32 ID no Sprint 2). O aprendizado real
+                                    // é feito via padrão de spike, não via texto bruto.
+                                    if let Ok(mut sw) = state.swap_manager.try_lock() {
+                                        sw.aprender_conceito(&chave, valence * 0.3);
+                                    }
+
+                                    // Registra pensamento no ego (display only)
+                                    let pensamento = format!("[{}] {} (val={:.2})", context, chave, valence);
+                                    if state.ego.pensamentos_recentes.len() >= 10 {
+                                        state.ego.pensamentos_recentes.pop_front();
+                                    }
+                                    state.ego.pensamentos_recentes.push_back(pensamento);
+
+                                    let ack = serde_json::json!({
+                                        "event":        "learn_ack",
+                                        "key":          chave,
+                                        "label":        label,
+                                        "valence":      valence,
+                                        "context":      context,
+                                        "dopamine":     nova_dopa,
+                                        "serotonin":    nova_sero,
+                                        "noradrenaline": nova_nor,
+                                        "emotion":      nova_emocao,
+                                        "step":         step,
+                                    }).to_string();
+                                    // Libera o lock antes do I/O de rede
+                                    drop(state);
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                    log::debug!("[LEARN] bands→spike val={:.2} ctx={}", valence, context);
                                 }
 
                                 // ── TEMPLATE_USE ──────────────────────────────────────
@@ -3705,14 +3674,11 @@ pub async fn handle_connection(
                                 }
 
                                 // ── LEARN_FRASE ────────────────────────────────────────
-                                // Ensina um padrão de início de frase.
-                                // {"action":"learn_frase","words":["eu","sinto"]}
-                                //
-                                // Detecta conectivos causais na sequência de palavras.
-                                // Se encontrar "porque", "então", "causa", "logo", "portanto",
-                                // "resulta", "leva", "gera", "implica", "deriva" entre duas
-                                // palavras de conteúdo, cria uma aresta causal dirigida
-                                // causa → efeito no grafo_causal.
+                                // Ensina uma sequência de conceitos que já foram experienciados
+                                // via áudio. Cada palavra deve corresponder a um spike_vocab
+                                // key existente — caso contrário a frase é rejeitada (não
+                                // criamos mais conceitos a partir de texto bruto).
+                                // {"action":"learn_frase","words":["agua","quente"]}
                                 Some("learn_frase") => {
                                     if let Some(arr) = json["words"].as_array() {
                                         let palavras: Vec<String> = arr.iter()
@@ -3720,6 +3686,23 @@ pub async fn handle_connection(
                                             .filter(|s| s.chars().count() >= 2)
                                             .take(7)
                                             .collect();
+                                        // Validação: cada palavra deve já existir em spike_vocab
+                                        // (foi aprendida via áudio com sinal FFT real)
+                                        let valida = {
+                                            let st = brain.lock().await;
+                                            palavras.iter().all(|p| {
+                                                st.spike_vocab.contains_key(&format!("audio:{}", p))
+                                            })
+                                        };
+                                        if !valida {
+                                            let err = serde_json::json!({
+                                                "event": "frase_error",
+                                                "reason": "unknown_concepts",
+                                                "hint": "todas as palavras devem ter sido aprendidas via áudio antes"
+                                            }).to_string();
+                                            let _ = ws_tx.send(Message::text(err)).await;
+                                            continue;
+                                        }
                                         if palavras.len() >= 2 {
                                             // ── Feed neural: cada token entra no swap como conceito ──
                                             // Cada palavra da frase ativa sua população de neurônios via
@@ -4103,183 +4086,19 @@ pub async fn handle_connection(
                                 }
                             } // fim match json["action"]
                             } else {
-                                // Mensagem simples de chat (texto puro — interface mobile/desktop)
-                                println!("💬 [CHAT] Recebido: {}", text);
-                                // Snapshot neural: clona Arc antes de bloquear brain
-                                let swap_arc_s = {
-                                    let tmp = brain.lock().await;
-                                    tmp.swap_manager.clone()
-                                };
-                                let (grafo_neural_s, valencias_neural_s, scaffold_s) = {
-                                    let mut s = swap_arc_s.lock().await;
-                                    let tokens_s: Vec<String> = text.to_lowercase()
-                                        .split(|c: char| !c.is_alphanumeric())
-                                        .filter(|t| t.len() > 1)
-                                        .map(|t| t.to_string())
-                                        .collect();
-                                    let (scaffold, _) = s.template_scaffold(&tokens_s);
-                                    (s.grafo_palavras(), s.valencias_palavras(), scaffold)
-                                };
-                                let causal_vazio_s: HashMap<String, Vec<(String, f32)>> = HashMap::new();
-                                let mut state = brain.lock().await;
-                                let (dopa, sero, _nor) = state.neurotransmissores;
-                                let (step, alerta, emocao) = state.atividade;
-
-                                let msg_lower = text.to_lowercase();
-                                let valence = msg_lower.split_whitespace()
-                                    .filter_map(|t| valencias_neural_s.get(t).copied())
-                                    .max_by(|a, b| a.abs().partial_cmp(&b.abs()).unwrap_or(std::cmp::Ordering::Equal))
-                                    .unwrap_or(0.0);
-
-                                let emocao_resp = (emocao * 0.6 + valence * 0.4).clamp(-1.0, 1.0);
-                                state.ws_atividade = 1.0;
-
-                                let n_passos = ((state.n_passos_walk as f32 + state.habituation_nivel * 3.0) as usize).clamp(4, 18);
-                                let emocao_bias = state.emocao_bias;
-                                state.reply_count = state.reply_count.wrapping_add(1);
-                                let diversity_seed = step ^ state.reply_count.wrapping_mul(6364136223846793005);
-                                let mut caminho_q: Vec<String> = Vec::new();
-                                let mut prefixo_buf: Vec<String> = Vec::new();
-                                let mut ancora_log2: Option<String> = None;
-                                let ctx_log2: Vec<String> = {
-                                    let mut ctx = conversa_ctx.clone();
-                                    ctx.extend(state.frontal_goal_words.iter().cloned());
-                                    ctx
-                                };
-                                // V3.4 — Recálculo em Voo via ActiveContext.
-                                let v34_active_ctx2 = Arc::clone(&state.active_context);
-                                let v34_lateral_words2: Vec<String> =
-                                    state.last_lateral_words.iter().cloned().collect();
-                                let v34_abort_flag2 = Arc::clone(&state.go_nogo.force_interrupt);
-                                let reply = gerar_resposta_emergente(
-                                    &text, diversity_seed, emocao_resp,
-                                    emocao_bias, n_passos,
-                                    dopa, sero,
-                                    &valencias_neural_s,
-                                    &grafo_neural_s,
-                                    &state.frases_padrao,
-                                    &state.indice_prefixo,
-                                    &state.ultimos_prefixos.iter().cloned().collect::<Vec<_>>(),
-                                    &ctx_log2,
-                                    &mut caminho_q,
-                                    &state.emocao_palavras,
-                                    &mut prefixo_buf,
-                                    &state.grounding,
-                                    &causal_vazio_s,
-                                    &state.palavra_qvalores,
-                                    &mut ancora_log2,
-                                    &state.ultimo_estado_corpo,
-                                    &scaffold_s,
-                                    &state.trigrama_cache,
-                                    Some(&v34_active_ctx2),
-                                    &v34_lateral_words2,
-                                    Some(&v34_abort_flag2),
-                                );
-                                // ── LOG ─────────────────────────────────────────
-                                {
-                                    let qbias: Vec<(String, f32)> = {
-                                        let mut v: Vec<(String, f32)> = state.palavra_qvalores
-                                            .iter().filter(|(_, &q)| q.abs() > 0.05)
-                                            .map(|(w, &q)| (w.clone(), q)).collect();
-                                        v.sort_by(|a, b| b.1.abs().partial_cmp(&a.1.abs()).unwrap_or(std::cmp::Ordering::Equal));
-                                        v.truncate(3);
-                                        v
-                                    };
-                                    log_turno(&text, ancora_log2.as_deref(), n_passos,
-                                        emocao_resp, dopa, sero,
-                                        valencias_neural_s.len(),
-                                        grafo_neural_s.len(),
-                                        &caminho_q, &prefixo_buf, &reply, reply.is_empty(),
-                                        &ctx_log2, &qbias, state.ultimo_rpe);
-                                }
-                                state.ultimos_prefixos.push_back(prefixo_buf);
-                                if state.ultimos_prefixos.len() > 5 { state.ultimos_prefixos.pop_front(); }
-                                state.ultimo_caminho_walk = caminho_q.clone();
-                                for i in 0..caminho_q.len().saturating_sub(1) {
-                                    let par = (caminho_q[i].clone(), caminho_q[i+1].clone());
-                                    *state.aresta_contagem.entry(par).or_insert(0) += 1;
-                                }
-                                state.ultima_atividade = std::time::Instant::now();
-
-                                // Registra pensamento
-                                let pensamento = format!("Pergunta: «{}» (val={:+.2})", text, valence);
-                                if state.ego.pensamentos_recentes.len() >= 10 {
-                                    state.ego.pensamentos_recentes.pop_front();
-                                }
-                                state.ego.pensamentos_recentes.push_back(pensamento);
-                                state.atividade = (step, alerta, emocao_resp);
-
-                                // ── GATE DE ONTOGENIA ───────────────────────────────────
-                                let ontogeny_s = state.ontogeny.stage;
-                                let reply_s = if ontogeny_s.pode_responder() {
-                                    ontogeny_s.max_palavras()
-                                        .map(|max| {
-                                            let words: Vec<&str> = reply.split_whitespace().collect();
-                                            if words.len() <= max { reply.clone() }
-                                            else { words[..max].join(" ") }
-                                        })
-                                        .unwrap_or_else(|| reply.clone())
-                                } else {
-                                    log::debug!("[ONTOGENY] Estágio {:?} — suprimindo resposta verbal (mobile/text).", ontogeny_s);
-                                    String::new()
-                                };
-
-                                let (dop2, ser2, nor2) = state.neurotransmissores;
-                                let formants = sentence_to_formants(&reply_s, dop2, ser2, nor2);
-
-                                // Fase C: coletar frames FFT para síntese neural
-                                let neural_frames: Vec<[f32; 32]> = reply_s
-                                    .split_whitespace()
-                                    .flat_map(|w| {
-                                        let wl: String = w.chars()
-                                            .filter(|c| c.is_alphabetic())
-                                            .collect::<String>()
-                                            .to_lowercase();
-                                        state.audio_frames.get(&wl)
-                                            .map(|v| v.clone())
-                                            .unwrap_or_default()
-                                    })
-                                    .collect();
-
-                                let audio_out = state.audio_output.clone();
-                                drop(state);
-
-                                if reply_s.is_empty() {
-                                    // Neonatal/PreVerbal: absorve input sem vocalizar
-                                } else {
-                                    let resp = serde_json::json!({
-                                        "event":   "chat_reply",
-                                        "message": reply_s,
-                                        "emotion": emocao_resp,
-                                        "arousal": alerta,
-                                    }).to_string();
-
-                                    // Síntese: neural (>= 4 frames) ou Klatt paramétrico
-                                    let pcm = if neural_frames.len() >= 4 {
-                                        let dur_ms = neural_frames.len() as f32 * 50.0;
-                                        crate::synthesis::formant_synth::sintetizar_neural(
-                                            &neural_frames, 120.0, dur_ms,
-                                        )
-                                    } else {
-                                        crate::synthesis::formant_synth::sintetizar(&formants)
-                                    };
-
-                                    // Saída nativa (servidor local)
-                                    if let Some(ao) = &audio_out {
-                                        ao.enqueue(
-                                            pcm,
-                                            crate::synthesis::formant_synth::SAMPLE_RATE,
-                                        );
-                                    }
-
-                                    println!("💬 [CHAT] Resposta: {}", reply_s);
-                                    let _ = ws_tx.send(Message::text(resp)).await;
-                                    // Porta mobile: envia voz_params para clientes remotos
-                                    if let Ok(fj) = serde_json::to_string(&formants) {
-                                        let voz = format!(r#"{{"event":"voz_params","formants":{}}}"#, fj);
-                                        let _ = ws_tx.send(Message::text(voz)).await;
-                                    }
-                                }
+                                // ── PLAIN-TEXT FALLBACK REMOVIDO ───────────────────────
+                                // Mensagens não-JSON ou sem action são rejeitadas. Toda
+                                // comunicação agora exige formato JSON com "action" e
+                                // payload de áudio (bands/audio_raw) ou texto via "chat"
+                                // (que internamente é convertido para FFT antes de
+                                // tocar o núcleo neural).
+                                log::warn!("[WS] Mensagem não-JSON ignorada (texto puro não é mais aceito como entrada direta): {} chars", text.len());
+                                let err = serde_json::json!({
+                                    "event": "input_error",
+                                    "reason": "text_input_not_supported",
+                                    "hint": "envie JSON com action e payload de áudio (bands ou audio_raw)"
+                                }).to_string();
+                                let _ = ws_tx.send(Message::text(err)).await;
                             }
                         }
                     }
