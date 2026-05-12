@@ -369,7 +369,7 @@ async fn async_main() {
     // Restaura estado semântico do swap_manager (palavra_para_id + sinapses_conceito)
     {
         let mut swap = swap_manager.lock().await;
-        swap.carregar_estado("selene_swap_state.json");
+        swap.carregar_estado(&get_state_path("selene_swap_state.json"));
         // Garante que todos os 55 neurônios primitivos existam (idempotente).
         // Deve ser chamado DEPOIS de carregar_estado para não duplicar UUIDs
         // que foram persistidos em sessões anteriores.
