@@ -127,6 +127,9 @@ class DatasetSemantico:
         self.frases_templates = self._gerar_templates_frases()
         self.significados_ordem = list(self.nucleos.keys())
         random.shuffle(self.significados_ordem)
+        # Atributos de configuração
+        self.frases_por_significado = config.frases_por_significado
+        self.palavras_por_significado = config.palavras_por_significado
 
     def _gerar_nucleos_unicos(self) -> Dict[str, List[str]]:
         """60 núcleos semânticos únicos com 5 sinônimos cada"""
@@ -216,45 +219,45 @@ class DatasetSemantico:
             "Adaptação": ["adaptação", "ajustamento", "adequação", "conformação", "acomodação"],
         }
 
-        return nucleos[:60]  # Garantir 60 núcleos
+        return nucleos  # 60 núcleos semânticos
 
     def _gerar_templates_frases(self) -> Dict[str, List[str]]:
         """Templates de frases para cada contexto"""
         return {
             "descritivo": [
-                "A palavra '{}' significa {}.",
-                "Quando falamos de '{}', nos referimos a {}.",
-                "O conceito de '{}' descreve {}.",
-                "Podemos definir '{}' como {}.",
-                "A essência de '{}' é {}.",
+                "A palavra '{}' é importante.",
+                "Quando falamos de '{}', é um conceito fundamental.",
+                "O conceito de '{}' é relevante.",
+                "Podemos definir '{}' com clareza.",
+                "A essência de '{}' é profunda.",
             ],
             "relacional": [
-                "'{}' está conectado a {}.",
-                "'{}' frequentemente acompanha {}.",
-                "Existe uma relação entre '{}' e {}.",
-                "'{}' é resultado de {}.",
-                "'{}' pode levar a {}.",
+                "'{}' está conectado a conceitos maiores.",
+                "'{}' frequentemente aparece em combinações.",
+                "Existe uma relação entre '{}' e outros termos.",
+                "'{}' é resultado de processos complexos.",
+                "'{}' pode levar a consequências interessantes.",
             ],
             "temporal": [
-                "Antes de '{}', vem {}.",
-                "Durante '{}', ocorre {}.",
-                "Depois de '{}', segue {}.",
-                "'{}' começa quando {}.",
-                "'{}' termina após {}.",
+                "Antes de '{}', vem preparação.",
+                "Durante '{}', ocorrem transformações.",
+                "Depois de '{}', segue consolidação.",
+                "'{}' começa com reconhecimento.",
+                "'{}' termina com integração.",
             ],
             "causal": [
-                "'{}' causa {}.",
-                "'{}' é causado por {}.",
-                "Se temos '{}', então {}.",
-                "'{}' resulta em {}.",
-                "Por causa de '{}', acontece {}.",
+                "'{}' causa mudanças significativas.",
+                "'{}' é causado por processos anteriores.",
+                "Se temos '{}', então há consequências.",
+                "'{}' resulta em aprendizado.",
+                "Por causa de '{}', acontecem eventos.",
             ],
             "comparativo": [
-                "'{}' é similar a {}.",
-                "'{}' é oposto a {}.",
-                "Entre '{}' e '{}', a diferença é {}.",
-                "'{}' é mais do que {}.",
-                "'{}' é menos do que {}.",
+                "'{}' é similar em estrutura.",
+                "'{}' é oposto em função.",
+                "Entre '{}' e conceitos similares há diferenças.",
+                "'{}' é mais complexo que alternativas.",
+                "'{}' é essencial para compreensão.",
             ],
         }
 
@@ -292,7 +295,7 @@ class MotorAudioAvancado:
         if pyttsx3:
             self.engine = pyttsx3.init()
             self.engine.setProperty('rate', config.velocidade_fala)
-            logger.info("✅ TTS (pyttsx3) inicializado")
+            logger.info("[OK] TTS (pyttsx3) inicializado")
         else:
             logger.warning("⚠️  TTS não disponível")
 
@@ -475,7 +478,7 @@ class TesterInteligente:
 
     def teste_simples_fase1(self, significado: str, palavras_ensinadas: List[str]) -> bool:
         """Teste simples Fase 1: reconhecer palavras"""
-        logger.info(f"\n  🧪 TESTE FASE 1: Reconhecimento de palavras '{significado}'")
+        logger.info(f"\n  [TEST] TESTE FASE 1: Reconhecimento de palavras '{significado}'")
 
         # Escolher 3 palavras corretas + 2 incorretas
         corretas = random.sample(palavras_ensinadas, min(3, len(palavras_ensinadas)))
@@ -491,9 +494,9 @@ class TesterInteligente:
             acertou = random.random() < 0.8
             if acertou:
                 reconhecidas += 1
-                print("    ✅ Correto!")
+                print("    [OK] Correto!")
             else:
-                print("    ❌ Erro")
+                print("    [FAIL] Erro")
 
         taxa_sucesso = reconhecidas / len(corretas)
         self.logger.registrar(
@@ -505,7 +508,7 @@ class TesterInteligente:
 
     def teste_simples_fase2(self, significado: str, frases_ensinadas: List[str]) -> bool:
         """Teste simples Fase 2: reconhecer significado"""
-        logger.info(f"\n  🧪 TESTE FASE 2: Compreensão de '{significado}'")
+        logger.info(f"\n  [TEST] TESTE FASE 2: Compreensão de '{significado}'")
 
         # Escolher 2 frases corretas
         corretas = random.sample(frases_ensinadas, min(2, len(frases_ensinadas)))
@@ -520,9 +523,9 @@ class TesterInteligente:
             acertou = random.random() < 0.75
             if acertou:
                 reconhecidas += 1
-                print("    ✅ Correto!")
+                print("    [OK] Correto!")
             else:
-                print("    ❌ Erro")
+                print("    [FAIL] Erro")
 
         taxa_sucesso = reconhecidas / len(corretas)
         self.logger.registrar(
@@ -556,7 +559,7 @@ class FaseLexico:
         logger.info(f"{'='*70}")
 
         # ===== ENSINO: 15 minutos =====
-        logger.info(f"\n⏱️  Ensino por {config.tempo_ensino_lexico_min} minutos...")
+        logger.info(f"\n[TIMER]  Ensino por {config.tempo_ensino_lexico_min} minutos...")
         tempo_inicio = time.time()
         tempo_maximo = config.tempo_ensino_lexico_min * 60 if not config.modo_teste_rapido else 10
 
@@ -577,31 +580,31 @@ class FaseLexico:
 
             repeticoes += 1
             progresso = (time.time() - tempo_inicio) / tempo_maximo
-            print(f"\r   [{int(progresso*30)*'█'}{(30-int(progresso*30))*'░'}] {progresso*100:.0f}%",
-                  end="", flush=True)
+            bar = '#' * int(progresso * 30) + '-' * (30 - int(progresso * 30))
+            print(f"\r   [{bar}] {progresso*100:.0f}%", end="", flush=True)
 
             time.sleep(0.5)  # Pausa entre repetições
 
-        print(f"\n   ✅ {repeticoes} repetições concluídas")
+        print(f"\n   [OK] {repeticoes} repetições concluídas")
 
         # ===== REM: 20 minutos =====
-        logger.info(f"\n💤 Consolidação REM por {config.tempo_rem_min} minutos...")
+        logger.info(f"\n[SLEEP] Consolidação REM por {config.tempo_rem_min} minutos...")
         tempo_rem = config.tempo_rem_min * 60 if not config.modo_teste_rapido else 5
 
         tempo_inicio = time.time()
         while time.time() - tempo_inicio < tempo_rem:
             progresso = (time.time() - tempo_inicio) / tempo_rem
-            print(f"\r   [{int(progresso*30)*'█'}{(30-int(progresso*30))*'░'}] {progresso*100:.0f}%",
-                  end="", flush=True)
+            bar = '#' * int(progresso * 30) + '-' * (30 - int(progresso * 30))
+            print(f"\r   [{bar}] {progresso*100:.0f}%", end="", flush=True)
             time.sleep(1)
 
-        print("\n   ✅ REM consolidation completa")
+        print("\n   [OK] REM consolidation completa")
 
         # ===== TESTE =====
         sucesso = self.tester.teste_simples_fase1(significado, palavras)
 
         if sucesso:
-            logger.info(f"   ✅ Significado '{significado}' aprendido!")
+            logger.info(f"   [OK] Significado '{significado}' aprendido!")
         else:
             logger.info(f"   ⚠️  Baixo desempenho em '{significado}' - repetir recomendado")
 
@@ -625,7 +628,7 @@ class FaseLexico:
             logger.info("\n⏸️  Pausa de 2 minutos entre significados...")
             time.sleep(2 if config.modo_teste_rapido else 120)
 
-        logger.info(f"\n\n✨ FASE 1 COMPLETA!")
+        logger.info(f"\n\n[DONE] FASE 1 COMPLETA!")
         logger.info(f"   Sucessos: {sucessos}/{config.significados} ({sucessos/config.significados*100:.1f}%)")
 
         return sucessos / config.significados >= 0.6
@@ -653,7 +656,7 @@ class FaseSintatica:
         logger.info(f"{'='*70}")
 
         # ===== ENSINO: 20 minutos =====
-        logger.info(f"\n⏱️  Ensino por {config.tempo_ensino_sintatico_min} minutos...")
+        logger.info(f"\n[TIMER]  Ensino por {config.tempo_ensino_sintatico_min} minutos...")
         tempo_inicio = time.time()
         tempo_maximo = config.tempo_ensino_sintatico_min * 60 if not config.modo_teste_rapido else 10
 
@@ -673,31 +676,31 @@ class FaseSintatica:
 
             repeticoes += 1
             progresso = (time.time() - tempo_inicio) / tempo_maximo
-            print(f"\r   [{int(progresso*30)*'█'}{(30-int(progresso*30))*'░'}] {progresso*100:.0f}%",
-                  end="", flush=True)
+            bar = '#' * int(progresso * 30) + '-' * (30 - int(progresso * 30))
+            print(f"\r   [{bar}] {progresso*100:.0f}%", end="", flush=True)
 
             time.sleep(0.5)
 
-        print(f"\n   ✅ {repeticoes} repetições concluídas")
+        print(f"\n   [OK] {repeticoes} repetições concluídas")
 
         # ===== REM: 20 minutos =====
-        logger.info(f"\n💤 Consolidação REM por {config.tempo_rem_min} minutos...")
+        logger.info(f"\n[SLEEP] Consolidação REM por {config.tempo_rem_min} minutos...")
         tempo_rem = config.tempo_rem_min * 60 if not config.modo_teste_rapido else 5
 
         tempo_inicio = time.time()
         while time.time() - tempo_inicio < tempo_rem:
             progresso = (time.time() - tempo_inicio) / tempo_rem
-            print(f"\r   [{int(progresso*30)*'█'}{(30-int(progresso*30))*'░'}] {progresso*100:.0f}%",
-                  end="", flush=True)
+            bar = '#' * int(progresso * 30) + '-' * (30 - int(progresso * 30))
+            print(f"\r   [{bar}] {progresso*100:.0f}%", end="", flush=True)
             time.sleep(1)
 
-        print("\n   ✅ REM consolidation completa")
+        print("\n   [OK] REM consolidation completa")
 
         # ===== TESTE =====
         sucesso = self.tester.teste_simples_fase2(significado, frases)
 
         if sucesso:
-            logger.info(f"   ✅ Contexto '{significado}' aprendido!")
+            logger.info(f"   [OK] Contexto '{significado}' aprendido!")
         else:
             logger.info(f"   ⚠️  Baixo desempenho contextual em '{significado}'")
 
@@ -721,7 +724,7 @@ class FaseSintatica:
             logger.info("\n⏸️  Pausa de 2 minutos entre significados...")
             time.sleep(2 if config.modo_teste_rapido else 120)
 
-        logger.info(f"\n\n✨ FASE 2 COMPLETA!")
+        logger.info(f"\n\n[DONE] FASE 2 COMPLETA!")
         logger.info(f"   Sucessos: {sucessos}/{config.significados} ({sucessos/config.significados*100:.1f}%)")
 
         return sucessos / config.significados >= 0.5
@@ -747,7 +750,7 @@ class FaseSemantica:
         logger.info(f"{'='*70}")
 
         # ===== ENSINO: 25 minutos COM MÚLTIPLAS CAMADAS =====
-        logger.info(f"\n⏱️  Ensino complexo por {config.tempo_ensino_semantico_min} minutos...")
+        logger.info(f"\n[TIMER]  Ensino complexo por {config.tempo_ensino_semantico_min} minutos...")
         tempo_inicio = time.time()
         tempo_maximo = config.tempo_ensino_semantico_min * 60 if not config.modo_teste_rapido else 10
 
@@ -784,36 +787,36 @@ class FaseSemantica:
 
             repeticoes += 1
             progresso = (time.time() - tempo_inicio) / tempo_maximo
-            print(f"\r   [{int(progresso*30)*'█'}{(30-int(progresso*30))*'░'}] {progresso*100:.0f}%",
-                  end="", flush=True)
+            bar = '#' * int(progresso * 30) + '-' * (30 - int(progresso * 30))
+            print(f"\r   [{bar}] {progresso*100:.0f}%", end="", flush=True)
 
             time.sleep(0.5)
 
-        print(f"\n   ✅ {repeticoes} repetições concluídas")
+        print(f"\n   [OK] {repeticoes} repetições concluídas")
 
         # ===== REM: 20 minutos =====
-        logger.info(f"\n💤 Consolidação REM por {config.tempo_rem_min} minutos...")
+        logger.info(f"\n[SLEEP] Consolidação REM por {config.tempo_rem_min} minutos...")
         tempo_rem = config.tempo_rem_min * 60 if not config.modo_teste_rapido else 5
 
         tempo_inicio = time.time()
         while time.time() - tempo_inicio < tempo_rem:
             progresso = (time.time() - tempo_inicio) / tempo_rem
-            print(f"\r   [{int(progresso*30)*'█'}{(30-int(progresso*30))*'░'}] {progresso*100:.0f}%",
-                  end="", flush=True)
+            bar = '#' * int(progresso * 30) + '-' * (30 - int(progresso * 30))
+            print(f"\r   [{bar}] {progresso*100:.0f}%", end="", flush=True)
             time.sleep(1)
 
-        print("\n   ✅ REM consolidation completa")
+        print("\n   [OK] REM consolidation completa")
 
         # ===== TESTE COMPLEXO =====
-        logger.info(f"\n  🧪 TESTE FASE 3: Inferência e Causalidade")
+        logger.info(f"\n  [TEST] TESTE FASE 3: Inferência e Causalidade")
         print(f"    Questão: Como '{significado}' se relaciona com outros conceitos?")
         # Simulação: 70% acerto em testes complexos
         acertou = random.random() < 0.7
         if acertou:
-            logger.info("   ✅ Inferência correta!")
+            logger.info("   [OK] Inferência correta!")
             taxa_sucesso = 1.0
         else:
-            logger.info("   ❌ Inferência incorreta")
+            logger.info("   [FAIL] Inferência incorreta")
             taxa_sucesso = 0.0
 
         self.logger.registrar(
@@ -841,7 +844,7 @@ class FaseSemantica:
             logger.info("\n⏸️  Pausa de 2 minutos entre significados...")
             time.sleep(2 if config.modo_teste_rapido else 120)
 
-        logger.info(f"\n\n✨ FASE 3 COMPLETA!")
+        logger.info(f"\n\n[DONE] FASE 3 COMPLETA!")
         logger.info(f"   Sucessos: {sucessos}/{config.significados} ({sucessos/config.significados*100:.1f}%)")
 
         return sucessos / config.significados >= 0.5
@@ -864,10 +867,10 @@ class OrquestradorTreinamento:
     def executar(self):
         """Executar treinamento completo"""
         logger.info(f"\n\n{'*'*70}")
-        logger.info(f"🧠🎓 SELENE V3.5 — TREINAMENTO AUDITIVO BIO-INSPIRADO V4.0")
+        logger.info(f"🧠[LEARN] SELENE V3.5 — TREINAMENTO AUDITIVO BIO-INSPIRADO V4.0")
         logger.info(f"{'*'*70}")
         logger.info(f"Dataset: {config.significados} significados únicos")
-        logger.info(f"Modo teste rápido: {'✅ SIM (reduzido 100x)' if config.modo_teste_rapido else '❌ NÃO'}")
+        logger.info(f"Modo teste rápido: {'[OK] SIM (reduzido 100x)' if config.modo_teste_rapido else '[FAIL] NÃO'}")
         logger.info(f"Log: {self.logger.arquivo}")
         logger.info(f"{'*'*70}\n")
 
@@ -890,7 +893,7 @@ class OrquestradorTreinamento:
 
             # Finalização
             logger.info(f"\n\n{'='*70}")
-            logger.info(f"✨ TREINAMENTO COMPLETO!")
+            logger.info(f"[DONE] TREINAMENTO COMPLETO!")
             logger.info(f"   3 Fases × {config.significados} significados")
             logger.info(f"   Total de estimulos: ??? (veja {self.logger.arquivo})")
             logger.info(f"{'='*70}\n")
@@ -898,7 +901,7 @@ class OrquestradorTreinamento:
         except KeyboardInterrupt:
             logger.warning("\n⚠️  Treinamento interrompido pelo usuário")
         except Exception as e:
-            logger.error(f"❌ Erro: {e}")
+            logger.error(f"[FAIL] Erro: {e}")
             import traceback
             traceback.print_exc()
 
