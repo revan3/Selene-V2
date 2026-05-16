@@ -998,6 +998,19 @@ impl SwapManager {
         self.grafo_dirty = true;
     }
 
+    /// Variante u32-nativa de `importar_causal`: conecta dois concept_ids já
+    /// existentes no grafo sem reconverter texto. Usado pelos ciclos de
+    /// pensamento autônomo, que operam inteiramente em u32.
+    pub fn conectar_conceitos_ids(&mut self, a: u32, b: u32, peso: f32) {
+        let pre  = self.conceito_para_id.get(&a).and_then(|p| p.first()).copied();
+        let post = self.conceito_para_id.get(&b).and_then(|p| p.first()).copied();
+        if let (Some(pre), Some(post)) = (pre, post) {
+            let entry = self.sinapses_conceito.entry((pre, post)).or_insert(0.0);
+            *entry = (*entry + peso * 0.5).clamp(0.0, PESO_MAX_CONCEITO);
+            self.grafo_dirty = true;
+        }
+    }
+
     /// Retorna os N conceitos mais ativados no momento (por fração da população excitada).
     /// Útil para introspecção: "o que a Selene está pensando agora?"
     pub fn conceitos_ativos_top(&self, n: usize) -> Vec<(String, f32)> {
@@ -1158,11 +1171,12 @@ impl SwapManager {
     }
 
     /// Executa N ciclos de treino STDP (consolidação). Retorna (spikes, avg_delta_peso, n_sinapses).
+    /// `valencias` é indexado por concept_id (u32) — zero texto no treino neural.
     pub fn treinar_semantico(
         &mut self,
         n_ciclos: u32,
         dt_s: f32,
-        valencias: &std::collections::HashMap<String, f32>,
+        valencias: &std::collections::HashMap<u32, f32>,
     ) -> (u32, f32, usize) {
         let mut total_spikes: u32 = 0;
         let mut total_delta: f32 = 0.0;
@@ -1171,8 +1185,7 @@ impl SwapManager {
 
         // Injeta corrente inicial em toda a população de cada conceito
         for (&cid, pop) in &self.conceito_para_id {
-            let corrente_opt = self.id_to_word.get(&cid)
-                .and_then(|w| valencias.get(w.as_str()))
+            let corrente_opt = valencias.get(&cid)
                 .map(|&val| (val.abs() * I_BASE_CONCEITO + 4.0).min(20.0));
             if let Some(corrente) = corrente_opt {
                 for &id in pop {
@@ -1192,8 +1205,7 @@ impl SwapManager {
         for ciclo in 0..n_ciclos {
             if ciclo % 50 == 0 {
                 for (&cid, pop) in &self.conceito_para_id {
-                    let reforco_opt = self.id_to_word.get(&cid)
-                        .and_then(|w| valencias.get(w.as_str()))
+                    let reforco_opt = valencias.get(&cid)
                         .map(|&val| (val.abs() * 8.0 + 2.0).min(18.0));
                     if let Some(reforco) = reforco_opt {
                         for &id in pop {

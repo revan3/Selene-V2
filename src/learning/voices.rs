@@ -167,8 +167,10 @@ impl Voice for AnaliticaVoice {
         });
         let mean_sal = if count > 0.0 { sum_sal / count } else { 0.0 };
 
-        // Confiança = (saliência média) × min(1, active/3) × peso da voz.
-        let structural = (active.min(8) as f32) / 8.0;
+        // Confiança = (saliência média) × estrutura × peso da voz.
+        // Estrutura satura em 3 conceitos: a heurística (ver doc acima) considera
+        // "≥3 conceitos no contexto ativo" como estrutura suficiente.
+        let structural = (active.min(3) as f32) / 3.0;
         let confidence = (mean_sal * structural).clamp(0.0, 1.0);
 
         // Decisão: Speak quando a confiança ultrapassa 0.4 (arbitrário, calibrável).
@@ -291,6 +293,14 @@ impl Voice for DopaminaVoice {
     /// esperada). Suporta também LTD: se reward cai abruptamente, sinaliza
     /// Inhibit (caminho ruim — não falar).
     fn vote(&mut self, _attended_input: &[f32], t: &VoiceTick) -> VoiceVote {
+        // Sem contexto ativo não há o que perseguir nem sobre o que falar.
+        // Atualiza last_reward mesmo assim para não gerar um delta espúrio no
+        // primeiro tick com contexto (consistente com Analitica/Censor).
+        if t.ctx.active_count() < 1 {
+            self.last_reward = t.reward;
+            return VoiceVote::abstain();
+        }
+
         let delta_reward = t.reward - self.last_reward;
         self.last_reward = t.reward;
 

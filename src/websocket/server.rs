@@ -897,7 +897,7 @@ fn fase_n3_rem(state: &mut crate::websocket::bridge::BrainState) {
     // Durante o REM o cérebro humano replay e fortalece memórias — fazemos o mesmo.
     // Usa valências do estado atual para injetar corrente nos neurônios conceituais.
     if let Ok(mut sw) = state.swap_manager.try_lock() {
-        let valencias = sw.valencias_palavras();
+        let valencias = sw.valencias_conceitos();
         if !valencias.is_empty() {
             let dt_s = 1.0_f32 / 200.0;
             let mut total_spikes = 0u32;
@@ -1833,7 +1833,8 @@ pub async fn handle_connection(
                                             let mut ctx = conversa_ctx.clone();
                                             ctx.extend(BrainState::neural_ctx_to_strings(&state.neural_context, &id_to_word_chat));
                                             ctx.extend(state.pensamento_consciente.iter().cloned().take(5));
-                                            ctx.extend(state.frontal_goal_words.iter().cloned());
+                                            ctx.extend(state.frontal_goal_words.iter()
+                                                .filter_map(|id| id_to_word_chat.get(id).cloned()));
                                             // Episodic Buffer (Baddeley 2000): episódios hipocampais
                                             // de alta saliência têm boost preferencial no walk inicial
                                             ctx.extend(state.episodic_buffer_words.iter().cloned());
@@ -2922,7 +2923,7 @@ pub async fn handle_connection(
 
                                     let sw_arc_train = brain.lock().await.swap_manager.clone();
                                     let valencias = if let Ok(sw) = sw_arc_train.try_lock() {
-                                        sw.valencias_palavras()
+                                        sw.valencias_conceitos()
                                     } else { HashMap::new() };
                                     let n_conceitos = valencias.len() as u32;
 

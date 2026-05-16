@@ -1294,14 +1294,15 @@ async fn async_main() {
                     }
                 }
 
-                // Frontal goal words: extrai tokens da descrição do goal atual.
-                // O chat handler injeta essas palavras no contexto do walk,
-                // fazendo respostas serem influenciadas pela intenção do PFC.
+                // Frontal goal concepts: extrai concept_ids da descrição do goal
+                // atual. A descrição textual é convertida na fronteira via
+                // word_to_concept_id; o PFC injeta esses IDs (u32) no contexto do
+                // walk, influenciando respostas sem texto no núcleo neural.
                 bs.frontal_goal_words = frontal.goal_queue.front()
                     .map(|g| {
                         g.descricao.split_whitespace()
                             .filter(|w| w.len() >= 3)
-                            .map(|w| w.to_lowercase())
+                            .map(word_to_concept_id)
                             .collect()
                     })
                     .unwrap_or_default();

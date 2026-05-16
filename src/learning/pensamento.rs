@@ -21,20 +21,21 @@ use tokio::time::{interval, Duration};
 
 use crate::websocket::bridge::BrainState;
 use crate::learning::narrativa;
+use crate::neural_pool::word_to_concept_id;
 
 // ── Utilitários determinísticos ────────────────────────────────────────────
 
-/// Perturbação hash por palavra + seed — substitui RNG externo.
+/// Perturbação hash por concept_id + seed — substitui RNG externo.
 /// Garante diversidade de caminhada sem sorteio verdadeiro.
-fn hash_perturbacao(word: &str, seed: u64) -> u64 {
+/// Opera sobre u32 (concept_id), nunca sobre texto.
+fn hash_perturbacao(id: u32, seed: u64) -> u64 {
     let mut h = seed
         .wrapping_mul(6364136223846793005)
         .wrapping_add(1442695040888963407);
-    for b in word.bytes() {
-        h = h
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(b as u64);
-    }
+    h ^= id as u64;
+    h = h
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     h & 0xFFFF
 }
 
@@ -59,72 +60,83 @@ async fn ciclo_consciente_tick(brain: &Arc<TokioMutex<BrainState>>) {
 
     if ctx_ids.is_empty() { return; }
 
-    // Phase 2: build swap snapshot — brain lock NOT held
-    let (grafo, valencias, contexto) = if let Ok(mut sw) = swap_arc.try_lock() {
-        let words: Vec<String> = ctx_ids.iter()
-            .filter_map(|id| sw.id_to_word.get(id).cloned())
-            .collect();
-        (sw.grafo_palavras(), sw.valencias_palavras(), words)
+    // Phase 2: snapshot do grafo NEURAL em u32 — zero texto no walk.
+    // id_to_word é clonado só para a fronteira de display (custo ≤ o antigo
+    // grafo_palavras(), que clonava cada palavra de cada nó e cada aresta).
+    let (grafo, valencias, id_to_word) = if let Ok(mut sw) = swap_arc.try_lock() {
+        let g = sw.grafo_conceitos();
+        let v = sw.valencias_conceitos();
+        let i2w = sw.id_to_word.clone();
+        (g, v, i2w)
     } else {
         return;
     };
 
-    // Phase 3: walk logic (no locks)
-    let ancora: Option<String> = contexto.iter()
-        .filter_map(|w| grafo.get(w.as_str()).map(|v| (w.clone(), v.len())))
+    // Phase 3: caminhada em concept_ids (u32) — sem locks, sem String
+    let ancora: Option<u32> = ctx_ids.iter()
+        .filter_map(|&id| grafo.get(&id).map(|v| (id, v.len())))
         .max_by_key(|(_, n)| *n)
-        .map(|(w, _)| w);
+        .map(|(id, _)| id);
 
     let ancora = match ancora { Some(a) => a, None => return };
 
     let n_passos = 1 + (seed % 3) as usize;
-    let mut atual = ancora.clone();
+    let mut atual = ancora;
     let mut visitados = std::collections::HashSet::new();
-    visitados.insert(atual.clone());
-    let mut pensados: Vec<String> = vec![atual.clone()];
+    visitados.insert(atual);
+    let mut pensados: Vec<u32> = vec![atual];
 
     for i in 0..n_passos {
-        let vizinhos: Vec<(String, f32)> = grafo.get(atual.as_str()).cloned().unwrap_or_default();
+        let Some(vizinhos) = grafo.get(&atual) else { break };
         if vizinhos.is_empty() { break; }
 
         let proximo = vizinhos.iter()
-            .filter(|(w, _)| !visitados.contains(w.as_str()))
-            .max_by(|(wa, pa), (wb, pb)| {
-                let ha = hash_perturbacao(wa, seed.wrapping_add(i as u64));
-                let hb = hash_perturbacao(wb, seed.wrapping_add(i as u64));
+            .filter(|(vid, _)| !visitados.contains(vid))
+            .max_by(|(va, pa), (vb, pb)| {
+                let ha = hash_perturbacao(*va, seed.wrapping_add(i as u64));
+                let hb = hash_perturbacao(*vb, seed.wrapping_add(i as u64));
                 let sa = pa + ha as f32 * 0.0001;
                 let sb = pb + hb as f32 * 0.0001;
                 sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
             })
-            .map(|(w, _)| w.clone());
+            .map(|(vid, _)| *vid);
 
         match proximo {
-            Some(p) => { visitados.insert(p.clone()); pensados.push(p.clone()); atual = p; }
+            Some(p) => { visitados.insert(p); pensados.push(p); atual = p; }
             None => break,
         }
     }
 
-    // Phase 4: mutate brain state (re-lock)
+    // Phase 4: resolve o caminho u32 → palavras (fronteira de DISPLAY apenas)
+    let pensados_w: Vec<String> = pensados.iter()
+        .filter_map(|id| id_to_word.get(id).cloned())
+        .collect();
+    if pensados_w.is_empty() { return; }
+
+    // Phase 5: mutate brain state (re-lock)
     let Ok(mut state) = brain.try_lock() else { return };
 
-    for p in pensados.iter().cloned() {
+    for p in pensados_w.iter().cloned() {
         state.pensamento_consciente.push_back(p);
     }
     while state.pensamento_consciente.len() > 10 {
         state.pensamento_consciente.pop_front();
     }
 
-    if seed % 50 == 0 && !pensados.is_empty() {
-        let resumo = format!("pensei em: {}", pensados.join(", "));
+    if seed % 50 == 0 && !pensados_w.is_empty() {
+        let resumo = format!("pensei em: {}", pensados_w.join(", "));
         state.ego.pensamentos_recentes.push_back(resumo);
         if state.ego.pensamentos_recentes.len() > 10 {
             state.ego.pensamentos_recentes.pop_front();
         }
     }
 
-    // ── Pensamento espontâneo (usa valencias snapshot) ─────────────────────
+    // ── Pensamento espontâneo ──────────────────────────────────────────────
+    // Saliência: cada palavra da janela de display é reconvertida para o seu
+    // concept_id canônico (word_to_concept_id) só para consultar a valência
+    // neural — o valor neural permanece indexado por u32.
     let saliencia: f32 = state.pensamento_consciente.iter()
-        .filter_map(|w| valencias.get(w.as_str()).copied())
+        .filter_map(|w| valencias.get(&word_to_concept_id(w)).copied())
         .map(|v| v.abs())
         .fold(0.0_f32, f32::max);
 
@@ -141,8 +153,8 @@ async fn ciclo_consciente_tick(brain: &Arc<TokioMutex<BrainState>>) {
     if pode_avaliar {
         let estimulo = state.pensamento_consciente.iter()
             .max_by(|a, b| {
-                let va = valencias.get(a.as_str()).copied().unwrap_or(0.0).abs();
-                let vb = valencias.get(b.as_str()).copied().unwrap_or(0.0).abs();
+                let va = valencias.get(&word_to_concept_id(a)).copied().unwrap_or(0.0).abs();
+                let vb = valencias.get(&word_to_concept_id(b)).copied().unwrap_or(0.0).abs();
                 va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal)
             })
             .cloned()
@@ -171,13 +183,15 @@ async fn ciclo_consciente_tick(brain: &Arc<TokioMutex<BrainState>>) {
         // Biologicamente: theta-sequences hipocampais projetam predições para o PFC;
         // se o filtro executivo aprova, a predição vira expressão espontânea.
         if !falou {
-            if let Some(topico) = state.hypothesis_engine.proximo_topico_previsto() {
-                let topico = topico.to_string();
-                let (fala_hip, score_hip) = decidir_falar(&state, &topico, saliencia * 0.8);
-                if fala_hip {
-                    let _ = state.pensamento_tx.send(format!("hipotese:{}", topico));
-                    state.ultimo_pensamento_espontaneo = std::time::Instant::now();
-                    log::info!("🧠 [HIPÓTESE] '{}' score={:.2}", topico, score_hip);
+            if let Some(topico_id) = state.hypothesis_engine.proximo_topico_previsto() {
+                // concept_id (u32) → palavra via snapshot id_to_word (display)
+                if let Some(topico) = id_to_word.get(&topico_id).cloned() {
+                    let (fala_hip, score_hip) = decidir_falar(&state, &topico, saliencia * 0.8);
+                    if fala_hip {
+                        let _ = state.pensamento_tx.send(format!("hipotese:{}", topico));
+                        state.ultimo_pensamento_espontaneo = std::time::Instant::now();
+                        log::info!("🧠 [HIPÓTESE] '{}' score={:.2}", topico, score_hip);
+                    }
                 }
             }
         }
@@ -220,9 +234,11 @@ fn decidir_falar(state: &crate::websocket::bridge::BrainState, estimulo: &str, s
     let gate_dopa = ((dopa - 0.70) * 0.50).clamp(0.0, 0.20);
 
     // Congruência com goal frontal: pensamento relevante ao goal atual → +0.20
-    let goal_congruente = state.frontal_goal_words
-        .iter()
-        .any(|w| w.contains(estimulo) || estimulo.contains(w.as_str()));
+    // Congruência por concept_id canônico: o estímulo (palavra de display) é
+    // convertido na fronteira; os goals do PFC já são u32. Match exato de
+    // conceito, sem string-matching difuso no núcleo.
+    let estimulo_cid = word_to_concept_id(estimulo);
+    let goal_congruente = state.frontal_goal_words.contains(&estimulo_cid);
     let bonus_goal = if goal_congruente { 0.20 } else { 0.0 };
 
     // RPE aprendido: RPE > +0.30 → falar foi recompensado antes
@@ -303,65 +319,76 @@ async fn ciclo_inconsciente_tick(brain: &Arc<TokioMutex<BrainState>>) {
         (seed, swap_arc)
     };
 
-    // Phase 2: swap snapshot + walk (no brain lock)
-    let (grafo, valencias) = if let Ok(mut sw) = swap_arc.try_lock() {
-        (sw.grafo_palavras(), sw.valencias_palavras())
+    // Phase 2: snapshot do grafo NEURAL em u32 — deriva livre sem texto
+    let (grafo, valencias, id_to_word) = if let Ok(mut sw) = swap_arc.try_lock() {
+        let g = sw.grafo_conceitos();
+        let v = sw.valencias_conceitos();
+        let i2w = sw.id_to_word.clone();
+        (g, v, i2w)
     } else {
         return;
     };
 
-    let n_palavras = valencias.len();
-    if n_palavras == 0 { return; }
+    let n_conceitos = valencias.len();
+    if n_conceitos == 0 { return; }
 
-    let idx = (seed as usize) % n_palavras;
-    let semente: Option<String> = valencias.keys().nth(idx).cloned();
+    let idx = (seed as usize) % n_conceitos;
+    let semente: Option<u32> = valencias.keys().nth(idx).copied();
     let semente = match semente { Some(s) => s, None => return };
 
     let n_passos = 2 + (seed % 3) as usize;
-    let mut atual = semente.clone();
+    let mut atual = semente;
     let mut visitados = std::collections::HashSet::new();
-    visitados.insert(atual.clone());
-    let mut pensados: Vec<String> = vec![atual.clone()];
+    visitados.insert(atual);
+    let mut pensados: Vec<u32> = vec![atual];
 
     for i in 0..n_passos {
-        let vizinhos: Vec<(String, f32)> = grafo.get(atual.as_str()).cloned().unwrap_or_default();
+        let Some(vizinhos) = grafo.get(&atual) else { break };
         if vizinhos.is_empty() { break; }
 
         let proximo = vizinhos.iter()
-            .filter(|(w, _)| !visitados.contains(w.as_str()))
-            .min_by(|(wa, pa), (wb, pb)| {
-                let ha = hash_perturbacao(wa, seed.wrapping_add(i as u64 * 13));
-                let hb = hash_perturbacao(wb, seed.wrapping_add(i as u64 * 13));
+            .filter(|(vid, _)| !visitados.contains(vid))
+            .min_by(|(va, pa), (vb, pb)| {
+                let ha = hash_perturbacao(*va, seed.wrapping_add(i as u64 * 13));
+                let hb = hash_perturbacao(*vb, seed.wrapping_add(i as u64 * 13));
                 let sa = pa * 0.5 + ha as f32 * 0.00001;
                 let sb = pb * 0.5 + hb as f32 * 0.00001;
                 sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
             })
-            .map(|(w, _)| w.clone());
+            .map(|(vid, _)| *vid);
 
         match proximo {
-            Some(p) => { visitados.insert(p.clone()); pensados.push(p.clone()); atual = p; }
+            Some(p) => { visitados.insert(p); pensados.push(p); atual = p; }
             None => break,
         }
     }
 
-    // ── Associação transitiva onírica → sinapse em swap_manager ───────────
+    // ── Associação transitiva onírica → sinapse u32 em swap_manager ───────
     if seed % 15 == 0 && pensados.len() >= 2 {
-        let a = pensados[0].clone();
-        let b = pensados[pensados.len() - 1].clone();
+        let a = pensados[0];
+        let b = pensados[pensados.len() - 1];
         if a != b {
-            let ja_conectados = grafo.get(&a).map(|v| v.iter().any(|(w, _)| w == &b)).unwrap_or(false);
+            let ja_conectados = grafo.get(&a)
+                .map(|v| v.iter().any(|(vid, _)| *vid == b))
+                .unwrap_or(false);
             if !ja_conectados {
                 if let Ok(mut sw) = swap_arc.try_lock() {
-                    sw.importar_causal(vec![(a.clone(), b.clone(), 0.10)]);
+                    sw.conectar_conceitos_ids(a, b, 0.10);
                 }
-                log::debug!("🌀 [INCONSCIENTE] Associação transitiva: {} ↔ {}", a, b);
+                let wa = id_to_word.get(&a).map(|s| s.as_str()).unwrap_or("?");
+                let wb = id_to_word.get(&b).map(|s| s.as_str()).unwrap_or("?");
+                log::debug!("🌀 [INCONSCIENTE] Associação transitiva: {} ↔ {}", wa, wb);
             }
         }
     }
 
-    // Phase 3: mutate brain (re-lock)
+    // Phase 3: resolve caminho u32 → palavras (display) + mutate brain
+    let pensados_w: Vec<String> = pensados.iter()
+        .filter_map(|id| id_to_word.get(id).cloned())
+        .collect();
+
     let Ok(mut state) = brain.try_lock() else { return };
-    for p in pensados {
+    for p in pensados_w {
         state.pensamento_inconsciente.push_back(p);
     }
     while state.pensamento_inconsciente.len() > 20 {
@@ -436,15 +463,21 @@ async fn ciclo_curiosidade_tick(brain: &Arc<TokioMutex<BrainState>>) {
         let seed = state.pensamento_step
             .wrapping_mul(1664525)
             .wrapping_add(1013904223);
-        let contexto_atual: std::collections::HashSet<String> =
-            state.pensamento_consciente.iter().cloned().collect();
+        // Janela consciente (display) → concept_ids canônicos para comparação u32
+        let contexto_atual: std::collections::HashSet<u32> =
+            state.pensamento_consciente.iter()
+                .map(|w| word_to_concept_id(w))
+                .collect();
         let swap_arc = state.swap_manager.clone();
         (seed, contexto_atual, swap_arc)
     };
 
-    // Phase 2: swap snapshot (no brain lock)
-    let (grafo, valencias) = if let Ok(mut sw) = swap_arc.try_lock() {
-        (sw.grafo_palavras(), sw.valencias_palavras())
+    // Phase 2: snapshot do grafo NEURAL em u32 — detecção de lacunas sem texto
+    let (grafo, valencias, id_to_word) = if let Ok(mut sw) = swap_arc.try_lock() {
+        let g = sw.grafo_conceitos();
+        let v = sw.valencias_conceitos();
+        let i2w = sw.id_to_word.clone();
+        (g, v, i2w)
     } else {
         return;
     };
@@ -452,26 +485,28 @@ async fn ciclo_curiosidade_tick(brain: &Arc<TokioMutex<BrainState>>) {
     if valencias.len() < 30 { return; }
 
     let n = valencias.len();
-    let amostras: Vec<String> = (0..20u64)
+    let amostras: Vec<u32> = (0..20u64)
         .filter_map(|i| {
             let idx = (seed.wrapping_add(i * 997)) as usize % n;
-            valencias.keys().nth(idx).cloned()
+            valencias.keys().nth(idx).copied()
         })
         .collect();
 
-    let lacuna: Option<String> = amostras.into_iter()
-        .filter(|w| {
-            let arestas = grafo.get(w.as_str()).map(|v| v.len()).unwrap_or(0);
-            arestas <= 2 && w.len() >= 3
+    let lacuna: Option<u32> = amostras.into_iter()
+        .filter(|id| {
+            let arestas = grafo.get(id).map(|v| v.len()).unwrap_or(0);
+            let len_ok = id_to_word.get(id).map(|w| w.len() >= 3).unwrap_or(false);
+            arestas <= 2 && len_ok
         })
-        .max_by_key(|w| {
-            let no_ctx = if contexto_atual.contains(w) { 100 } else { 0 };
-            let val = (valencias.get(w.as_str()).copied().unwrap_or(0.0).abs() * 50.0) as usize;
+        .max_by_key(|id| {
+            let no_ctx = if contexto_atual.contains(id) { 100 } else { 0 };
+            let val = (valencias.get(id).copied().unwrap_or(0.0).abs() * 50.0) as usize;
             no_ctx + val
         });
 
-    let lacuna = match lacuna { Some(l) => l, None => return };
-    let saliencia_lacuna = if contexto_atual.contains(&lacuna) { 0.75 } else { 0.45 };
+    let lacuna_id = match lacuna { Some(l) => l, None => return };
+    let lacuna = match id_to_word.get(&lacuna_id).cloned() { Some(w) => w, None => return };
+    let saliencia_lacuna = if contexto_atual.contains(&lacuna_id) { 0.75 } else { 0.45 };
 
     // Phase 3: mutate brain (re-lock)
     let Ok(mut state) = brain.try_lock() else { return };

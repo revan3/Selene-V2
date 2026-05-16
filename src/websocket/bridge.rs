@@ -180,10 +180,11 @@ pub struct BrainState {
     pub palavra_qvalores: HashMap<u32, f32>,
 
     /// Palavras do goal atual do FrontalLobe — injetadas como semente do graph-walk.
-    /// O loop neural extrai tokens da descrição do goal e os persiste aqui.
-    /// Se não vazio, o chat handler os adiciona ao contexto da resposta,
-    /// fazendo o walk começar perto da intenção atual do córtex pré-frontal.
-    pub frontal_goal_words: Vec<String>,
+    /// O loop neural extrai concept_ids (u32) da descrição do goal e os
+    /// persiste aqui. Se não vazio, o chat handler resolve para palavras via
+    /// id_to_word (display) e adiciona ao contexto da resposta, fazendo o walk
+    /// começar perto da intenção atual do córtex pré-frontal.
+    pub frontal_goal_words: Vec<u32>,
     /// Instante da última atividade de chat (para detecção de inatividade/sono).
     pub ultima_atividade: Instant,
     /// Contador de exposições por palavra auto-aprendida do contexto de chat.
@@ -961,101 +962,115 @@ impl BrainState {
             }
         }
 
-        // Walk com atalhos semânticos A→B→C → A→C
+        // Walk com atalhos semânticos A→B→C → A→C — em concept_ids (u32).
+        // Episódios guardam palavras (memória episódica, por design); a fronteira
+        // converte via word_to_concept_id. O walk neural nunca toca texto.
         let mut sonho_chain: Vec<String> = Vec::new();
         let mut novas_atalho = 0usize;
 
-        let (grafo_inicial, atalhos) = if let Ok(mut sw) = self.swap_manager.try_lock() {
+        let atalhos: Vec<(u32, u32, f32)> = if let Ok(mut sw) = self.swap_manager.try_lock() {
             sw.importar_causal(causal_pairs.clone());
-            let grafo = sw.grafo_palavras();
-            let valencias = sw.valencias_palavras();
+            let grafo = sw.grafo_conceitos();
+            let valencias = sw.valencias_conceitos();
+            let id_to_word = sw.id_to_word.clone();
 
-            let ancora: String = episodios.first()
+            // Filtro de qualidade: ignora conceitos cuja grafia tem < 3 chars
+            // (preserva o comportamento original do walk onírico).
+            let palavra_ok = |id: &u32| id_to_word.get(id)
+                .map(|w| w.chars().count() >= 3)
+                .unwrap_or(false);
+
+            // Âncora: palavra mais saliente do 1º episódio → concept_id
+            let ancora: u32 = episodios.first()
                 .and_then(|ep| ep.palavras.iter()
                     .filter(|w| w.chars().count() >= 3)
+                    .map(|w| word_to_concept_id(w))
                     .max_by(|a, b| {
-                        let va = valencias.get(*a).map(|v| v.abs()).unwrap_or(0.0);
-                        let vb = valencias.get(*b).map(|v| v.abs()).unwrap_or(0.0);
+                        let va = valencias.get(a).map(|v| v.abs()).unwrap_or(0.0);
+                        let vb = valencias.get(b).map(|v| v.abs()).unwrap_or(0.0);
                         va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                    .cloned())
-                .unwrap_or_else(|| "eu".to_string());
+                    }))
+                .unwrap_or_else(|| word_to_concept_id("eu"));
 
-            sonho_chain.push(ancora.clone());
             let mut atual = ancora;
-            let mut atalhos_novos: Vec<(String, String, f32)> = Vec::new();
+            let mut chain_ids: Vec<u32> = vec![ancora];
+            let mut atalhos_novos: Vec<(u32, u32, f32)> = Vec::new();
 
             for passo in 0..8usize {
-                let vizinhos_b: Vec<(String, f32)> = grafo.get(&atual)
-                    .map(|v| v.iter().filter(|(w, _)| w.chars().count() >= 3).cloned().collect())
+                let vizinhos_b: Vec<(u32, f32)> = grafo.get(&atual)
+                    .map(|v| v.iter().filter(|(vid, _)| palavra_ok(vid)).cloned().collect())
                     .unwrap_or_default();
                 if vizinhos_b.is_empty() { break; }
 
                 let total_peso: f32 = vizinhos_b.iter().map(|(_, p)| p.abs()).sum();
                 let mut alvo = rng.gen::<f32>() * total_peso.max(0.001);
-                let mut proximo_b = vizinhos_b[0].0.clone();
-                for (w, p) in &vizinhos_b {
+                let mut proximo_b = vizinhos_b[0].0;
+                for (vid, p) in &vizinhos_b {
                     alvo -= p.abs();
-                    if alvo <= 0.0 { proximo_b = w.clone(); break; }
+                    if alvo <= 0.0 { proximo_b = *vid; break; }
                 }
 
-                let vizinhos_c: Vec<(String, f32)> = grafo.get(&proximo_b)
-                    .map(|v| v.iter().filter(|(w, _)| w.chars().count() >= 3 && w != &atual).cloned().collect())
+                let vizinhos_c: Vec<(u32, f32)> = grafo.get(&proximo_b)
+                    .map(|v| v.iter()
+                        .filter(|(vid, _)| *vid != atual && palavra_ok(vid))
+                        .cloned().collect())
                     .unwrap_or_default();
 
                 if let Some((proximo_c, peso_bc)) = vizinhos_c.choose(&mut rng) {
                     let ja_existe_ac = grafo.get(&atual)
-                        .map(|v| v.iter().any(|(w, _)| w == proximo_c))
+                        .map(|v| v.iter().any(|(vid, _)| vid == proximo_c))
                         .unwrap_or(false);
                     if !ja_existe_ac && passo % 2 == 0 {
                         let peso_atalho = (peso_bc * 0.6).clamp(0.20, 0.55);
-                        atalhos_novos.push((atual.clone(), proximo_c.clone(), peso_atalho));
+                        atalhos_novos.push((atual, *proximo_c, peso_atalho));
                         novas_atalho += 1;
                     }
-                    sonho_chain.push(proximo_b.clone());
-                    sonho_chain.push(proximo_c.clone());
-                    atual = proximo_c.clone();
+                    chain_ids.push(proximo_b);
+                    chain_ids.push(*proximo_c);
+                    atual = *proximo_c;
                 } else {
-                    sonho_chain.push(proximo_b.clone());
+                    chain_ids.push(proximo_b);
                     atual = proximo_b;
                 }
             }
-            sonho_chain.dedup();
-            (grafo, atalhos_novos)
+            chain_ids.dedup();
+            // Fronteira de display: caminho u32 → narrativa textual do sonho
+            sonho_chain = chain_ids.iter()
+                .filter_map(|id| id_to_word.get(id).cloned())
+                .collect();
+            atalhos_novos
         } else {
             return (0, None);
         };
-        let _ = grafo_inicial;
 
         if !atalhos.is_empty() {
             if let Ok(mut sw) = self.swap_manager.try_lock() {
-                sw.importar_causal(atalhos);
+                for (a, b, p) in &atalhos {
+                    sw.conectar_conceitos_ids(*a, *b, *p);
+                }
             }
         }
 
-        // STDP noturno
+        // STDP noturno — valências indexadas por concept_id (u32, sem texto)
         if let Ok(mut sw) = self.swap_manager.try_lock() {
-            let valencias = sw.valencias_palavras();
+            let valencias = sw.valencias_conceitos();
             if !valencias.is_empty() {
                 let dt_s = 1.0_f32 / 200.0;
                 for _ in 0..3 { sw.treinar_semantico(300, dt_s, &valencias); }
             }
         }
 
-        // Hipóteses confiáveis → sinapses
+        // Hipóteses confiáveis → sinapses (u32-nativo, sem round-trip de texto:
+        // premissas e conclusao já são concept_ids desde a migração Sprint 3d).
         if let Ok(mut sw) = self.swap_manager.try_lock() {
-            let confiaveis = self.hypothesis_engine.hipoteses_confiaveis();
-            let pares: Vec<(String, String, f32)> = confiaveis.iter()
+            let pares: Vec<(u32, u32, f32)> = self.hypothesis_engine.hipoteses_confiaveis()
+                .iter()
                 .flat_map(|h| h.premissas.iter()
-                    .filter_map(|&p| {
-                        let wa = sw.id_to_word.get(&p)?.clone();
-                        let wc = sw.id_to_word.get(&h.conclusao)?.clone();
-                        Some((wa, wc, h.confianca * 0.4))
-                    })
+                    .map(|&p| (p, h.conclusao, h.confianca * 0.4))
                     .collect::<Vec<_>>())
                 .collect();
-            if !pares.is_empty() {
-                sw.importar_causal(pares);
+            for (a, b, peso) in pares {
+                sw.conectar_conceitos_ids(a, b, peso);
             }
         }
 

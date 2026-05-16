@@ -58,13 +58,20 @@ Microfone  → FFT coclear → SpikePattern → u32 concept_ids → núcleo neur
 
 ```
 Sistema completamente validado:
-  - testes_v4 (synaptic_core):  9/9  ✅  (neurônio multicompartimental V4)
+  - testes_v4 (synaptic_core):  9/9   ✅  (neurônio multicompartimental V4)
   - system_test:                22/22 ✅  (grounding, neurochem, pipeline sensório-motor)
   - test_neuron_v3:             12/12 ✅  (firing rates, I_NaP/M/A/T, AHP, STP, STDP)
   - learning_test:               5/5  ✅  (grafo sináptico, backup, consolidação)
   - stability_test:              5/5  ✅  (gates, Hebbian, stress, determinismo)
-  - hypothesis unit tests:       6/6  ✅  (formular, testar, observar)
+  - lib unit tests:            103/103 ✅  (inclui voices.rs Multi-Self — 2 falhas corrigidas)
 ```
+
+> **Auditoria texto→u32 (2026-05-16):** todo caminho de processamento neural —
+> hot path 200Hz, ciclos de pensamento (Eternal Hole), consolidação onírica/sono
+> N3, `treinar_semantico`, hipóteses e `frontal_goal_words` — opera 100% em
+> `u32`/`SpikePattern`. Texto existe apenas na fronteira de display, persistência
+> e memória episódica. Helpers canônicos: `word_to_concept_id` (FNV-1a 32-bit) e
+> `conectar_conceitos_ids` (sinapse u32-nativa, sem round-trip de texto).
 
 ### O que funciona hoje
 
@@ -222,13 +229,18 @@ gerar_resposta_emergente(contexto: &[u32]) → String (só na saída, para displ
 | `Hipotese::premissas`, `conclusao` | `Vec<u32>`, `u32` | Sprint 3d |
 | `Slot::historico`, `conteudo_atual` | `Vec<(u32,f32)>`, `Option<u32>` | Sprint 4b |
 | `Dominio::Composto` | `Vec<u32>` | Sprint 4b |
+| `frontal_goal_words` | `Vec<u32>` | Auditoria 2026-05-16 |
+| Pensamento (Eternal Hole: consciente/inconsciente/curiosidade) | walk em `grafo_conceitos()` u32 | Auditoria 2026-05-16 |
+| `treinar_semantico(valencias)` | `&HashMap<u32, f32>` | Auditoria 2026-05-16 |
+| Consolidação onírica/sono N3 (`rem_semantico`) | walk + atalhos + hipóteses u32 | Auditoria 2026-05-16 |
 
 ### O que permanece em String (por design — display/saída)
 
 - `reply`, `ultimo_reply` (UI output)
 - `id_to_word: HashMap<u32, String>` (reverse lookup para display)
 - `conversa_ctx: Vec<String>` (histórico de chat para UI)
-- `gerar_resposta_emergente()` — função de OUTPUT
+- `gerar_resposta_emergente()` — função de OUTPUT (renderiza texto para a UI)
+- `EventoEpisodico::palavras: Vec<String>` (memória episódica — registro, não computação)
 - Logs `.jsonl`
 
 ### Funções canônicas de conversão
@@ -239,6 +251,9 @@ pub fn word_to_concept_id(palavra: &str) -> u32  // em neural_pool.rs
 
 // FNV-1a 64-bit — canônico para chaves de spike_vocab
 pub fn spike_label_hash(s: &str) -> u64  // em bridge.rs
+
+// Sinapse u32-nativa — conecta concept_ids existentes sem round-trip de texto
+pub fn conectar_conceitos_ids(&mut self, a: u32, b: u32, peso: f32)  // SwapManager
 ```
 
 ---
@@ -770,6 +785,14 @@ Selene_Brain_2.0/
 - [x] BAC firing: coincidência BAP + NMDA spike apical (Larkum 1999)
 - [x] Brain states: Vigilia/NremProfundo/Rem (fator_apical)
 - [x] 9/9 testes V4 passando
+
+#### Auditoria 2026-05-16 — Texto→u32 final + Multi-Self
+- [x] Pensamento (Eternal Hole): walk consciente/inconsciente/curiosidade em u32
+- [x] `frontal_goal_words: Vec<String>` → `Vec<u32>`
+- [x] `treinar_semantico` recebe `&HashMap<u32, f32>` (sem round-trip de texto)
+- [x] Consolidação onírica/sono N3: walk + atalhos + hipóteses u32-nativos
+- [x] `SwapManager::conectar_conceitos_ids` — sinapse u32 sem reconversão
+- [x] voices.rs: 2 falhas corrigidas (AnaliticaVoice structural, DopaminaVoice guard) — 103/103 lib tests
 
 ### Pendente ⏳
 
