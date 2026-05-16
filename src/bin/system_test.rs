@@ -28,6 +28,8 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
+use selene_kernel::neural_pool::word_to_concept_id;
+
 use selene_kernel::{
     FrontalLobe, OccipitalLobe, ParietalLobe, TemporalLobe,
     LimbicSystem, HippocampusV2 as Hippocampus, Cerebellum,
@@ -815,7 +817,7 @@ fn test_grounding_score_aumenta() -> usize {
     let mut bs = BrainState::new(swap, &cfg, flags, Arc::new(ActiveContext::new()), Arc::new(selene_kernel::learning::go_nogo::GoNoGoFilter::new()));
 
     // Antes do binding: grounding deve ser 0
-    let g_antes = bs.grounding.get("quente").copied().unwrap_or(0.0);
+    let g_antes = bs.grounding.get(&word_to_concept_id("quente")).copied().unwrap_or(0.0);
     if g_antes == 0.0 { ok("grounding inicial = 0.0"); }
     else { fail("grounding inicial", &format!("{g_antes} != 0")); falhas += 1; }
 
@@ -828,7 +830,7 @@ fn test_grounding_score_aumenta() -> usize {
         0.5, 0.6, 1000.0,
     );
 
-    let g_apos_visual = bs.grounding.get("quente").copied().unwrap_or(0.0);
+    let g_apos_visual = bs.grounding.get(&word_to_concept_id("quente")).copied().unwrap_or(0.0);
     if g_apos_visual > 0.0 {
         ok(&format!("grounding após binding visual = {g_apos_visual:.3}"));
     } else {
@@ -842,7 +844,7 @@ fn test_grounding_score_aumenta() -> usize {
         visual_ativo, audio_ativo,
         0.5, 0.6, 2000.0,
     );
-    let g_apos_audio = bs.grounding.get("quente").copied().unwrap_or(0.0);
+    let g_apos_audio = bs.grounding.get(&word_to_concept_id("quente")).copied().unwrap_or(0.0);
     if g_apos_audio > g_apos_visual {
         ok(&format!("grounding após binding audio > visual: {g_apos_audio:.3} > {g_apos_visual:.3}"));
     } else {
@@ -941,14 +943,15 @@ fn test_grounding_rpe() -> usize {
     let mut bs = BrainState::new(swap, &cfg, flags, Arc::new(ActiveContext::new()), Arc::new(selene_kernel::learning::go_nogo::GoNoGoFilter::new()));
 
     // Coloca palavras no neural_context
-    bs.neural_context.push_back("aprender".to_string());
-    bs.neural_context.push_back("descobrir".to_string());
+    bs.neural_context.push_back(word_to_concept_id("aprender"));
+    bs.neural_context.push_back(word_to_concept_id("descobrir"));
 
-    let g_antes = bs.grounding.get("aprender").copied().unwrap_or(0.0);
+    let cid_aprender = word_to_concept_id("aprender");
+    let g_antes = bs.grounding.get(&cid_aprender).copied().unwrap_or(0.0);
 
     // RPE positivo forte: predição correta → grounding aumenta
     bs.grounding_rpe(0.8);
-    let g_apos_pos = bs.grounding.get("aprender").copied().unwrap_or(0.0);
+    let g_apos_pos = bs.grounding.get(&cid_aprender).copied().unwrap_or(0.0);
     if g_apos_pos > g_antes {
         ok(&format!("RPE +0.8: grounding {g_antes:.3} → {g_apos_pos:.3}"));
     } else {
@@ -957,7 +960,7 @@ fn test_grounding_rpe() -> usize {
 
     // RPE negativo: predição errada → grounding diminui
     bs.grounding_rpe(-0.5);
-    let g_apos_neg = bs.grounding.get("aprender").copied().unwrap_or(0.0);
+    let g_apos_neg = bs.grounding.get(&cid_aprender).copied().unwrap_or(0.0);
     if g_apos_neg < g_apos_pos {
         ok(&format!("RPE -0.5: grounding {g_apos_pos:.3} → {g_apos_neg:.3}"));
     } else {
@@ -967,7 +970,7 @@ fn test_grounding_rpe() -> usize {
     // Decaimento: após 1000 chamadas de decay, grounding deve cair
     let g_pre_decay = g_apos_neg;
     for _ in 0..100 { bs.grounding_decay(); }
-    let g_apos_decay = bs.grounding.get("aprender").copied().unwrap_or(0.0);
+    let g_apos_decay = bs.grounding.get(&cid_aprender).copied().unwrap_or(0.0);
     if g_apos_decay < g_pre_decay {
         ok(&format!("grounding_decay: {g_pre_decay:.4} → {g_apos_decay:.4}"));
     } else {
@@ -1017,13 +1020,14 @@ fn test_grounding_rem_replay() -> usize {
     };
     bs.historico_episodico.push_back(ev);
 
-    let g_antes = bs.grounding.get("amor").copied().unwrap_or(0.0);
+    let cid_amor = word_to_concept_id("amor");
+    let g_antes = bs.grounding.get(&cid_amor).copied().unwrap_or(0.0);
 
     // grounding_bind simula o que N3/REM faz para eventos com percepção real
     let palavras_ev = vec!["amor".to_string(), "carinho".to_string()];
     bs.grounding_bind(&palavras_ev, visual_ativo, [0u64; 8], 0.8, 0.7, 5000.0);
 
-    let g_apos = bs.grounding.get("amor").copied().unwrap_or(0.0);
+    let g_apos = bs.grounding.get(&cid_amor).copied().unwrap_or(0.0);
     if g_apos > g_antes {
         ok(&format!("grounding 'amor' após REM replay: {g_antes:.3} → {g_apos:.3}"));
     } else {

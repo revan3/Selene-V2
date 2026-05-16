@@ -12,7 +12,7 @@ use futures_util::{SinkExt, StreamExt};
 use crate::websocket::bridge::NeuralStatus;
 use serde_json::Value;
 
-use crate::websocket::bridge::BrainState;
+use crate::websocket::bridge::{BrainState, spike_label_hash};
 use crate::encoding::spike_codec::{
     encode as spike_encode, decode_top_n as spike_top_n,
     features_to_spike_pattern, bands_to_spike_pattern, similarity as spike_similarity,
@@ -23,6 +23,15 @@ use crate::learning::narrativa;
 use std::collections::HashMap;
 use std::io::Write;
 use chrono::Timelike;
+use crate::neural_pool::word_to_concept_id;
+
+/// Converts a concept_id-keyed f32 map to String-keyed map for backward-compat callers
+/// (e.g. gerar_resposta_emergente). Only includes entries with a known label in id_to_word.
+fn ids_to_str_map(map: &HashMap<u32, f32>, id_to_word: &HashMap<u32, String>) -> HashMap<String, f32> {
+    map.iter()
+        .filter_map(|(&id, &v)| id_to_word.get(&id).map(|w| (w.clone(), v)))
+        .collect()
+}
 
 // ── LOG DE RESPOSTA ────────────────────────────────────────────────────────────
 // Salva cada turno de conversa em JSONL (uma linha JSON por evento).
@@ -193,7 +202,7 @@ fn gerar_resposta_emergente(
     ancora_out: &mut Option<String>,
     estado_corpo: &[f32; 5],
     template_scaffold: &[String],
-    trigrama_cache: &HashMap<(String, String), Vec<String>>,
+    trigrama_cache: &HashMap<(u32, u32), Vec<u32>>,
     // V3.4 — Recálculo em Voo. Quando `active_context` é Some, o walk verifica
     // mudança de geração a cada 3 palavras. Se mudou, candidatos contidos em
     // `lateral_words` recebem boost de score (Repolarização Sináptica).
@@ -464,10 +473,10 @@ fn gerar_resposta_emergente(
                     // Coerência sintática trigrama: se (prev, atual) → next existe nos padrões,
                     // dá um bonus à palavra que continua o padrão aprendido.
                     if let Some(prev) = cadeia.iter().rev().nth(1) {
-                        let chave = (prev.clone(), atual.clone());
+                        let chave = (word_to_concept_id(prev), word_to_concept_id(&atual));
                         if let Some(next_opts) = trigrama_bonus.get(&chave) {
-                            if next_opts.contains(&a.0) { s1 -= 0.20; }
-                            if next_opts.contains(&b.0) { s2 -= 0.20; }
+                            if next_opts.contains(&word_to_concept_id(&a.0)) { s1 -= 0.20; }
+                            if next_opts.contains(&word_to_concept_id(&b.0)) { s2 -= 0.20; }
                         }
                     }
                     // Boost causal: se existe aresta causal atual→candidate, prefere esse caminho.
@@ -709,15 +718,21 @@ fn gerar_pergunta_lacuna(lacuna: &str, emocao: f32) -> String {
 
 /// N1 — Consolida as 30 arestas mais percorridas: reforça sinapses no swap.
 fn fase_n1_consolidar(state: &mut crate::websocket::bridge::BrainState) {
-    let mut pares: Vec<((String, String), u32)> = state.aresta_contagem
-        .iter().map(|(k, v)| (k.clone(), *v)).collect();
+    let mut pares: Vec<((u32, u32), u32)> = state.aresta_contagem
+        .iter().map(|(k, v)| (*k, *v)).collect();
     pares.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
-    let causal_pairs: Vec<(String, String, f32)> = pares.into_iter().take(30)
-        .map(|((a, b), cnt)| (a, b, (cnt as f32 * 0.02).clamp(0.02, 0.25)))
-        .collect();
-    let consolidados = causal_pairs.len();
+    let consolidados = pares.len().min(30);
     if let Ok(mut sw) = state.swap_manager.try_lock() {
-        sw.importar_causal(causal_pairs);
+        let causal_pairs: Vec<(String, String, f32)> = pares.into_iter().take(30)
+            .filter_map(|((a, b), cnt)| {
+                let wa = sw.id_to_word.get(&a)?.clone();
+                let wb = sw.id_to_word.get(&b)?.clone();
+                Some((wa, wb, (cnt as f32 * 0.02).clamp(0.02, 0.25)))
+            })
+            .collect();
+        if !causal_pairs.is_empty() {
+            sw.importar_causal(causal_pairs);
+        }
     }
     state.aresta_contagem.clear();
     println!("   💪 [N1] {} sinapses consolidadas", consolidados);
@@ -774,8 +789,8 @@ fn fase_n3_rem(state: &mut crate::websocket::bridge::BrainState) {
                     sw.importar_causal(vec![(a, b, peso)]);
                 } else {
                     // Remove sinapse apagada por contradição/erosão
-                    let pop_a = sw.palavra_para_id.get(&a).and_then(|p| p.first()).copied();
-                    let pop_b = sw.palavra_para_id.get(&b).and_then(|p| p.first()).copied();
+                    let pop_a = sw.pop_para_palavra(&a).and_then(|p| p.first()).copied();
+                    let pop_b = sw.pop_para_palavra(&b).and_then(|p| p.first()).copied();
                     if let (Some(id_a), Some(id_b)) = (pop_a, pop_b) {
                         sw.sinapses_conceito.remove(&(id_a, id_b));
                     }
@@ -834,9 +849,10 @@ fn fase_n3_rem(state: &mut crate::websocket::bridge::BrainState) {
         let visual_ativo = is_active(&ev.padrao_visual);
         let audio_ativo  = is_active(&ev.padrao_audio);
         for w in &ev.palavras {
-            let entry = state.emocao_palavras.entry(w.clone()).or_insert(0.0);
+            let cid = word_to_concept_id(w);
+            let entry = state.emocao_palavras.entry(cid).or_insert(0.0);
             *entry = (*entry * 0.90 + ev.emocao * 0.10).clamp(-1.0, 1.0);
-            let g = state.grounding.entry(w.clone()).or_insert(0.0);
+            let g = state.grounding.entry(cid).or_insert(0.0);
             if visual_ativo { *g = (*g + bonus * 0.4).min(1.0); }
             if audio_ativo  { *g = (*g + bonus * 0.25).min(1.0); }
             *g = (*g + bonus * 0.15).min(1.0);
@@ -1074,16 +1090,16 @@ pub async fn handle_connection(
                 if let Ok(mut state) = brain.try_lock() {
                     // Clona o Arc do swap antes de usar state (evita lifetime entanglement)
                     let swap_arc_esp = state.swap_manager.clone();
-                    let (grafo_snap, valencias_snap, scaffold_esp) = if let Ok(mut sw) = swap_arc_esp.try_lock() {
-                        let tokens_input: Vec<String> = estimulo.to_lowercase()
+                    let (grafo_snap, valencias_snap, scaffold_esp, id_to_word_esp) = if let Ok(mut sw) = swap_arc_esp.try_lock() {
+                        let tokens_input: Vec<u32> = estimulo.to_lowercase()
                             .split(|c: char| !c.is_alphanumeric())
                             .filter(|t| t.len() > 1)
-                            .map(|t| t.to_string())
+                            .map(|t| word_to_concept_id(t))
                             .collect();
                         let (scaffold, _) = sw.template_scaffold(&tokens_input);
-                        (sw.grafo_palavras(), sw.valencias_palavras(), scaffold)
+                        (sw.grafo_palavras(), sw.valencias_palavras(), scaffold, sw.id_to_word.clone())
                     } else {
-                        (HashMap::new(), HashMap::new(), Vec::new())
+                        (HashMap::new(), HashMap::new(), Vec::new(), HashMap::new())
                     };
                     let causal_vazio: HashMap<String, Vec<(String, f32)>> = HashMap::new();
                     if !state.dormindo && !grafo_snap.is_empty() {
@@ -1106,6 +1122,9 @@ pub async fn handle_connection(
                         ctx_esp.push(estado_af.como_palavra().to_string());
                         if e_curiosidade { ctx_esp.push(estimulo.clone()); }
 
+                        let emap_esp = ids_to_str_map(&state.emocao_palavras, &id_to_word_esp);
+                        let gmap_esp = ids_to_str_map(&state.grounding, &id_to_word_esp);
+                        let qmap_esp = ids_to_str_map(&state.palavra_qvalores, &id_to_word_esp);
                         let reply = gerar_resposta_emergente(
                             &estimulo, diversity_seed, emocao, emocao_bias, n_passos,
                             dopa, sero,
@@ -1116,11 +1135,11 @@ pub async fn handle_connection(
                             &state.ultimos_prefixos.iter().cloned().collect::<Vec<_>>(),
                             &ctx_esp,
                             &mut caminho_esp,
-                            &state.emocao_palavras,
+                            &emap_esp,
                             &mut prefixo_esp,
-                            &state.grounding,
+                            &gmap_esp,
                             &causal_vazio,
-                            &state.palavra_qvalores,
+                            &qmap_esp,
                             &mut ancora_esp,
                             &state.ultimo_estado_corpo,
                             &scaffold_esp,
@@ -1332,11 +1351,13 @@ pub async fn handle_connection(
                                         let (matched_token, ctx_clone, current_tick) = {
                                             let mut bs = brain.lock().await;
                                             let mut best: Option<(String, f32)> = None;
-                                            for (k, p) in bs.spike_vocab.iter() {
-                                                if !k.starts_with("audio:") { continue; }
-                                                let sim = spike_similarity(&pat, p);
-                                                if sim >= 0.55 && best.as_ref().map_or(true, |b| sim > b.1) {
-                                                    best = Some((k.trim_start_matches("audio:").to_string(), sim));
+                                            for (&h, p) in bs.spike_vocab.iter() {
+                                                if let Some(label) = bs.spike_labels.get(&h) {
+                                                    if !label.starts_with("audio:") { continue; }
+                                                    let sim = spike_similarity(&pat, p);
+                                                    if sim >= 0.55 && best.as_ref().map_or(true, |b| sim > b.1) {
+                                                        best = Some((label.trim_start_matches("audio:").to_string(), sim));
+                                                    }
                                                 }
                                             }
                                             if let Some((ref w, _)) = best {
@@ -1438,15 +1459,15 @@ pub async fn handle_connection(
                                             let tmp = brain.lock().await;
                                             tmp.swap_manager.clone()
                                         };
-                                        let (grafo_neural, valencias_neural, scaffold_chat, scaffold_id_chat) = {
+                                        let (grafo_neural, valencias_neural, scaffold_chat, scaffold_id_chat, id_to_word_chat) = {
                                             let mut s = swap_arc_chat.lock().await;
-                                            let tokens_msg: Vec<String> = mensagem.to_lowercase()
+                                            let tokens_msg: Vec<u32> = mensagem.to_lowercase()
                                                 .split(|c: char| !c.is_alphanumeric())
                                                 .filter(|t| t.len() > 1)
-                                                .map(|t| t.to_string())
+                                                .map(|t| word_to_concept_id(t))
                                                 .collect();
                                             let (scaffold, scaffold_id) = s.template_scaffold(&tokens_msg);
-                                            (s.grafo_palavras(), s.valencias_palavras(), scaffold, scaffold_id)
+                                            (s.grafo_palavras(), s.valencias_palavras(), scaffold, scaffold_id, s.id_to_word.clone())
                                         };
                                         let causal_vazio_chat: HashMap<String, Vec<(String, f32)>> = HashMap::new();
                                         let mut state = brain.lock().await;
@@ -1482,24 +1503,40 @@ pub async fn handle_connection(
                                         let (dopa, sero, _nor) = state.neurotransmissores;
                                         let (step, alerta, emocao) = state.atividade;
 
-                                        // ── TTS → FFT: texto vira sinal auditivo sintético ────
-                                        // O texto NUNCA alimenta diretamente estruturas semânticas.
-                                        // É convertido em 32 bandas FFT via formantes PT-BR e injetado
-                                        // como ultimo_padrao_audio — a partir daí o pipeline neural
-                                        // processa como se fosse um microfone real. Grounding e
-                                        // aprendizado conceitual emergem do spike_vocab lookup,
-                                        // não de tokens de texto bruto.
+                                        // ── TTS → FFT por palavra: texto vira sinais espectrais ──
+                                        // Cada palavra do input é sintetizada individualmente em
+                                        // 32 bandas FFT (formantes PT-BR), convertida em SpikePattern
+                                        // e cadastrada no spike_vocab com label "tts:<palavra>".
+                                        // Assim toda palavra textual passa a ter uma assinatura
+                                        // espectral persistente — o núcleo neural reconhece-a por
+                                        // similaridade de spike, não por hash da grafia.
+                                        // O último padrão fica em ultimo_padrao_audio para alimentar
+                                        // o loop neural como se fosse microfone real.
                                         {
                                             let nor_val = state.neurotransmissores.2;
-                                            let bands = tts_para_bandas(&mensagem, dopa, sero, nor_val);
-                                            let audio_pat = bands_to_spike_pattern(&bands);
-                                            // Sempre sobrescreve com o sinal TTS quando texto chega
-                                            // via chat. (audio_chat com bands reais já atualizou antes.)
-                                            let ultimo = state.ultimo_padrao_audio;
-                                            if !crate::encoding::spike_codec::is_active(&ultimo) {
-                                                state.ultimo_padrao_audio = audio_pat;
+                                            let mut last_pat = [0u64; 8];
+                                            for palavra in mensagem.to_lowercase()
+                                                .split(|c: char| !c.is_alphabetic()
+                                                    && !"áéíóúâêôãõçàü".contains(c))
+                                                .filter(|w| w.len() >= 2)
+                                            {
+                                                let bands = tts_para_bandas(palavra, dopa, sero, nor_val);
+                                                let pat = bands_to_spike_pattern(&bands);
+                                                if !crate::encoding::spike_codec::is_active(&pat) {
+                                                    continue;
+                                                }
+                                                let chave = format!("tts:{}", palavra);
+                                                let h = spike_label_hash(&chave);
+                                                state.spike_vocab.entry(h).or_insert(pat);
+                                                state.spike_labels.entry(h).or_insert(chave);
+                                                last_pat = pat;
                                             }
-                                            log::debug!("[TTS→FFT] mensagem convertida em padrão de áudio sintético");
+                                            if crate::encoding::spike_codec::is_active(&last_pat)
+                                                && !crate::encoding::spike_codec::is_active(&state.ultimo_padrao_audio)
+                                            {
+                                                state.ultimo_padrao_audio = last_pat;
+                                            }
+                                            log::debug!("[TTS→FFT] palavras sintetizadas e cadastradas no spike_vocab");
                                         }
                                         let _ = (alerta, emocao); // mantém vars usadas adiante
 
@@ -1508,16 +1545,16 @@ pub async fn handle_connection(
                                         // RPE positivo = previsão correta → reforça grounding das palavras previstas.
                                         // RPE negativo = previsão errada → enfraquece associações equivocadas.
                                         {
-                                            let input_tokens_hip: Vec<String> = mensagem
+                                            let input_tokens_hip: Vec<u32> = mensagem
                                                 .to_lowercase()
                                                 .split(|c: char| !c.is_alphabetic()
                                                     && !"áéíóúâêôãõçàü".contains(c))
                                                 .filter(|w| w.len() >= 3
                                                     && !STOP_WORDS.contains(w))
-                                                .map(|w| w.to_string())
+                                                .map(|w| word_to_concept_id(w))
                                                 .collect();
                                             let val_clone = if let Ok(sw) = state.swap_manager.try_lock() {
-                                                sw.valencias_palavras()
+                                                sw.valencias_conceitos()
                                             } else { HashMap::new() };
 
                                             // ── Wernicke: enfileira no loop neural (fila FIFO) ──────────
@@ -1539,8 +1576,15 @@ pub async fn handle_connection(
                                                 state.acc_social_pain *= 0.97; // decai naturalmente
                                             }
 
+                                            let reply_toks: Vec<u32> = {
+                                                let ur = state.hypothesis_engine.ultimo_reply.to_lowercase();
+                                                ur.split_whitespace()
+                                                    .filter(|w| w.len() >= 3)
+                                                    .map(|w| word_to_concept_id(w))
+                                                    .collect()
+                                            };
                                             let rpe_hip = state.hypothesis_engine
-                                                .testar(&input_tokens_hip, &val_clone);
+                                                .testar(&input_tokens_hip, &val_clone, &reply_toks);
                                             if rpe_hip.abs() > 0.05 {
                                                 state.grounding_rpe(rpe_hip);
                                             }
@@ -1577,8 +1621,9 @@ pub async fn handle_connection(
                                             if melhor_score >= 1 {
                                                 if let Some(ep_palavras) = melhor_episodio {
                                                     for w in ep_palavras.iter().take(4) {
-                                                        if !state.neural_context.contains(w) {
-                                                            state.neural_context.push_back(w.clone());
+                                                        let cid = word_to_concept_id(w);
+                                                        if !state.neural_context.contains(&cid) {
+                                                            state.neural_context.push_back(cid);
                                                         }
                                                     }
                                                     while state.neural_context.len() > 20 {
@@ -1663,7 +1708,7 @@ pub async fn handle_connection(
                                             }
                                         };
                                         let (n_vocab_log, n_grafo_log) = if let Ok(sw) = state.swap_manager.try_lock() {
-                                            (sw.palavra_para_id.len(), sw.sinapses_conceito.len())
+                                            (sw.conceito_para_id.len(), sw.sinapses_conceito.len())
                                         } else { (0, 0) };
                                         println!("💬 [CHAT] Estado: step={} emocao={:.2} dopa={:.2} vocab={} sinapses={} frases={}{}",
                                             step, emocao, dopa,
@@ -1682,7 +1727,7 @@ pub async fn handle_connection(
                                             let estado_af = narrativa::traduzir_estado(d, s, n, cor, emocao_now);
                                             let mems: Vec<String> = state.memorias_recentes_str(3);
                                             let n_vocab_ad = if let Ok(sw) = state.swap_manager.try_lock() {
-                                                sw.palavra_para_id.len()
+                                                sw.conceito_para_id.len()
                                             } else { 0 };
                                             let auto_desc = narrativa::auto_descrever(
                                                 &state.ego.tracos,
@@ -1786,7 +1831,7 @@ pub async fn handle_connection(
                                         let mut ancora_log: Option<String> = None;
                                         let ctx_para_log = {
                                             let mut ctx = conversa_ctx.clone();
-                                            ctx.extend(state.neural_context.iter().cloned());
+                                            ctx.extend(BrainState::neural_ctx_to_strings(&state.neural_context, &id_to_word_chat));
                                             ctx.extend(state.pensamento_consciente.iter().cloned().take(5));
                                             ctx.extend(state.frontal_goal_words.iter().cloned());
                                             // Episodic Buffer (Baddeley 2000): episódios hipocampais
@@ -1845,6 +1890,9 @@ pub async fn handle_connection(
                                         let v34_lateral_words: Vec<String> =
                                             state.last_lateral_words.iter().cloned().collect();
                                         let v34_abort_flag = Arc::clone(&state.go_nogo.force_interrupt);
+                                        let emap_chat = ids_to_str_map(&state.emocao_palavras, &id_to_word_chat);
+                                        let gmap_chat = ids_to_str_map(&state.grounding, &id_to_word_chat);
+                                        let qmap_chat = ids_to_str_map(&state.palavra_qvalores, &id_to_word_chat);
                                         let reply = gerar_resposta_emergente(
                                             &mensagem, diversity_seed, emocao_resposta,
                                             emocao_bias, n_passos,
@@ -1864,11 +1912,11 @@ pub async fn handle_connection(
                                                 ctx
                                             },
                                             &mut caminho_local,
-                                            &state.emocao_palavras,
+                                            &emap_chat,
                                             &mut prefixo_buf,
-                                            &state.grounding,
+                                            &gmap_chat,
                                             &causal_vazio_chat,
-                                            &state.palavra_qvalores,
+                                            &qmap_chat,
                                             &mut ancora_log,
                                             &state.ultimo_estado_corpo,
                                             &scaffold_chat,
@@ -1900,7 +1948,7 @@ pub async fn handle_connection(
                                                 let mut v: Vec<(String, f32)> = state.palavra_qvalores
                                                     .iter()
                                                     .filter(|(_, &q)| q.abs() > 0.05)
-                                                    .map(|(w, &q)| (w.clone(), q))
+                                                    .map(|(&id, &q)| (id_to_word_chat.get(&id).cloned().unwrap_or_else(|| format!("#{}", id)), q))
                                                     .collect();
                                                 v.sort_by(|a, b| b.1.abs().partial_cmp(&a.1.abs()).unwrap_or(std::cmp::Ordering::Equal));
                                                 v.truncate(3);
@@ -1930,11 +1978,11 @@ pub async fn handle_connection(
                                         // reconhecer → scaffoldar → usar → histórico de slots.
                                         if !reply.is_empty() {
                                             if let Some(tid) = scaffold_id_chat {
-                                                let reply_tokens: HashMap<usize, String> = reply
+                                                let reply_tokens: HashMap<usize, u32> = reply
                                                     .to_lowercase()
                                                     .split(|c: char| !c.is_alphanumeric())
                                                     .filter(|t| t.len() > 1)
-                                                    .map(|t| t.to_string())
+                                                    .map(|t| word_to_concept_id(t))
                                                     .enumerate()
                                                     .take(8)
                                                     .collect();
@@ -1954,7 +2002,7 @@ pub async fn handle_connection(
                                         // Atualiza contagem de arestas usadas (para consolidação noturna)
                                         let caminho = caminho_local;
                                         for i in 0..caminho.len().saturating_sub(1) {
-                                            let par = (caminho[i].clone(), caminho[i+1].clone());
+                                            let par = (word_to_concept_id(&caminho[i]), word_to_concept_id(&caminho[i+1]));
                                             *state.aresta_contagem.entry(par).or_insert(0) += 1;
                                         }
 
@@ -1982,8 +2030,8 @@ pub async fn handle_connection(
                                                     let b = &caminho_rpe[i+1];
                                                     // Find canonical neurons and adjust weight
                                                     if let (Some(pop_a), Some(pop_b)) = (
-                                                        sw.palavra_para_id.get(a).and_then(|p| p.first().copied()),
-                                                        sw.palavra_para_id.get(b).and_then(|p| p.first().copied()),
+                                                        sw.pop_para_palavra(a).and_then(|p| p.first().copied()),
+                                                        sw.pop_para_palavra(b).and_then(|p| p.first().copied()),
                                                     ) {
                                                         if let Some(w) = sw.sinapses_conceito.get_mut(&(pop_a, pop_b)) {
                                                             *w = (*w + delta).clamp(0.01, 1.0);
@@ -2017,22 +2065,23 @@ pub async fn handle_connection(
                                             if let Ok(mut sw) = state.swap_manager.try_lock() {
                                                 // Ordena por contagem decrescente, pega top-20
                                                 let mut top_arestas: Vec<_> = state.aresta_contagem
-                                                    .iter()
-                                                    .collect();
-                                                top_arestas.sort_by(|a, b| b.1.cmp(a.1));
+                                                    .iter().map(|(k, v)| (*k, *v)).collect();
+                                                top_arestas.sort_by(|a, b| b.1.cmp(&a.1));
                                                 let pares: Vec<(String, String, f32)> = top_arestas
                                                     .iter()
                                                     .take(20)
-                                                    .map(|((w1, w2), cnt)| {
-                                                        // Peso proporcional à frequência, máx 0.3
-                                                        let peso = ((**cnt as f32) * 0.01).clamp(0.02, 0.3);
-                                                        (w1.clone(), w2.clone(), peso)
+                                                    .filter_map(|&((id1, id2), cnt)| {
+                                                        let w1 = sw.id_to_word.get(&id1)?.clone();
+                                                        let w2 = sw.id_to_word.get(&id2)?.clone();
+                                                        let peso = (cnt as f32 * 0.01).clamp(0.02, 0.3);
+                                                        Some((w1, w2, peso))
                                                     })
                                                     .collect();
                                                 if !pares.is_empty() {
+                                                    let n_log = pares.len();
                                                     sw.importar_causal(pares);
                                                     log::debug!("[ArestaSTDP] {} arestas reforçadas (reply={})",
-                                                        top_arestas.len().min(20), state.reply_count);
+                                                        n_log, state.reply_count);
                                                 }
                                             }
                                             // Decai contadores para que arestas antigas não dominem para sempre
@@ -2046,11 +2095,15 @@ pub async fn handle_connection(
                                         if state.reply_count % 200 == 0 {
                                             let slot = (state.reply_count / 200) % 3;
                                             let path = format!("selene_swap_snap_{}.json", slot);
-                                            let snap_saved = if let Ok(sw) = state.swap_manager.try_lock() {
-                                                sw.salvar_estado(&path).is_ok()
-                                            } else { false };
-                                            if snap_saved {
-                                                log::info!("📸 [SNAPSHOT] swap salvo → {} (slot {})", path, slot);
+                                            if let Ok(sw) = state.swap_manager.try_lock() {
+                                                if let Ok(json_str) = sw.serializar_estado_json() {
+                                                    let path_clone = path.clone();
+                                                    tokio::spawn(async move {
+                                                        if tokio::fs::write(&path_clone, json_str).await.is_ok() {
+                                                            log::info!("📸 [SNAPSHOT] swap salvo → {} (slot {})", path_clone, slot);
+                                                        }
+                                                    });
+                                                }
                                             }
                                         }
 
@@ -2078,23 +2131,28 @@ pub async fn handle_connection(
 
                                         // ── HIPÓTESES: formula predições ──────────────────────
                                         {
-                                            let ctx_hip: Vec<String> = {
-                                                let mut c = conversa_ctx.clone();
-                                                c.extend(state.neural_context.iter().cloned());
-                                                c
-                                            };
+                                            let stop_ids: Vec<u32> = STOP_WORDS.iter()
+                                                .map(|w| word_to_concept_id(w)).collect();
+                                            let extra_ctx_strs = BrainState::neural_ctx_to_strings(
+                                                &state.neural_context, &id_to_word_chat);
+                                            let ctx_hip: Vec<u32> = conversa_ctx.iter()
+                                                .chain(extra_ctx_strs.iter())
+                                                .filter(|w| w.len() >= 3
+                                                    && !STOP_WORDS.contains(&w.as_str()))
+                                                .map(|w| word_to_concept_id(w))
+                                                .collect();
                                             let swap_arc_hyp = state.swap_manager.clone();
                                             let (grafo_ref, val_ref) = if let Ok(mut sw) = swap_arc_hyp.try_lock() {
-                                                (sw.grafo_palavras(), sw.valencias_palavras())
+                                                (sw.grafo_conceitos(), sw.valencias_conceitos())
                                             } else { (HashMap::new(), HashMap::new()) };
                                             state.hypothesis_engine.formular(
                                                 &ctx_hip, &grafo_ref, &val_ref,
-                                                emocao_resposta, STOP_WORDS,
+                                                emocao_resposta, &stop_ids,
                                             );
                                             // Registra última resposta para teste no próximo turno
                                             state.hypothesis_engine.ultimo_reply = reply.clone();
                                             // Observa padrão comportamental próprio
-                                            let chave_hip = conversa_ctx.iter().rev()
+                                            let chave_hip_str = conversa_ctx.iter().rev()
                                                 .find(|w| !STOP_WORDS.contains(&w.as_str())
                                                     && w.len() >= 3)
                                                 .cloned()
@@ -2102,25 +2160,27 @@ pub async fn handle_connection(
                                             let reply_resumido: String = reply
                                                 .split_whitespace().take(4)
                                                 .collect::<Vec<_>>().join(" ");
+                                            let chave_id = word_to_concept_id(&chave_hip_str);
+                                            let reply_id = word_to_concept_id(&reply_resumido);
                                             state.hypothesis_engine.observar_comportamento(
-                                                &chave_hip, &reply_resumido,
+                                                chave_id, reply_id,
                                             );
 
                                             // ── Hipóteses confiáveis → STDP ────────────────────
-                                            // Hipóteses semânticas com alta confiança (≥10 testes,
-                                            // taxa >65%) são equivalentes a associações aprendidas:
-                                            // promovê-las como pares causais no swap fecha o loop
-                                            // entre predição e memória sináptica.
                                             {
-                                                let confiaveis = state.hypothesis_engine.hipoteses_confiaveis();
-                                                if !confiaveis.is_empty() {
+                                                if let Ok(mut sw) = state.swap_manager.try_lock() {
+                                                    let confiaveis = state.hypothesis_engine.hipoteses_confiaveis();
                                                     let pares: Vec<(String, String, f32)> = confiaveis.iter()
                                                         .flat_map(|h| h.premissas.iter()
-                                                            .map(|p| (p.clone(), h.conclusao.clone(), h.confianca * 0.4))
+                                                            .filter_map(|&p| {
+                                                                let wa = sw.id_to_word.get(&p)?.clone();
+                                                                let wc = sw.id_to_word.get(&h.conclusao)?.clone();
+                                                                Some((wa, wc, h.confianca * 0.4))
+                                                            })
                                                             .collect::<Vec<_>>()
                                                         )
                                                         .collect();
-                                                    if let Ok(mut sw) = state.swap_manager.try_lock() {
+                                                    if !pares.is_empty() {
                                                         sw.importar_causal(pares);
                                                     }
                                                 }
@@ -2131,17 +2191,15 @@ pub async fn handle_connection(
                                             // no neural_context faz Selene "pensar" no que não sabe
                                             // → aumenta chance de perguntas autônomas relevantes.
                                             if state.reply_count % 5 == 0 {
-                                                // Coleta owned para liberar o borrow de hypothesis_engine
-                                                // antes de mutar neural_context.
-                                                let gap_palavras: Vec<String> = state.hypothesis_engine
+                                                let gap_ids: Vec<u32> = state.hypothesis_engine
                                                     .gaps_conhecimento()
                                                     .iter()
                                                     .take(2)
-                                                    .filter_map(|h| h.premissas.first().cloned())
+                                                    .filter_map(|h| h.premissas.first().copied())
                                                     .collect();
-                                                for palavra in gap_palavras {
-                                                    if !state.neural_context.contains(&palavra) {
-                                                        state.neural_context.push_back(palavra);
+                                                for cid in gap_ids {
+                                                    if !state.neural_context.contains(&cid) {
+                                                        state.neural_context.push_back(cid);
                                                         if state.neural_context.len() > 20 {
                                                             state.neural_context.pop_front();
                                                         }
@@ -2153,10 +2211,9 @@ pub async fn handle_connection(
                                             // Se o motor de hipóteses tem uma predição confiante
                                             // sobre o que vem a seguir, injeta no neural_context
                                             // para que o graph-walk já comece orientado a ela.
-                                            if let Some(proximo) = state.hypothesis_engine.proximo_topico_previsto() {
-                                                let proximo_owned = proximo.to_string();
-                                                if !state.neural_context.contains(&proximo_owned) {
-                                                    state.neural_context.push_front(proximo_owned);
+                                            if let Some(proximo_cid) = state.hypothesis_engine.proximo_topico_previsto() {
+                                                if !state.neural_context.contains(&proximo_cid) {
+                                                    state.neural_context.push_front(proximo_cid);
                                                     if state.neural_context.len() > 20 {
                                                         state.neural_context.pop_back();
                                                     }
@@ -2309,7 +2366,7 @@ pub async fn handle_connection(
                                                 .unwrap_or_default()
                                                 .as_secs_f64();
                                             let neuro = [dop2, ser2, nor2, 0.5, 0.0];
-                                            let ctx_ep: Vec<String> = state.neural_context.iter().cloned().collect();
+                                            let ctx_ep: Vec<String> = BrainState::neural_ctx_to_strings(&state.neural_context, &id_to_word_chat);
                                             state.pattern_engine.gravar(
                                                 t_s,
                                                 FonteEpisodio::Chat,
@@ -2520,8 +2577,9 @@ pub async fn handle_connection(
                                         if emocao_atual.abs() > 0.15 {
                                             for palavra in &palavras {
                                                 if palavra.len() > 1 {
+                                                    let cid = word_to_concept_id(palavra);
                                                     let entry = state.emocao_palavras
-                                                        .entry(palavra.clone()).or_insert(0.0);
+                                                        .entry(cid).or_insert(0.0);
                                                     // Decaimento + nova experiência
                                                     *entry = (*entry * 0.85 + emocao_atual * 0.15)
                                                         .clamp(-1.0, 1.0);
@@ -2597,12 +2655,14 @@ pub async fn handle_connection(
                                             } else {
                                                 let mut melhor: Option<String> = None;
                                                 let mut sim_max: f32 = 0.0;
-                                                for (chave, pat_ref) in &state.spike_vocab {
-                                                    if let Some(palavra) = chave.strip_prefix("audio:") {
-                                                        let sim = spike_similarity(&audio_pat, pat_ref);
-                                                        if sim > sim_max {
-                                                            sim_max = sim;
-                                                            melhor = Some(palavra.to_string());
+                                                for (&h, pat_ref) in &state.spike_vocab {
+                                                    if let Some(chave) = state.spike_labels.get(&h) {
+                                                        if let Some(palavra) = chave.strip_prefix("audio:") {
+                                                            let sim = spike_similarity(&audio_pat, pat_ref);
+                                                            if sim > sim_max {
+                                                                sim_max = sim;
+                                                                melhor = Some(palavra.to_string());
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -2616,12 +2676,13 @@ pub async fn handle_connection(
                                                         if state.neural_context.len() >= 20 {
                                                             state.neural_context.pop_front();
                                                         }
-                                                        state.neural_context.push_back(palavra.clone());
+                                                        state.neural_context.push_back(word_to_concept_id(palavra));
                                                         let vpad = state.ultimo_padrao_visual;
                                                         let emocao = state.emocao_bias;
                                                         state.grounding_bind(&[palavra.clone()], vpad, audio_pat, emocao, sim_max, 0.0);
                                                         if emocao.abs() > 0.15 {
-                                                            let entry = state.emocao_palavras.entry(palavra.clone()).or_insert(0.0);
+                                                            let cid = word_to_concept_id(&palavra);
+                                                            let entry = state.emocao_palavras.entry(cid).or_insert(0.0);
                                                             *entry = (*entry * 0.85 + emocao * 0.15).clamp(-1.0, 1.0);
                                                         }
                                                     }
@@ -2656,19 +2717,20 @@ pub async fn handle_connection(
                                     if transcript.is_empty() { continue; }
 
                                     // Tokeniza antes do lock (operação barata, sem I/O)
-                                    let tokens: Vec<String> = transcript.split_whitespace()
+                                    let tokens_str: Vec<String> = transcript.split_whitespace()
                                         .map(|w: &str| {
                                             let s = w.to_lowercase();
                                             s.trim_matches(|c: char| !c.is_alphabetic()).to_string()
                                         })
                                         .filter(|w| w.len() > 2)
                                         .collect();
-                                    if tokens.is_empty() { continue; }
+                                    if tokens_str.is_empty() { continue; }
+                                    let tokens: Vec<u32> = tokens_str.iter()
+                                        .map(|w| word_to_concept_id(w)).collect();
 
                                     // ── Dedup semântico: hash FNV-1a dos tokens ─────────────────
-                                    // Hash é determinístico e ordem-independente (sort antes de hash).
                                     let tokens_hash = {
-                                        let mut sorted = tokens.clone();
+                                        let mut sorted = tokens_str.clone();
                                         sorted.sort_unstable();
                                         sorted.iter().fold(2166136261u64, |h, w| {
                                             w.bytes().fold(h, |h2, b| {
@@ -2696,7 +2758,7 @@ pub async fn handle_connection(
                                     }
                                     if elapsed.as_millis() < 400 {
                                         // Similaridade Jaccard rápida: se >60% de tokens iguais → rate limit
-                                        let ultimo_set: std::collections::HashSet<&str> = tokens.iter()
+                                        let ultimo_set: std::collections::HashSet<&str> = tokens_str.iter()
                                             .map(|s| s.as_str()).collect();
                                         // Reutiliza o hash como proxy de similaridade:
                                         // hashes diferentes mas intervalo curto → verifica Jaccard
@@ -2744,7 +2806,7 @@ pub async fn handle_connection(
                                     let pool_valence = score * energia_fft.sqrt() * 0.2;
                                     let now_ms = state.ultimo_passive_hear_ts.elapsed().as_secs_f64() * 1000.0;
                                     state.localist_observar(
-                                        &tokens,
+                                        &tokens_str,
                                         crate::neural_pool::CorticalLevel::C2Lexical,
                                         pool_valence,
                                         now_ms,
@@ -2754,14 +2816,14 @@ pub async fn handle_connection(
 
                                     if let Ok(mut sw) = swap_arc.try_lock() {
                                         let valence = score * energia_fft.sqrt() * 0.2;
-                                        for palavra in &tokens {
+                                        for palavra in &tokens_str {
                                             sw.aprender_conceito(palavra, valence);
                                         }
                                     }
 
                                     let preview: String = transcript.chars().take(40).collect();
                                     log::debug!("[PASSIVE] aceito score={:.2} fft_e={:.3} tokens={} '{}'",
-                                        score, energia_fft, tokens.len(), preview);
+                                        score, energia_fft, tokens_str.len(), preview);
                                 }
 
                                 // ── VISUAL_LEARN: vincula padrão visual (512 pixels luminância) às palavras ──
@@ -3114,7 +3176,7 @@ pub async fn handle_connection(
                                     } else {
                                         format!("audio:{}", chave.to_lowercase())
                                     };
-                                    if !state.spike_vocab.contains_key(&chave_audio) {
+                                    if !state.spike_vocab.contains_key(&spike_label_hash(&chave_audio)) {
                                         drop(state);
                                         let err = serde_json::json!({
                                             "event": "intention_error",
@@ -3337,13 +3399,13 @@ pub async fn handle_connection(
                                         .unwrap_or_default()
                                         .as_secs_f64();
 
-                                    // Constrói mapa de slots: {"0": "palavra"} → {0usize: "palavra"}
-                                    let slots_map: std::collections::HashMap<usize, String> =
+                                    // Constrói mapa de slots: {"0": "palavra"} → {0usize: concept_id u32}
+                                    let slots_map: std::collections::HashMap<usize, u32> =
                                         if let Some(obj) = json["slots"].as_object() {
                                             obj.iter()
                                                 .filter_map(|(k, v)| {
                                                     k.parse::<usize>().ok()
-                                                        .zip(v.as_str().map(|s| s.to_string()))
+                                                        .zip(v.as_str().map(|s| word_to_concept_id(s)))
                                                 })
                                                 .collect()
                                         } else {
@@ -3406,8 +3468,11 @@ pub async fn handle_connection(
                                     if state.ego.pensamentos_recentes.len() > 10 { state.ego.pensamentos_recentes.pop_front(); }
                                     // ── Memória autobiográfica: registra evento positivo ──
                                     {
-                                        let ctx = state.neural_context.iter()
-                                            .take(3).cloned().collect::<Vec<_>>().join(", ");
+                                        let ctx_ids: Vec<u32> = state.neural_context.iter().take(3).copied().collect();
+                                        let ctx_words: Vec<String> = if let Ok(sw) = state.swap_manager.try_lock() {
+                                            ctx_ids.iter().filter_map(|id| sw.id_to_word.get(id).cloned()).collect()
+                                        } else { Vec::new() };
+                                        let ctx = ctx_words.join(", ");
                                         let descricao = if ctx.is_empty() {
                                             format!("fui recompensada (+{:.2})", value)
                                         } else {
@@ -3442,8 +3507,11 @@ pub async fn handle_connection(
                                     if state.ego.pensamentos_recentes.len() > 10 { state.ego.pensamentos_recentes.pop_front(); }
                                     // ── Memória autobiográfica: registra evento negativo ──
                                     {
-                                        let ctx = state.neural_context.iter()
-                                            .take(3).cloned().collect::<Vec<_>>().join(", ");
+                                        let ctx_ids: Vec<u32> = state.neural_context.iter().take(3).copied().collect();
+                                        let ctx_words: Vec<String> = if let Ok(sw) = state.swap_manager.try_lock() {
+                                            ctx_ids.iter().filter_map(|id| sw.id_to_word.get(id).cloned()).collect()
+                                        } else { Vec::new() };
+                                        let ctx = ctx_words.join(", ");
                                         let descricao = if ctx.is_empty() {
                                             format!("errei (-{:.2})", value)
                                         } else {
@@ -3484,9 +3552,9 @@ pub async fn handle_connection(
                                         if let Ok(mut sw) = state.swap_manager.try_lock() {
                                             for i in 0..caminho.len().saturating_sub(1) {
                                                 if let (Some(p_a), Some(p_b)) = (
-                                                    sw.palavra_para_id.get(&caminho[i])
+                                                    sw.pop_para_palavra(&caminho[i])
                                                         .and_then(|v| v.first()).copied(),
-                                                    sw.palavra_para_id.get(&caminho[i+1])
+                                                    sw.pop_para_palavra(&caminho[i+1])
                                                         .and_then(|v| v.first()).copied(),
                                                 ) {
                                                     if let Some(w) = sw.sinapses_conceito.get_mut(&(p_a, p_b)) {
@@ -3504,9 +3572,9 @@ pub async fn handle_connection(
                                         if let Ok(mut sw) = state.swap_manager.try_lock() {
                                             for i in 0..caminho.len().saturating_sub(1) {
                                                 if let (Some(p_a), Some(p_b)) = (
-                                                    sw.palavra_para_id.get(&caminho[i])
+                                                    sw.pop_para_palavra(&caminho[i])
                                                         .and_then(|v| v.first()).copied(),
-                                                    sw.palavra_para_id.get(&caminho[i+1])
+                                                    sw.pop_para_palavra(&caminho[i+1])
                                                         .and_then(|v| v.first()).copied(),
                                                 ) {
                                                     if let Some(w) = sw.sinapses_conceito.get_mut(&(p_a, p_b)) {
@@ -3577,7 +3645,7 @@ pub async fn handle_connection(
                                         _          => "toque",
                                     };
                                     if state.neural_context.len() >= 20 { state.neural_context.pop_front(); }
-                                    state.neural_context.push_back(palavra_toque.to_string());
+                                    state.neural_context.push_back(word_to_concept_id(palavra_toque));
 
                                     let (dopa, sero, nor) = state.neurotransmissores;
                                     let pensamento = match tipo_str {
@@ -3691,7 +3759,7 @@ pub async fn handle_connection(
                                         let valida = {
                                             let st = brain.lock().await;
                                             palavras.iter().all(|p| {
-                                                st.spike_vocab.contains_key(&format!("audio:{}", p))
+                                                st.spike_vocab.contains_key(&spike_label_hash(&format!("audio:{}", p)))
                                             })
                                         };
                                         if !valida {
@@ -3778,22 +3846,24 @@ pub async fn handle_connection(
                                         let tmp = brain.lock().await;
                                         tmp.swap_manager.clone()
                                     };
-                                    let (valencias_ex, grafo_ex) = if let Ok(mut sw) = swap_arc_ex.try_lock() {
-                                        (sw.valencias_palavras(), sw.grafo_palavras())
+                                    let (valencias_ex, grafo_ex, id_to_word_ex) = if let Ok(mut sw) = swap_arc_ex.try_lock() {
+                                        (sw.valencias_palavras(), sw.grafo_palavras(), sw.id_to_word.clone())
                                     } else {
-                                        (HashMap::new(), HashMap::new())
+                                        (HashMap::new(), HashMap::new(), HashMap::new())
                                     };
                                     let causal_ex: HashMap<String, Vec<(String, f32)>> = HashMap::new();
                                     let state = brain.lock().await;
                                     let ctx_vec: Vec<String> =
-                                        state.neural_context.iter().cloned().collect();
+                                        BrainState::neural_ctx_to_strings(&state.neural_context, &id_to_word_ex);
+                                    let grounding_ex = ids_to_str_map(&state.grounding, &id_to_word_ex);
+                                    let emocao_ex = ids_to_str_map(&state.emocao_palavras, &id_to_word_ex);
                                     let json_str = crate::storage::exportar_linguagem(
                                         &valencias_ex,
                                         &grafo_ex,
                                         &state.frases_padrao,
                                         &causal_ex,
-                                        &state.grounding,
-                                        &state.emocao_palavras,
+                                        &grounding_ex,
+                                        &emocao_ex,
                                         &state.auto_learn_contagem,
                                         &ctx_vec,
                                     );
@@ -3837,7 +3907,7 @@ pub async fn handle_connection(
                                                 sw.carregar_estado(&path);
                                             }
                                             let (n_grafo, n_vocab) = if let Ok(sw) = swap_arc_rb.try_lock() {
-                                                (sw.sinapses_conceito.len(), sw.palavra_para_id.len())
+                                                (sw.sinapses_conceito.len(), sw.conceito_para_id.len())
                                             } else { (0, 0) };
                                             let rc = 0u64;
                                             println!("⏪ [ROLLBACK] Swap restaurado do slot {} (reply_count={}): {} sinapses, {} palavras",
@@ -3974,7 +4044,7 @@ pub async fn handle_connection(
                                         // grounding_bind já adiciona 0.15 (audio_ativo) + 0.08 (interoceptivo).
                                         // Adicionamos 0.12 extra para distinguir do grounding conversacional normal.
                                         for p in &palavras {
-                                            let g = state.grounding.entry(p.clone()).or_insert(0.0);
+                                            let g = state.grounding.entry(word_to_concept_id(p)).or_insert(0.0);
                                             *g = (*g + 0.12).min(1.0);
                                         }
 

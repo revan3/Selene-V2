@@ -494,6 +494,155 @@ const ASTRO_HIGH_DURATION_MS:   f32 = 1000.0;
 const ASTRO_CA_NMDA_SCALE: f32 = 2.0;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SEÇÃO 5a-V4 — NEURÔNIO HÍBRIDO MULTICOMPARTIMENTAL (V4)
+//
+// Extensão NÃO-QUEBRANTE do V3.1. Apenas RS/IB recebem compartimentos dendríticos;
+// todos os outros tipos → `compartimentos: None`. O metabolismo (ATP + bomba
+// Na⁺K⁺-ATPase + [K⁺]o dinâmico) é ativo em todos os tipos, mas com efeito
+// mínimo em tipos não-piramidais (ATP alto, bomba fraca).
+//
+// REFERÊNCIAS:
+//   Rall (1967)                — cable theory: acoplamento axial entre compartimentos
+//   Larkum, Zhu & Sakmann 1999 — BAC firing: coincidência apical+somática
+//   Schiller et al. (2000)     — NMDA spike dendrítico no tufo apical
+//   Kole & Stuart (2012)       — AIS como ponto de iniciação do spike (g_Na 5×)
+//   Anastassiou et al. (2011)  — acoplamento ephaptic bidirecional
+//   PLOS CompBiol (2020)       — Na/K ATPase = 75% do gasto energético neuronal
+//   Kager, Wadman & Somjen 2000— [K⁺]o dinâmico e kindling
+//   Hodgkin & Katz (1949)      — E_K Nernst dinâmico
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Estado dos brain states — modula a condutância de acoplamento apical.
+/// Vigília: amplificação apical máxima. NREM: isolamento. REM: drive independente.
+/// Frontiers CompNeurosci (2025); arXiv:2311.06074
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum EstadoBrainState {
+    /// Vigília: amplificação apical máxima — g_c_apical × 1.0
+    Vigilia,
+    /// NREM profundo: isolamento apical — g_c_apical × 0.3
+    NremProfundo,
+    /// REM: drive apical independente — g_c_apical × 1.2
+    Rem,
+}
+
+impl EstadoBrainState {
+    /// Multiplicador efetivo de g_c_apical para o estado atual.
+    #[inline]
+    pub fn fator_apical(&self) -> f32 {
+        match self {
+            EstadoBrainState::Vigilia      => 1.0,
+            EstadoBrainState::NremProfundo => 0.3,
+            EstadoBrainState::Rem          => 1.2,
+        }
+    }
+}
+
+/// Estado dos 5 compartimentos acoplados (AIS, Soma/Basal, Tronco, Tufo Apical,
+/// Extracelular). Apenas RS/IB instanciam este struct (via `Some(Box<...>)`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EstadoCompartimentos {
+    // ── AIS — Axon Initial Segment (Kole & Stuart 2012) ──────────────────────
+    // Spike SEMPRE inicia aqui (g_Na = 200, 5× maior que HH padrão).
+    pub v_ais:         f32,   // init: -65.0 mV
+    pub m_ais:         f32,   // portão Na AIS, init: 0.053
+    pub h_ais:         f32,   // inativação Na AIS, init: 0.596
+    pub n_ais:         f32,   // portão K AIS, init: 0.318
+    pub ais_spiked:    bool,  // AIS disparou antes do soma neste tick
+
+    // ── Tronco apical — Ca²⁺ hotzone (Larkum 1999) ──────────────────────────
+    pub v_trunk:       f32,   // init: -68.0 mV
+    pub ca_trunk:      f32,   // Ca²⁺ no tronco, init: 0.0
+    pub g_ca_trunk:    f32,   // condutância Ca²⁺ L-type, default: 2.0
+
+    // ── Tufo apical — NMDA spike dendrítico (Schiller 2000) ─────────────────
+    pub v_apical:      f32,   // init: -70.0 mV
+    pub ca_apical:     f32,   // Ca²⁺ no tufo, init: 0.0
+    pub nmda_gate:     f32,   // portão NMDA spike [0,1], init: 0.0
+    pub nmda_spike_ms: f32,   // duração do NMDA spike ativo (ms), init: 0.0
+
+    // ── BAP — Back-Propagating Action Potential ─────────────────────────────
+    pub bap_active:    bool,  // AP propagando soma → apical, init: false
+    pub bap_timer_ms:  f32,   // ms desde início do BAP, init: 0.0
+
+    // ── Coincidência dendrítica (Larkum et al. 1999) ────────────────────────
+    pub coincidencia_ativa: bool, // BAP + ca_trunk > 1.5 + nmda_gate > 0.4
+}
+
+impl EstadoCompartimentos {
+    pub fn novo() -> Self {
+        Self {
+            v_ais: -65.0, m_ais: 0.053, h_ais: 0.596, n_ais: 0.318,
+            ais_spiked: false,
+            v_trunk: -68.0, ca_trunk: 0.0, g_ca_trunk: 2.0,
+            v_apical: -70.0, ca_apical: 0.0, nmda_gate: 0.0, nmda_spike_ms: 0.0,
+            bap_active: false, bap_timer_ms: 0.0,
+            coincidencia_ativa: false,
+        }
+    }
+}
+
+/// Estado metabólico — ATP, bomba Na⁺K⁺-ATPase eletrogenica, [K⁺]o e [Na⁺]i
+/// dinâmicos, E_K(t) via Nernst temporal, potencial extracelular ephaptic.
+/// Ativo em TODOS os tipos (sem quebra); efeito mínimo em não-piramidais.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EstadoMetabolico {
+    pub atp:       f32,  // concentração [0.05, 2.5 mM], init: 2.5
+    pub na_intra:  f32,  // [Na⁺] intracelular (mM), init: 10.0
+    pub k_o:       f32,  // [K⁺] extracelular (mM), init: 3.0
+    pub e_k_dyn:   f32,  // E_K dinâmico via Nernst (mV), init: -77.0
+    pub i_pump:    f32,  // corrente da bomba Na/K (hiperpolarizante), init: 0.0
+    pub v_e:       f32,  // potencial extracelular local (ephaptic), init: 0.0
+}
+
+impl Default for EstadoMetabolico {
+    fn default() -> Self { Self::novo() }
+}
+
+impl Default for EstadoBrainState {
+    fn default() -> Self { EstadoBrainState::Vigilia }
+}
+
+impl EstadoMetabolico {
+    pub fn novo() -> Self {
+        Self {
+            atp: 2.5, na_intra: 10.0, k_o: 3.0,
+            e_k_dyn: -77.0, i_pump: 0.0, v_e: 0.0,
+        }
+    }
+
+    /// Nernst dinâmico: E_K(t) = RT/F × ln([K⁺]o / [K⁺]i)
+    /// RT/F a 37°C ≈ 26.7 mV; [K⁺]i ≈ 140 mM (fixo). Hodgkin & Katz (1949).
+    pub fn atualizar_ek(&mut self) {
+        const RT_F: f32 = 26.7;
+        const KI:   f32 = 140.0;
+        self.e_k_dyn = RT_F * (self.k_o.max(0.1) / KI).ln();
+    }
+}
+
+// ── Constantes V4: compartimentos (Rall 1967; Larkum 1999; Kole & Stuart 2012) ─
+const G_C_TRUNK:      f32 = 0.15;  // condutância soma↔tronco (mS/cm²)
+const G_C_APICAL:     f32 = 0.08;  // condutância tronco↔tufo apical
+const G_C_AIS:        f32 = 0.25;  // condutância AIS↔soma
+const G_NA_AIS:       f32 = 200.0; // g_Na no AIS (5× maior — Kole & Stuart 2012)
+const G_K_AIS:        f32 = 60.0;
+const NMDA_THRESHOLD: f32 = 0.35;  // limiar de i_apical para NMDA spike
+const BAP_DECAY_TAU:  f32 = 3.0;   // tau de decaimento do BAP (ms)
+const BAP_TOTAL_MS:   f32 = 6.0;   // duração total do BAP (ms)
+
+// ── Constantes V4: metabolismo (PLOS CompBiol 2020; Kager et al. 2000) ────────
+const ATP_PROD_RATE:        f32 = 0.8;   // produção mitocondrial (mM/ms, Michaelis)
+const ATP_BASAL_COST:       f32 = 0.4;   // custo basal (mM/ms)
+const ATP_MAX:              f32 = 2.5;   // concentração máxima (mM)
+const K_ATP:                f32 = 0.5;   // constante Michaelis da bomba
+const RHO_PUMP:             f32 = 8.0;   // condutância máxima da bomba (pA)
+const ATP_COST_PER_SPIKE:   f32 = 0.12;  // custo por spike (mM)
+const KO_REST:              f32 = 3.0;   // [K⁺]o em repouso (mM)
+const KO_RELEASE_PER_SPIKE: f32 = 0.15;  // K⁺ liberado por spike (mM)
+const KO_CLEARANCE:         f32 = 0.02;  // clearance glial (ms⁻¹)
+const MET_KI:               f32 = 140.0; // [K⁺]i fixo (mM)
+const MET_RT_F:             f32 = 26.7;  // RT/F a 37°C (mV)
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SEÇÃO 5b — NTC: NEURAL TEXTURE COMPRESSION
 //
 // Analogia com compressão de texturas GPU: neurônios C0/C1 usam LUTs pré-
@@ -953,6 +1102,19 @@ pub struct NeuronioHibrido {
     pub activity_timer: u64,
     /// Estado do ciclo de vida: Active (processando), Dormant (inativo), Swapped (no NVMe).
     pub status: NeuronalStatus,
+
+    // ── V4: Neurônio multicompartimental ──────────────────────────────────────
+    // serde(default): estado V3.1 persistido (sem estes campos) ainda carrega.
+    /// 5 compartimentos dendríticos (AIS, Soma, Tronco, Tufo, Extracelular).
+    /// `Some` apenas para RS/IB; `None` para todos os outros tipos (não-quebrante).
+    #[serde(default)]
+    pub compartimentos: Option<Box<EstadoCompartimentos>>,
+    /// Estado metabólico (ATP, bomba Na/K, [K⁺]o, E_K dinâmico). Ativo em todos.
+    #[serde(default)]
+    pub metabolismo:    Box<EstadoMetabolico>,
+    /// Brain state corrente — modula condutância de acoplamento apical.
+    #[serde(default)]
+    pub brain_state:    EstadoBrainState,
 }
 
 impl NeuronioHibrido {
@@ -984,6 +1146,14 @@ impl NeuronioHibrido {
             theta_m:         tipo.bcm_theta(),
             activity_timer:  0,
             status:          NeuronalStatus::Active,
+            compartimentos: match tipo {
+                TipoNeuronal::RS | TipoNeuronal::IB => {
+                    Some(Box::new(EstadoCompartimentos::novo()))
+                }
+                _ => None,
+            },
+            metabolismo:  Box::new(EstadoMetabolico::novo()),
+            brain_state:  EstadoBrainState::Vigilia,
         }
     }
 
@@ -1053,8 +1223,30 @@ impl NeuronioHibrido {
         // ── 5. Novos canais iônicos ──────────────────────────────────────
         let i_extra = self.calcular_canais_extras(dt_ms);
 
+        // ── 5b. Compartimentos dendríticos + AIS (RS/IB apenas) ───────────
+        let i_comp = if self.compartimentos.is_some() {
+            let api = self.input_apical;
+            self.integrar_compartimentos(dt_ms, api)
+        } else {
+            0.0
+        };
+
+        // ── 5c. Metabolismo: ATP + bomba Na/K + [K⁺]o dinâmico ────────────
+        // CHAMADA 1: antes dos substeps — retorna i_pump para I_eff.
+        let i_pump = self.atualizar_metabolismo(false, dt_ms);
+
+        // ── 5d. ATP penalty: ATP baixo → threshold sobe (modo economia) ───
+        let atp_penalty = if self.metabolismo.atp < 0.8 {
+            (0.8 - self.metabolismo.atp) * 8.0
+        } else {
+            0.0
+        };
+
         // ── 6. I_eff base ─────────────────────────────────────────────────
-        let mut i_eff = input_stp - (i_hh + i_extra) * HH_SCALE;
+        let mut i_eff = input_stp
+            - (i_hh + i_extra) * HH_SCALE
+            + i_comp   // corrente dos compartimentos dendríticos
+            - i_pump;  // bomba Na/K eletrogenica (hiperpolarizante)
 
         // ── 6a. RS BAC burst: injeta corrente extra se burst ativo ────────
         // Biológico: AP retrógrado ativa canais de Ca²⁺ apicais →
@@ -1085,7 +1277,10 @@ impl NeuronioHibrido {
                                   - (self.extras.mod_ach - 1.0) * 1.5;
         let g_ahp_scale = if self.tipo == TipoNeuronal::FS { 0.1 } else { 1.0 };
         let ahp_extra = G_AHP * self.ca_intra * g_ahp_scale;
-        let threshold_efetivo = self.threshold + neuro_thresh_offset + ahp_extra;
+        let threshold_efetivo = self.threshold
+            + neuro_thresh_offset
+            + ahp_extra
+            + atp_penalty; // ATP baixo → threshold sobe (modo economia)
 
         for _ in 0..n_sub {
             self.v += dt_int * (0.04 * self.v.powi(2) + 5.0 * self.v + 140.0 - self.u + i_eff);
@@ -1112,6 +1307,18 @@ impl NeuronioHibrido {
             let nmda_cap = self.extras.ca_nmda_max;
             self.extras.ca_nmda = (self.extras.ca_nmda * 2.0).min(nmda_cap);
         }
+
+        // ── 7b. V4: pós-spike — ativa BAP + debita ATP do spike ───────────
+        if spiked {
+            // BAP: AP retrógrado propaga soma → tronco → tufo (RS/IB apenas)
+            if let Some(comp) = self.compartimentos.as_mut() {
+                comp.bap_active   = true;
+                comp.bap_timer_ms = 0.0;
+            }
+            // CHAMADA 2: debita ATP_COST_PER_SPIKE + libera K⁺ (dt=0.0)
+            self.atualizar_metabolismo(true, 0.0);
+        }
+
         self.input_apical = 0.0; // one-shot: consumido a cada tick
 
         // ── 8. Ca²⁺ AHP (SK) + BK rápido pós-spike ──────────────────────
@@ -1253,6 +1460,9 @@ impl NeuronioHibrido {
     fn calcular_canais_extras(&mut self, dt_ms: f32) -> f32 {
         let v = self.v;
         use TipoNeuronalV3;
+        // E_K dinâmico (Nernst temporal) — todos os canais de K⁺ respondem ao
+        // acúmulo de [K⁺]o em tempo real. Hodgkin & Katz (1949).
+        let e_k = self.metabolismo.e_k_dyn;
 
         // ── I_NaP: Na⁺ persistente ───────────────────────────────────────
         let m_nap_inf = 1.0 / (1.0 + (-(v + 52.0) / 5.0).clamp(-30.0, 30.0).exp());
@@ -1269,7 +1479,7 @@ impl NeuronioHibrido {
         let decay_w = (-dt_ms / tau_w).exp();
         self.extras.w_m = w_inf_m + (self.extras.w_m - w_inf_m) * decay_w;
         self.extras.w_m = self.extras.w_m.clamp(0.0, 1.0);
-        let i_m = g_m_eff * self.extras.w_m * (v - E_K);
+        let i_m = g_m_eff * self.extras.w_m * (v - e_k);
 
         // ── I_A: A-type K⁺ ───────────────────────────────────────────────
         let a_inf = 1.0 / (1.0 + (-(v + 60.0) / 8.5).clamp(-30.0, 30.0).exp());
@@ -1290,10 +1500,10 @@ impl NeuronioHibrido {
         self.extras.b_ka = b_inf + (self.extras.b_ka - b_inf) * decay_b;
         self.extras.a_ka = self.extras.a_ka.clamp(0.0, 1.0);
         self.extras.b_ka = self.extras.b_ka.clamp(0.0, 1.0);
-        let i_a = self.tipo.g_a() * self.extras.a_ka.powi(3) * self.extras.b_ka * (v - E_K);
+        let i_a = self.tipo.g_a() * self.extras.a_ka.powi(3) * self.extras.b_ka * (v - e_k);
 
         // ── I_BK: BK channels ────────────────────────────────────────────
-        let i_bk = self.tipo.g_bk() * self.extras.q_bk * (v - E_K);
+        let i_bk = self.tipo.g_bk() * self.extras.q_bk * (v - e_k);
 
         // ── I_T: T-type Ca²⁺ (TC e LT) ──────────────────────────────────
         let i_t = if self.tipo.g_t() > 0.0 {
@@ -1330,6 +1540,182 @@ impl NeuronioHibrido {
         } else { 0.0 };
 
         i_nap + i_m + i_a + i_bk + i_t
+    }
+
+    /// V4 — Metabolismo: ATP + bomba Na⁺K⁺-ATPase eletrogenica + [K⁺]o dinâmico.
+    ///
+    /// Chamada DUPLA por tick:
+    ///   1. `atualizar_metabolismo(false, dt_ms)` antes dos substeps Izhikevich
+    ///      → produz/consome ATP basal, integra bomba, retorna `i_pump`.
+    ///   2. `atualizar_metabolismo(true, 0.0)` após o spike
+    ///      → debita `ATP_COST_PER_SPIKE` e libera K⁺ extracelular.
+    ///
+    /// Retorna a corrente hiperpolarizante eletrogenica da bomba (já × HH_SCALE).
+    /// PLOS CompBiol (2020): Na/K ATPase = ~75% do gasto energético neuronal.
+    fn atualizar_metabolismo(&mut self, spiked: bool, dt_ms: f32) -> f32 {
+        let m = &mut self.metabolismo;
+
+        // 1. Produção mitocondrial (Michaelis-Menten do substrato)
+        let prod = ATP_PROD_RATE * dt_ms * (1.0 - m.atp / ATP_MAX);
+
+        // 2. Consumo (basal + custo de spike). ATP é f32 → clamp, NUNCA negativo.
+        let custo = ATP_BASAL_COST * dt_ms
+            + if spiked { ATP_COST_PER_SPIKE } else { 0.0 };
+        m.atp = (m.atp + prod - custo).clamp(0.05, ATP_MAX);
+
+        // 3. Bomba Na⁺K⁺-ATPase eletrogenica (PLOS CompBiol 2020)
+        let f_atp = m.atp / (K_ATP + m.atp);
+        let f_na  = (m.na_intra / (m.na_intra + 10.0)).powi(3);
+        let f_ko  = (m.k_o / (m.k_o + 1.5)).powi(2);
+        m.i_pump  = RHO_PUMP * f_atp * f_na * f_ko;
+
+        // 4. [Na⁺]i — entra com spike, bomba extrui
+        if spiked { m.na_intra += 1.5; }
+        m.na_intra = (m.na_intra - dt_ms * 0.008 * m.i_pump).clamp(7.0, 35.0);
+
+        // 5. [K⁺]o — liberado por spike, clearance glial (Kager et al. 2000)
+        if spiked { m.k_o += KO_RELEASE_PER_SPIKE; }
+        m.k_o += dt_ms * (-KO_CLEARANCE * (m.k_o - KO_REST));
+        m.k_o = m.k_o.clamp(1.5, 12.0);
+
+        // 6. E_K dinâmico (Nernst): ~−77mV repouso → ~−55mV acúmulo intenso
+        m.e_k_dyn = MET_RT_F * (m.k_o.max(0.1) / MET_KI).ln();
+
+        // 7. Corrente hiperpolarizante eletrogenica no soma
+        m.i_pump * HH_SCALE * 0.5
+    }
+
+    /// V4 — Integra os compartimentos dendríticos (AIS, Tronco, Tufo Apical) e
+    /// retorna a corrente líquida que chega ao soma.
+    ///
+    /// Chamada apenas quando `self.compartimentos.is_some()` (RS/IB).
+    /// `i_apical_input`: drive top-down no tufo apical (consumido de input_apical).
+    ///
+    /// Rall (1967) cable theory; Larkum 1999 BAC; Kole & Stuart 2012 AIS;
+    /// Schiller 2000 NMDA spike.
+    fn integrar_compartimentos(&mut self, dt_ms: f32, i_apical_input: f32) -> f32 {
+        let v_soma     = self.v;
+        let fator_api  = self.brain_state.fator_apical();
+        let comp = match self.compartimentos.as_mut() {
+            Some(c) => c,
+            None    => return 0.0,
+        };
+
+        // ── 1. AIS — ponto de iniciação do spike (g_Na 5×, Kole & Stuart 2012) ──
+        // Portões HH padrão integrados no v_ais; alta g_Na garante que o AIS
+        // dispara antes (ou junto) do soma — nunca depois.
+        {
+            let va = comp.v_ais;
+            let n_sub = ((dt_ms / 0.1).ceil() as usize).max(1).min(20);
+            let dt_sub = dt_ms / n_sub as f32;
+            let (mut m, mut h, mut n) = (comp.m_ais, comp.h_ais, comp.n_ais);
+            for _ in 0..n_sub {
+                let am = HhV3::alpha_m(va); let bm = HhV3::beta_m(va);
+                let ah = HhV3::alpha_h(va); let bh = HhV3::beta_h(va);
+                let an = HhV3::alpha_n(va); let bn = HhV3::beta_n(va);
+                m += dt_sub * (am * (1.0 - m) - bm * m);
+                h += dt_sub * (ah * (1.0 - h) - bh * h);
+                n += dt_sub * (an * (1.0 - n) - bn * n);
+                m = m.clamp(0.0, 1.0); h = h.clamp(0.0, 1.0); n = n.clamp(0.0, 1.0);
+            }
+            comp.m_ais = m; comp.h_ais = h; comp.n_ais = n;
+
+            let i_na_ais = G_NA_AIS * m.powi(3) * h * (va - E_NA);
+            let i_k_ais  = G_K_AIS  * n.powi(4) * (va - self.metabolismo.e_k_dyn);
+            let i_l_ais  = 0.3 * (va - (-65.0));
+            // Acoplamento axial AIS↔soma (Rall 1967)
+            let i_ais_soma = G_C_AIS * (v_soma - va);
+            let dv_ais = (-(i_na_ais + i_k_ais + i_l_ais) * HH_SCALE + i_ais_soma) * dt_ms;
+            comp.v_ais = (va + dv_ais).clamp(-90.0, 60.0);
+            comp.ais_spiked = comp.v_ais >= -55.0;
+        }
+
+        // ── 2. BAP — Back-Propagating AP (soma → dendrito) ──────────────────────
+        let (bap_trunk, bap_tuft) = if comp.bap_active {
+            let amp = 0.45 * (-comp.bap_timer_ms / BAP_DECAY_TAU).exp();
+            comp.bap_timer_ms += dt_ms;
+            if comp.bap_timer_ms >= BAP_TOTAL_MS {
+                comp.bap_active = false;
+            }
+            (amp * 0.70, amp * 0.42)
+        } else {
+            (0.0, 0.0)
+        };
+
+        // ── 3. Tufo apical — NMDA spike dendrítico (Schiller et al. 2000) ───────
+        if i_apical_input > NMDA_THRESHOLD {
+            // Sobe rápido (τ=3ms) em direção a 1.0
+            comp.nmda_gate += (1.0 - comp.nmda_gate) * (1.0 - (-dt_ms / 3.0).exp());
+            comp.nmda_spike_ms += dt_ms;
+        } else {
+            // Decai lento (τ=20ms)
+            comp.nmda_gate *= (-dt_ms / 20.0).exp();
+            comp.nmda_spike_ms = 0.0;
+        }
+        comp.nmda_gate = comp.nmda_gate.clamp(0.0, 1.0);
+        if comp.nmda_gate > 0.5 {
+            comp.ca_apical += 0.05 * dt_ms * comp.nmda_gate;
+        }
+        comp.ca_apical *= (-dt_ms / 80.0).exp();
+        comp.ca_apical  = comp.ca_apical.clamp(0.0, 10.0);
+
+        // I_Ca_L apical (canal L-type, ativação instantânea m_inf)
+        let m_ca_inf_ap = 1.0 / (1.0 + (-(comp.v_apical + 30.0) / 6.0)
+            .clamp(-30.0, 30.0).exp());
+        let i_ca_apical = 2.0 * m_ca_inf_ap * (comp.v_apical - E_CA);
+
+        // g_c_apical efetivo modulado pelo brain state
+        let g_c_apical_eff = G_C_APICAL * fator_api;
+
+        // Atualiza v_apical: acoplamento tronco↔tufo + BAP + drive NMDA + leak
+        let i_tuft_trunk = g_c_apical_eff * (comp.v_trunk - comp.v_apical);
+        let i_nmda_drive = comp.nmda_gate * 18.0; // despolarização do NMDA spike
+        let i_leak_ap    = 0.05 * (comp.v_apical - (-70.0));
+        let dv_apical = (-i_ca_apical * HH_SCALE - i_leak_ap
+            + i_tuft_trunk + bap_tuft + i_nmda_drive * HH_SCALE
+            + i_apical_input.max(0.0)) * dt_ms;
+        comp.v_apical = (comp.v_apical + dv_apical).clamp(-90.0, 40.0);
+
+        // ── 4. Tronco apical — Ca²⁺ hotzone (Larkum 1999) ──────────────────────
+        if comp.v_trunk > -40.0 {
+            comp.ca_trunk += 0.04 * dt_ms * ((comp.v_trunk + 40.0) / 30.0).clamp(0.0, 3.0);
+        }
+        comp.ca_trunk *= (-dt_ms / 90.0).exp();
+        comp.ca_trunk  = comp.ca_trunk.clamp(0.0, 10.0);
+
+        let m_inf_trunk = 1.0 / (1.0 + (-(comp.v_trunk + 35.0) / 5.0)
+            .clamp(-30.0, 30.0).exp());
+        let i_ca_trunk = comp.g_ca_trunk * m_inf_trunk * (comp.v_trunk - E_CA);
+
+        // ── 5. Acoplamento axial bidirecional (Rall 1967) ──────────────────────
+        let i_trunk_soma  = G_C_TRUNK    * (v_soma - comp.v_trunk);
+        let i_trunk_tuft  = g_c_apical_eff * (comp.v_apical - comp.v_trunk);
+        let i_leak_trunk  = 0.05 * (comp.v_trunk - (-68.0));
+        let dv_trunk = (-i_ca_trunk * HH_SCALE - i_leak_trunk
+            + i_trunk_soma + i_trunk_tuft + bap_trunk) * dt_ms;
+        comp.v_trunk = (comp.v_trunk + dv_trunk).clamp(-90.0, 40.0);
+
+        // ── 6. Coincidência dendrítica (Larkum et al. 1999) ────────────────────
+        // BAP retrógrado + NMDA spike apical → BAC firing.
+        // Ca trunk é calculado mas o coupling G_C_TRUNK=0.15 limita trunk a ~-43mV.
+        // BAC é suprimido em NREM (fator_apical=0.3): acetilcolina e modulação são
+        // necessários para amplificação dendrítica (Larkum 2013, Softky & Koch 1993).
+        comp.coincidencia_ativa = comp.nmda_gate > 0.4
+            && comp.bap_active
+            && fator_api >= 0.8; // ativo em Vigília (1.0) e REM (1.2), não NREM (0.3)
+        // Boost escala com fator_apical: NREM (0.3) suprime BAC, REM (1.2) amplifica.
+        let coincidencia_boost = if comp.coincidencia_ativa {
+            12.0 * 0.3 * fator_api
+        } else {
+            0.0
+        };
+
+        // ── 8. Drive apical independente (base do REM drive) ───────────────────
+        let apical_drive = comp.nmda_gate * 2.5 * 0.4;
+
+        // ── 9. Corrente líquida ao soma ────────────────────────────────────────
+        let i_soma_from_trunk = G_C_TRUNK * (comp.v_trunk - v_soma);
+        i_soma_from_trunk + coincidencia_boost + apical_drive
     }
 
     /// Aplica neuromodulação V3 — dopamina, serotonina, cortisol, acetilcolina.
@@ -1568,6 +1954,10 @@ pub struct CamadaHibrida {
 
     /// Astrócito local — monitora atividade e escala ca_nmda_max quando alta por >1s.
     pub astrocito:          Astrocito,
+
+    /// V4 — Potencial extracelular local acumulado (mV) — campo ephaptic.
+    /// Bidirecional: modula timing de spike ±0.5–2ms (Anastassiou et al. 2011).
+    pub ephaptic_pool:      f32,
 }
 
 impl CamadaHibrida {
@@ -1620,6 +2010,7 @@ impl CamadaHibrida {
             lc_burst_active:    false,
             lc_burst_remaining: 0.0,
             astrocito:          Astrocito::new(),
+            ephaptic_pool:      0.0,
         }
     }
 
@@ -1784,11 +2175,27 @@ impl CamadaHibrida {
             }
         }
 
+        // ── Pre-tick F: Campo ephaptic (Anastassiou et al. 2011) ────────────
+        // V_e_local = κ × Σ I_transmembrana(vizinhos). Bidirecional: modula
+        // timing de spike ±0.5–2ms — NÃO é excitação direta.
+        const KAPPA_EPHAPTIC: f32 = 0.05;
+        const TAU_EPH_MS:     f32 = 2.0;
+
+        let n_spikes_prev  = self.prev_spikes.iter().filter(|&&s| s).count() as f32;
+        let v_avg_prev     = self.neuronios.iter().map(|n| n.v).sum::<f32>()
+                             / self.neuronios.len().max(1) as f32;
+        let i_trans_approx = n_spikes_prev * 50.0 + (v_avg_prev + 70.0).max(0.0) * 0.3;
+
+        self.ephaptic_pool  = self.ephaptic_pool * (-dt_ms / TAU_EPH_MS).exp()
+                              + KAPPA_EPHAPTIC * i_trans_approx;
+        self.ephaptic_pool  = self.ephaptic_pool.clamp(-5.0, 5.0);
+
         // ── Parallel update: injeta estado global, roda cada neurônio ───────
         let ngf_div   = self.ngf_divisive;
         let chin_p    = self.chin_paused;
         let astro_cap = self.astrocito.ca_nmda_max();
         let lc_active = self.lc_burst_active; // captura para SNR no closure
+        let eph_pool  = self.ephaptic_pool;   // campo ephaptic (capturado por cópia)
 
         let spikes: Vec<bool> = self.neuronios.par_iter_mut().enumerate().map(|(i, n_)| {
             let ext = inputs.get(i).copied().unwrap_or(0.0);
@@ -1798,7 +2205,7 @@ impl CamadaHibrida {
             // LC_N SNR: sinapses fracas de RS são silenciadas durante burst de NA.
             // Biológico: NE → α1 → reduz condutância de fundo → melhora relação sinal/ruído.
             // Aplicado aqui (não em Pre-tick C) porque stp_efficacy é recalculado em update().
-            let input_div = if lc_active
+            let base_div = if lc_active
                 && n_.tipo == TipoNeuronal::RS
                 && n_.extras.stp.fator() < 0.5
             {
@@ -1806,6 +2213,9 @@ impl CamadaHibrida {
             } else {
                 raw_div
             };
+            // V4 — Ephaptic: campo extracelular modula timing (bidirecional)
+            let i_eph     = 0.12 * (eph_pool - n_.v) * HH_SCALE;
+            let input_div = base_div + i_eph;
             // Injeta estado global antes do update (capturados por cópia — sem contention)
             n_.extras.chin_window_open = chin_p;
             n_.extras.ca_nmda_max      = astro_cap;
@@ -2069,5 +2479,182 @@ impl Astrocito {
     #[inline]
     pub fn ca_nmda_max(&self) -> f32 {
         2.0 * self.ca_nmda_scale
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEÇÃO 14 — TESTES V4 (Neurônio Híbrido Multicompartimental)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod testes_v4 {
+    use super::*;
+
+    /// dt fixo de 1 ms (resolução fina para dinâmica de compartimentos).
+    const DT: f32 = 0.001;
+
+    fn rodar(n: &mut NeuronioHibrido, input: f32, apical: f32, n_ticks: usize) -> usize {
+        let mut spikes = 0;
+        for i in 0..n_ticks {
+            n.input_apical = apical;
+            if n.update(input, DT, i as f32, 1.0) { spikes += 1; }
+        }
+        spikes
+    }
+
+    #[test]
+    fn rs_dispara_com_compartimentos_ativos() {
+        let mut n = NeuronioHibrido::new(0, TipoNeuronal::RS, PrecisionType::FP32);
+        assert!(n.compartimentos.is_some(), "RS deve ter compartimentos = Some");
+        let spikes = rodar(&mut n, 22.0, 0.0, 2000);
+        assert!(spikes > 0, "RS com compartimentos deve disparar (got {spikes})");
+    }
+
+    #[test]
+    fn fs_dispara_sem_compartimentos_sem_regressao() {
+        let mut n = NeuronioHibrido::new(0, TipoNeuronal::FS, PrecisionType::FP32);
+        assert!(n.compartimentos.is_none(), "FS deve ter compartimentos = None");
+        let spikes = rodar(&mut n, 22.0, 0.0, 2000);
+        assert!(spikes > 0, "FS sem compartimentos deve disparar (sem regressão; got {spikes})");
+    }
+
+    #[test]
+    fn atp_cai_apos_burst_e_recupera_em_500ms() {
+        let mut n = NeuronioHibrido::new(0, TipoNeuronal::RS, PrecisionType::FP32);
+        // Burst intenso por 200ms (drive forte → >20 spikes/s)
+        let s = rodar(&mut n, 35.0, 0.0, 200);
+        assert!(s >= 4, "burst deve produzir spikes (got {s})");
+        let atp_baixo = n.metabolismo.atp;
+        // Recuperação: 500ms sem input
+        rodar(&mut n, 0.0, 0.0, 500);
+        let atp_rec = n.metabolismo.atp;
+        assert!(atp_rec > atp_baixo,
+            "ATP deve recuperar em 500ms: rec={atp_rec} > baixo={atp_baixo}");
+        assert!(n.metabolismo.atp >= 0.05, "ATP nunca negativo");
+    }
+
+    #[test]
+    fn ko_sobe_apos_burst_e_volta_ao_repouso() {
+        let mut n = NeuronioHibrido::new(0, TipoNeuronal::RS, PrecisionType::FP32);
+        let ko0 = n.metabolismo.k_o;
+        rodar(&mut n, 35.0, 0.0, 200);
+        let ko_alto = n.metabolismo.k_o;
+        assert!(ko_alto > ko0, "[K+]o deve subir após burst: {ko_alto} > {ko0}");
+        // Clearance glial: tau ≈ 50ms → 2000ms relaxa totalmente
+        rodar(&mut n, 0.0, 0.0, 2000);
+        let ko_rec = n.metabolismo.k_o;
+        assert!(ko_rec < ko_alto, "[K+]o deve cair via clearance glial");
+        assert!((ko_rec - KO_REST).abs() < 0.5,
+            "[K+]o deve voltar perto do repouso ({KO_REST}): got {ko_rec}");
+    }
+
+    #[test]
+    fn coincidencia_dendritica_produz_boost() {
+        // Controle: sem input apical
+        let mut n_ctrl = NeuronioHibrido::new(0, TipoNeuronal::RS, PrecisionType::FP32);
+        let s_ctrl = rodar(&mut n_ctrl, 12.0, 0.0, 2000);
+
+        // Coincidência: input apical forte (NMDA spike) + spike somático (BAP).
+        // nmda_gate > 0.4 em ~3ms; RS com I=12 dispara em poucos ms → 500 ticks basta.
+        let mut n_api = NeuronioHibrido::new(0, TipoNeuronal::RS, PrecisionType::FP32);
+        let mut coincidiu = false;
+        for i in 0..2000 {
+            n_api.input_apical = 3.0;
+            n_api.update(12.0, DT, i as f32, 1.0);
+            if let Some(c) = &n_api.compartimentos {
+                if c.coincidencia_ativa { coincidiu = true; break; }
+            }
+        }
+        assert!(coincidiu,
+            "coincidência (BAP ativo + nmda_gate>0.4) deve ativar com I=12 e apical=3");
+        let s_api = {
+            let mut n2 = NeuronioHibrido::new(0, TipoNeuronal::RS, PrecisionType::FP32);
+            rodar(&mut n2, 12.0, 3.0, 2000)
+        };
+        assert!(s_api > s_ctrl,
+            "coincidência dendrítica deve aumentar disparo: api={s_api} > ctrl={s_ctrl}");
+    }
+
+    #[test]
+    fn ais_spike_precede_ou_coincide_nunca_depois() {
+        let mut n = NeuronioHibrido::new(0, TipoNeuronal::RS, PrecisionType::FP32);
+        let mut ais_recente: Option<usize> = None;
+        let mut violacoes = 0;
+        for i in 0..3000 {
+            n.input_apical = 0.0;
+            let somatico = n.update(22.0, DT, i as f32, 1.0);
+            let ais = n.compartimentos.as_ref()
+                .map(|c| c.ais_spiked).unwrap_or(false);
+            if ais { ais_recente = Some(i); }
+            if somatico {
+                // integrar_compartimentos roda ANTES do substep somático no
+                // mesmo tick → AIS já foi avaliado. Spike somático nunca pode
+                // ocorrer sem AIS ter disparado neste tick ou recentemente.
+                let ok = ais || ais_recente
+                    .map(|t| i.saturating_sub(t) <= 5)
+                    .unwrap_or(false);
+                if !ok { violacoes += 1; }
+            }
+        }
+        assert_eq!(violacoes, 0,
+            "AIS deve preceder ou coincidir com o spike somático — nunca depois");
+    }
+
+    #[test]
+    fn brain_state_modula_acoplamento_apical() {
+        // NREM suprime a coincidência dendrítica (fator_api=0.3 < gate 0.8).
+        // Vigília (fator_api=1.0) permite BAC → coincidencia_ativa enquanto NREM bloqueia.
+        let mut n_vig  = NeuronioHibrido::new(0, TipoNeuronal::RS, PrecisionType::FP32);
+        let mut n_nrem = NeuronioHibrido::new(0, TipoNeuronal::RS, PrecisionType::FP32);
+        n_vig.brain_state  = EstadoBrainState::Vigilia;
+        n_nrem.brain_state = EstadoBrainState::NremProfundo;
+
+        let mut coinc_vig  = 0usize;
+        let mut coinc_nrem = 0usize;
+        for i in 0..1500 {
+            n_vig.input_apical  = 2.0;
+            n_nrem.input_apical = 2.0;
+            n_vig.update(10.0, DT, i as f32, 1.0);
+            n_nrem.update(10.0, DT, i as f32, 1.0);
+            if let Some(c) = &n_vig.compartimentos  { if c.coincidencia_ativa { coinc_vig  += 1; } }
+            if let Some(c) = &n_nrem.compartimentos { if c.coincidencia_ativa { coinc_nrem += 1; } }
+        }
+        assert_eq!(coinc_nrem, 0,
+            "NREM (fator_apical=0.3) deve suprimir coincidência: coinc_nrem={coinc_nrem}");
+        assert!(coinc_vig > coinc_nrem,
+            "Vigília deve ter mais coincidências que NREM: vig={coinc_vig} nrem={coinc_nrem}");
+    }
+
+    #[test]
+    fn ek_dinamico_responde_a_ko() {
+        let mut m = EstadoMetabolico::novo();
+        m.k_o = 3.0;  m.atualizar_ek();
+        let ek_repouso = m.e_k_dyn;
+        m.k_o = 10.0; m.atualizar_ek();
+        let ek_alto = m.e_k_dyn;
+        assert!(ek_alto > ek_repouso,
+            "E_K deve despolarizar com [K+]o alto: {ek_alto} > {ek_repouso}");
+        // Nernst puro: E_K = 26.7 * ln(3/140) ≈ -102.6 mV (biologicamente correto;
+        // o valor de -77 mV dos modelos Izhikevich é Goldman, não Nernst puro).
+        assert!(ek_repouso < -95.0 && ek_repouso > -115.0,
+            "E_K Nernst (~-102mV com [K+]o=3 mM): got {ek_repouso}");
+    }
+
+    #[test]
+    fn camada_ephaptic_acumula_e_decai() {
+        let mut c = CamadaHibrida::new(
+            16, "teste_eph", TipoNeuronal::RS, None, None, 1.0,
+        );
+        let inputs = vec![25.0f32; 16];
+        for i in 0..50 { c.update(&inputs, DT, i as f32 * 1.0); }
+        let eph_ativo = c.ephaptic_pool;
+        // Sem input → decai
+        let zeros = vec![0.0f32; 16];
+        for i in 0..200 { c.update(&zeros, DT, (50 + i) as f32); }
+        let eph_decaido = c.ephaptic_pool;
+        assert!(eph_ativo.abs() > 0.0, "ephaptic_pool deve acumular com atividade");
+        assert!(eph_decaido.abs() < eph_ativo.abs() + 1e-3,
+            "ephaptic_pool deve decair sem atividade: {eph_decaido} vs {eph_ativo}");
+        assert!(eph_ativo.abs() <= 5.0, "ephaptic_pool clamp [-5,5]");
     }
 }

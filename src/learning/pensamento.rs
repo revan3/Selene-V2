@@ -47,21 +47,24 @@ fn hash_perturbacao(word: &str, seed: u64) -> u64 {
 /// - Injeta palavras percorridas em `pensamento_consciente` (janela ≤10)
 async fn ciclo_consciente_tick(brain: &Arc<TokioMutex<BrainState>>) {
     // Phase 1: grab read-only data + swap Arc (brief lock)
-    let (seed, contexto, swap_arc) = {
+    let (seed, ctx_ids, swap_arc) = {
         let Ok(mut state) = brain.try_lock() else { return };
         if state.dormindo { return; }
         let seed = state.pensamento_step;
         state.pensamento_step = state.pensamento_step.wrapping_add(1);
-        let contexto: Vec<String> = state.neural_context.iter().cloned().collect();
+        let ctx_ids: Vec<u32> = state.neural_context.iter().copied().collect();
         let swap_arc = state.swap_manager.clone();
-        (seed, contexto, swap_arc)
+        (seed, ctx_ids, swap_arc)
     };
 
-    if contexto.is_empty() { return; }
+    if ctx_ids.is_empty() { return; }
 
     // Phase 2: build swap snapshot — brain lock NOT held
-    let (grafo, valencias) = if let Ok(mut sw) = swap_arc.try_lock() {
-        (sw.grafo_palavras(), sw.valencias_palavras())
+    let (grafo, valencias, contexto) = if let Ok(mut sw) = swap_arc.try_lock() {
+        let words: Vec<String> = ctx_ids.iter()
+            .filter_map(|id| sw.id_to_word.get(id).cloned())
+            .collect();
+        (sw.grafo_palavras(), sw.valencias_palavras(), words)
     } else {
         return;
     };

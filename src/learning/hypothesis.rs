@@ -38,6 +38,10 @@ use std::time::Instant;
 
 fn instant_now() -> Instant { Instant::now() }
 
+// Sentinels para EmocionalCongruente — valores impossíveis para FNV-1a hash
+const CONCLUSAO_EMO_POS: u32 = 1;
+const CONCLUSAO_EMO_NEG: u32 = 2;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tipos
 // ─────────────────────────────────────────────────────────────────────────────
@@ -61,10 +65,10 @@ pub struct Hipotese {
     /// Identificador único da hipótese nesta sessão.
     pub id: u64,
     pub tipo: TipoHipotese,
-    /// Evidências que geraram a hipótese (palavras do contexto, estado emocional).
-    pub premissas: Vec<String>,
-    /// O que Selene prevê que vai acontecer.
-    pub conclusao: String,
+    /// Evidências que geraram a hipótese (concept_ids do contexto).
+    pub premissas: Vec<u32>,
+    /// Concept_id previsto. Sentinels: 1=emo_pos, 2=emo_neg.
+    pub conclusao: u32,
     /// Confiança atual [0.0, 1.0] — sobe com confirmações, cai com refutações.
     pub confianca: f32,
     /// Número de vezes confirmada.
@@ -119,8 +123,8 @@ pub struct HypothesisEngine {
     pub total_formuladas: u64,
     /// Total de hipóteses testadas na sessão.
     pub total_testadas: u64,
-    /// Padrões comportamentais próprios observados: chave_contexto → (resposta_resumida, contagem).
-    padroes_proprios: HashMap<String, (String, u32)>,
+    /// Padrões comportamentais: chave_ctx_id → (reply_id, contagem).
+    padroes_proprios: HashMap<u32, (u32, u32)>,
     /// Próximo ID a ser atribuído.
     proximo_id: u64,
     /// Última resposta gerada — necessária para testar hipóteses no próximo turno.
@@ -156,41 +160,39 @@ impl HypothesisEngine {
     /// Retorna os IDs das hipóteses recém-criadas.
     pub fn formular(
         &mut self,
-        contexto: &[String],
-        grafo: &HashMap<String, Vec<(String, f32)>>,
-        valencias: &HashMap<String, f32>,
+        contexto: &[u32],
+        grafo: &HashMap<u32, Vec<(u32, f32)>>,
+        valencias: &HashMap<u32, f32>,
         emocao: f32,
-        stop_words: &[&str],
+        stop_ids: &[u32],
     ) -> Vec<u64> {
         let mut novos_ids = Vec::new();
 
-        for palavra in contexto.iter()
-            .filter(|w| !stop_words.contains(&w.as_str()) && w.len() >= 3)
+        for &palavra in contexto.iter()
+            .filter(|id| !stop_ids.contains(id))
         {
             // ── Hipótese semântica ──────────────────────────────────────────
-            if let Some(vizinhos) = grafo.get(palavra.as_str()) {
+            if let Some(vizinhos) = grafo.get(&palavra) {
                 if !vizinhos.is_empty() {
-                    // Melhor vizinho: maior peso, excluindo stop-words
                     let melhor = vizinhos.iter()
-                        .filter(|(w, _)| !stop_words.contains(&w.as_str()) && w.len() >= 3)
+                        .filter(|(w, _)| !stop_ids.contains(w))
                         .max_by(|a, b| a.1.partial_cmp(&b.1)
                             .unwrap_or(std::cmp::Ordering::Equal));
 
-                    if let Some((proximo, peso)) = melhor {
+                    if let Some(&(proximo, peso)) = melhor {
                         let ja_existe = self.hipoteses.iter().any(|h|
                             h.tipo == TipoHipotese::SemanticaContigua
-                            && h.premissas.first().map(|s| s.as_str()) == Some(palavra.as_str())
-                            && h.conclusao == *proximo
+                            && h.premissas.first().copied() == Some(palavra)
+                            && h.conclusao == proximo
                         );
                         if !ja_existe {
                             let id = self.novo_id();
-                            // Confiança inicial baseada no peso da aresta no grafo
-                            let confianca = (*peso * 0.5 + 0.20).clamp(0.15, 0.80);
+                            let confianca = (peso * 0.5 + 0.20).clamp(0.15, 0.80);
                             self.hipoteses.push(Hipotese {
                                 id,
                                 tipo: TipoHipotese::SemanticaContigua,
-                                premissas: vec![palavra.clone()],
-                                conclusao: proximo.clone(),
+                                premissas: vec![palavra],
+                                conclusao: proximo,
                                 confianca,
                                 confirmacoes: 0,
                                 refutacoes: 0,
@@ -205,21 +207,21 @@ impl HypothesisEngine {
             }
 
             // ── Hipótese de gap ─────────────────────────────────────────────
-            if palavra.len() >= 4 {
-                let n_arestas = grafo.get(palavra.as_str()).map(|v| v.len()).unwrap_or(0);
-                let tem_valencia = valencias.contains_key(palavra.as_str());
+            {
+                let n_arestas = grafo.get(&palavra).map(|v| v.len()).unwrap_or(0);
+                let tem_valencia = valencias.contains_key(&palavra);
                 if n_arestas <= 2 && !tem_valencia {
                     let ja_existe = self.hipoteses.iter().any(|h|
                         h.tipo == TipoHipotese::GapConhecimento
-                        && h.premissas.first().map(|s| s.as_str()) == Some(palavra.as_str())
+                        && h.premissas.first().copied() == Some(palavra)
                     );
                     if !ja_existe {
                         let id = self.novo_id();
                         self.hipoteses.push(Hipotese {
                             id,
                             tipo: TipoHipotese::GapConhecimento,
-                            premissas: vec![palavra.clone()],
-                            conclusao: format!("preciso aprender mais sobre '{}'", palavra),
+                            premissas: vec![palavra],
+                            conclusao: palavra,
                             confianca: 0.80,
                             confirmacoes: 0,
                             refutacoes: 0,
@@ -233,11 +235,10 @@ impl HypothesisEngine {
             }
 
             // ── Hipótese emocional ──────────────────────────────────────────
-            if let Some(&valencia) = valencias.get(palavra.as_str()) {
-                let congruente = emocao * valencia > 0.0; // mesmo sinal = congruente
+            if let Some(&valencia) = valencias.get(&palavra) {
+                let congruente = emocao * valencia > 0.0;
                 if congruente && emocao.abs() > 0.3 {
-                    let dir = if valencia > 0.0 { "positivas" } else { "negativas" };
-                    let conclusao = format!("palavras {} serão esperadas a seguir", dir);
+                    let conclusao = if valencia > 0.0 { CONCLUSAO_EMO_POS } else { CONCLUSAO_EMO_NEG };
                     let ja_existe = self.hipoteses.iter().any(|h|
                         h.tipo == TipoHipotese::EmocionalCongruente
                         && h.conclusao == conclusao
@@ -247,7 +248,7 @@ impl HypothesisEngine {
                         self.hipoteses.push(Hipotese {
                             id,
                             tipo: TipoHipotese::EmocionalCongruente,
-                            premissas: vec![palavra.clone(), format!("emocao={:.2}", emocao)],
+                            premissas: vec![palavra],
                             conclusao,
                             confianca: 0.55,
                             confirmacoes: 0,
@@ -285,28 +286,25 @@ impl HypothesisEngine {
     /// associações perceptuais confirmadas sejam reforçadas.
     pub fn testar(
         &mut self,
-        input_tokens: &[String],
-        valencias: &HashMap<String, f32>,
+        input_tokens: &[u32],
+        valencias: &HashMap<u32, f32>,
+        reply_tokens: &[u32],
     ) -> f32 {
-        let tokens_set: std::collections::HashSet<&str> = input_tokens.iter()
-            .map(|s| s.as_str())
-            .collect();
+        let tokens_set: std::collections::HashSet<u32> = input_tokens.iter().copied().collect();
+        let reply_set: std::collections::HashSet<u32> = reply_tokens.iter().copied().collect();
 
-        let ultimo_reply = self.ultimo_reply.to_lowercase();
         let mut rpe_soma = 0.0f32;
         let mut n_testadas = 0usize;
 
         for h in self.hipoteses.iter_mut() {
             match h.tipo {
                 TipoHipotese::SemanticaContigua => {
-                    // Premissa deve estar no input atual (usuário trouxe o tópico previsto?)
                     let premissa_presente = h.premissas.iter()
-                        .any(|p| tokens_set.contains(p.as_str()));
+                        .any(|p| tokens_set.contains(p));
                     if !premissa_presente { continue; }
 
-                    // Confirmada se a conclusão aparece no input ou na resposta gerada
-                    let confirmada = tokens_set.contains(h.conclusao.as_str())
-                        || ultimo_reply.contains(h.conclusao.as_str());
+                    let confirmada = tokens_set.contains(&h.conclusao)
+                        || reply_set.contains(&h.conclusao);
 
                     h.n_testes += 1;
                     n_testadas += 1;
@@ -328,15 +326,14 @@ impl HypothesisEngine {
                 }
 
                 TipoHipotese::EmocionalCongruente => {
-                    // Testa se as palavras no input têm valência congruente com a predição
                     let valencias_input: Vec<f32> = input_tokens.iter()
-                        .filter_map(|t| valencias.get(t.as_str()).copied())
+                        .filter_map(|t| valencias.get(t).copied())
                         .collect();
                     if valencias_input.is_empty() { continue; }
 
                     let media_val: f32 = valencias_input.iter().sum::<f32>()
                         / valencias_input.len() as f32;
-                    let confirmada = if h.conclusao.contains("positivas") {
+                    let confirmada = if h.conclusao == CONCLUSAO_EMO_POS {
                         media_val > 0.05
                     } else {
                         media_val < -0.05
@@ -396,39 +393,32 @@ impl HypothesisEngine {
     /// Esta é a fundação para a futura capacidade de autoprogramação:
     /// Selene observa que "quando ouço X, sempre digo Y" → pode questionar se Y
     /// é a resposta ideal → pode propor mudança no próprio comportamento.
-    pub fn observar_comportamento(&mut self, chave_ctx: &str, reply_resumido: &str) {
-        if chave_ctx.is_empty() || reply_resumido.is_empty() { return; }
+    pub fn observar_comportamento(&mut self, chave_id: u32, reply_id: u32) {
+        if chave_id == 0 || reply_id == 0 { return; }
 
         let entry = self.padroes_proprios
-            .entry(chave_ctx.to_string())
-            .or_insert_with(|| (reply_resumido.to_string(), 0));
+            .entry(chave_id)
+            .or_insert((reply_id, 0));
 
-        if entry.0 == reply_resumido {
+        if entry.0 == reply_id {
             entry.1 += 1;
         } else {
-            // Padrão mudou — reinicia contagem
-            *entry = (reply_resumido.to_string(), 1);
+            *entry = (reply_id, 1);
             return;
         }
 
-        // Padrão repetido 3x → formula hipótese comportamental
         if entry.1 == 3 {
-            let conclusao = format!(
-                "quando ouço '{}', respondo com '{}' (padrão fixo detectado)",
-                chave_ctx,
-                &reply_resumido[..reply_resumido.len().min(40)]
-            );
             let ja_existe = self.hipoteses.iter().any(|h|
                 h.tipo == TipoHipotese::ComportamentalPropria
-                && h.premissas.first().map(|s| s.as_str()) == Some(chave_ctx)
+                && h.premissas.first().copied() == Some(chave_id)
             );
             if !ja_existe {
                 let id = self.novo_id();
                 self.hipoteses.push(Hipotese {
                     id,
                     tipo: TipoHipotese::ComportamentalPropria,
-                    premissas: vec![chave_ctx.to_string()],
-                    conclusao,
+                    premissas: vec![chave_id],
+                    conclusao: reply_id,
                     confianca: 0.70,
                     confirmacoes: 3,
                     refutacoes: 0,
@@ -466,12 +456,12 @@ impl HypothesisEngine {
 
     /// Retorna o tópico mais provável do próximo input do usuário,
     /// baseado nas hipóteses semânticas com maior confiança.
-    pub fn proximo_topico_previsto(&self) -> Option<&str> {
+    pub fn proximo_topico_previsto(&self) -> Option<u32> {
         self.hipoteses.iter()
             .filter(|h| h.tipo == TipoHipotese::SemanticaContigua && !h.e_nova())
             .max_by(|a, b| a.confianca.partial_cmp(&b.confianca)
                 .unwrap_or(std::cmp::Ordering::Equal))
-            .map(|h| h.conclusao.as_str())
+            .map(|h| h.conclusao)
     }
 
     /// Resumo compacto para logging.
@@ -521,25 +511,26 @@ impl HypothesisEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::neural_pool::word_to_concept_id as wid;
 
-    fn grafo_teste() -> HashMap<String, Vec<(String, f32)>> {
+    fn grafo_teste() -> HashMap<u32, Vec<(u32, f32)>> {
         let mut g = HashMap::new();
-        g.insert("amor".to_string(), vec![
-            ("coração".to_string(), 0.9),
-            ("paixão".to_string(), 0.7),
+        g.insert(wid("amor"), vec![
+            (wid("coração"), 0.9),
+            (wid("paixão"), 0.7),
         ]);
-        g.insert("fogo".to_string(), vec![
-            ("calor".to_string(), 0.8),
-            ("luz".to_string(), 0.6),
+        g.insert(wid("fogo"), vec![
+            (wid("calor"), 0.8),
+            (wid("luz"), 0.6),
         ]);
         g
     }
 
-    fn valencias_teste() -> HashMap<String, f32> {
+    fn valencias_teste() -> HashMap<u32, f32> {
         let mut v = HashMap::new();
-        v.insert("amor".to_string(), 0.9f32);
-        v.insert("fogo".to_string(), 0.6f32);
-        v.insert("medo".to_string(), -0.8f32);
+        v.insert(wid("amor"), 0.9f32);
+        v.insert(wid("fogo"), 0.6f32);
+        v.insert(wid("medo"), -0.8f32);
         v
     }
 
@@ -548,8 +539,8 @@ mod tests {
         let mut engine = HypothesisEngine::new();
         let grafo = grafo_teste();
         let val = valencias_teste();
-        let stop: &[&str] = &["de", "o", "a"];
-        let ctx = vec!["amor".to_string()];
+        let stop: &[u32] = &[];
+        let ctx = vec![wid("amor")];
 
         let ids = engine.formular(&ctx, &grafo, &val, 0.5, stop);
         assert!(!ids.is_empty(), "deve formular pelo menos uma hipótese");
@@ -558,18 +549,18 @@ mod tests {
             .filter(|h| h.tipo == TipoHipotese::SemanticaContigua)
             .collect();
         assert!(!sem.is_empty());
-        assert_eq!(sem[0].premissas[0], "amor");
-        assert_eq!(sem[0].conclusao, "coração"); // maior peso
+        assert_eq!(sem[0].premissas[0], wid("amor"));
+        assert_eq!(sem[0].conclusao, wid("coração"));
     }
 
     #[test]
     fn formula_gap_para_palavra_sem_valencia() {
         let mut engine = HypothesisEngine::new();
         let mut grafo = HashMap::new();
-        grafo.insert("zumbi".to_string(), vec![("susto".to_string(), 0.3)]);
-        let val: HashMap<String, f32> = HashMap::new(); // "zumbi" sem valência
-        let stop: &[&str] = &[];
-        let ctx = vec!["zumbi".to_string()];
+        grafo.insert(wid("zumbi"), vec![(wid("susto"), 0.3)]);
+        let val: HashMap<u32, f32> = HashMap::new();
+        let stop: &[u32] = &[];
+        let ctx = vec![wid("zumbi")];
 
         engine.formular(&ctx, &grafo, &val, 0.0, stop);
         let gaps: Vec<_> = engine.hipoteses.iter()
@@ -583,9 +574,8 @@ mod tests {
         let mut engine = HypothesisEngine::new();
         let grafo = grafo_teste();
         let val = valencias_teste();
-        let stop: &[&str] = &[];
-        // Hipótese: dado "amor" → prevê "coração"
-        let ctx = vec!["amor".to_string()];
+        let stop: &[u32] = &[];
+        let ctx = vec![wid("amor")];
         engine.formular(&ctx, &grafo, &val, 0.5, stop);
 
         let confianca_antes = engine.hipoteses.iter()
@@ -593,9 +583,8 @@ mod tests {
             .map(|h| h.confianca)
             .unwrap_or(0.0);
 
-        // Premissa ("amor") presente no input E conclusão ("coração") também → confirmada
-        let input = vec!["amor".to_string(), "coração".to_string()];
-        let rpe = engine.testar(&input, &val);
+        let input = vec![wid("amor"), wid("coração")];
+        let rpe = engine.testar(&input, &val, &[]);
 
         let confianca_depois = engine.hipoteses.iter()
             .find(|h| h.tipo == TipoHipotese::SemanticaContigua)
@@ -612,9 +601,8 @@ mod tests {
         let mut engine = HypothesisEngine::new();
         let grafo = grafo_teste();
         let val = valencias_teste();
-        let stop: &[&str] = &[];
-        // emocao=0.0 para não criar EmocionalCongruente que interfere no RPE semântico
-        let ctx = vec!["amor".to_string()];
+        let stop: &[u32] = &[];
+        let ctx = vec![wid("amor")];
         engine.formular(&ctx, &grafo, &val, 0.0, stop);
 
         let confianca_antes = engine.hipoteses.iter()
@@ -622,9 +610,8 @@ mod tests {
             .map(|h| h.confianca)
             .unwrap_or(0.0);
 
-        // Premissa ("amor") presente, mas conclusão ("coração") ausente → refutada
-        let input = vec!["amor".to_string(), "montanha".to_string(), "neve".to_string()];
-        let rpe = engine.testar(&input, &val);
+        let input = vec![wid("amor"), wid("montanha"), wid("neve")];
+        let rpe = engine.testar(&input, &val, &[]);
 
         let confianca_depois = engine.hipoteses.iter()
             .find(|h| h.tipo == TipoHipotese::SemanticaContigua)
@@ -639,12 +626,14 @@ mod tests {
     #[test]
     fn observar_comportamento_gera_hipotese_propria() {
         let mut engine = HypothesisEngine::new();
+        let chave = wid("selene");
+        let reply = wid("meu nome");
         for _ in 0..3 {
-            engine.observar_comportamento("selene", "meu nome");
+            engine.observar_comportamento(chave, reply);
         }
         let proprias = engine.padroes_proprios_ativos();
         assert!(!proprias.is_empty(), "deve gerar hipótese comportamental após 3 repetições");
-        assert!(proprias[0].conclusao.contains("meu nome"));
+        assert_eq!(proprias[0].conclusao, reply);
     }
 
     #[test]
@@ -652,12 +641,12 @@ mod tests {
         let mut engine = HypothesisEngine::new();
         let grafo = grafo_teste();
         let val = valencias_teste();
-        let stop: &[&str] = &[];
-        let ctx = vec!["amor".to_string()];
+        let stop: &[u32] = &[];
+        let ctx = vec![wid("amor")];
 
         engine.formular(&ctx, &grafo, &val, 0.5, stop);
         let n_antes = engine.hipoteses.len();
-        engine.formular(&ctx, &grafo, &val, 0.5, stop); // segunda chamada
+        engine.formular(&ctx, &grafo, &val, 0.5, stop);
         assert_eq!(engine.hipoteses.len(), n_antes, "não deve duplicar");
     }
 }

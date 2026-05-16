@@ -32,6 +32,7 @@ mod neural_pool;
 use std::sync::mpsc::{channel, Sender, Receiver};
 use std::{thread, panic};
 use std::sync::Arc;
+use neural_pool::word_to_concept_id;
 use rayon::prelude::*;
 use std::time::{Duration, Instant};
 use std::path::Path;
@@ -325,7 +326,7 @@ async fn async_main() {
     if let Ok(mut sw) = swap_manager.try_lock() {
         sw.carregar_estado(&get_state_path("selene_swap_state.json"));
         println!("💾 SwapManager restaurado: {} conceitos | {} sinapses",
-            sw.palavra_para_id.len(), sw.sinapses_conceito.len());
+            sw.conceito_para_id.len(), sw.sinapses_conceito.len());
     }
 
     // --- 5. SETUP DE COMUNICAÇÃO ---
@@ -528,7 +529,7 @@ async fn async_main() {
     // ── Reward signal: histórico de contexto para medir consistência ──────
     // Guarda snapshots do neural_context a cada 1000 ticks.
     // Se 2+ palavras aparecem em ≥3 dos últimos 10 snapshots → dopamina +0.04.
-    let mut contexto_historico: std::collections::VecDeque<Vec<String>> =
+    let mut contexto_historico: std::collections::VecDeque<Vec<u32>> =
         std::collections::VecDeque::with_capacity(10);
 
     // --- 12c. CONTROLE DE FREQUÊNCIA ADAPTIVA ---
@@ -679,7 +680,7 @@ async fn async_main() {
         // B2. Metacognição ativa — retroalimenta o sistema com base no estado observado
         let meta_feedback = {
             let n_vocab = swap_manager.try_lock()
-                .map(|sw| sw.palavra_para_id.len()).unwrap_or(100);
+                .map(|sw| sw.conceito_para_id.len()).unwrap_or(100);
             metacognitive.observe(neuro.noradrenaline, atividade_recente, n_vocab);
             metacognitive.retroalimentar()
         };
@@ -725,14 +726,16 @@ async fn async_main() {
 
                 if !repetido {
                     // ── Busca no spike_vocab ─────────────────────────────────
-                    let (melhor, sim_max) = {
+                    let (melhor, sim_max): (Option<String>, f32) = {
                         if let Ok(bs) = brain_state.try_lock() {
                             let mut m: Option<String> = None;
                             let mut s_max = 0.0f32;
-                            for (chave, pat_ref) in &bs.spike_vocab {
-                                if let Some(p) = chave.strip_prefix("audio:") {
-                                    let s = spike_sim(&audio_pat, pat_ref);
-                                    if s > s_max { s_max = s; m = Some(p.to_string()); }
+                            for (&h, pat_ref) in &bs.spike_vocab {
+                                if let Some(label) = bs.spike_labels.get(&h) {
+                                    if let Some(p) = label.strip_prefix("audio:") {
+                                        let s = spike_sim(&audio_pat, pat_ref);
+                                        if s > s_max { s_max = s; m = Some(p.to_string()); }
+                                    }
                                 }
                             }
                             (m, s_max)
@@ -766,7 +769,7 @@ async fn async_main() {
                             if let Some(ref palavra) = melhor {
                                 println!("🎙️ [MIC] Reconheceu «{}» (sim={:.2})", palavra, sim_max);
                                 if bs.neural_context.len() >= 20 { bs.neural_context.pop_front(); }
-                                bs.neural_context.push_back(palavra.clone());
+                                bs.neural_context.push_back(word_to_concept_id(palavra));
                                 let vpad = bs.ultimo_padrao_visual;
                                 let emocao = bs.emocao_bias;
                                 bs.grounding_bind(&[palavra.clone()], vpad, audio_pat, emocao, sim_max, 0.0);
@@ -1050,10 +1053,10 @@ async fn async_main() {
                 }
 
                 // Snapshot neural_context for placeholder boosting + push real symbols
-                let palavras_ativas: Vec<String> = if let Ok(mut bs) = brain_state.try_lock() {
-                    let snap: Vec<String> = bs.neural_context.iter().take(3).cloned().collect();
+                let cids_ativas: Vec<u32> = if let Ok(mut bs) = brain_state.try_lock() {
+                    let snap: Vec<u32> = bs.neural_context.iter().take(3).copied().collect();
                     for (sim, _) in &real_simbolos {
-                        bs.neural_context.push_back(sim.clone());
+                        bs.neural_context.push_back(word_to_concept_id(sim));
                     }
                     while bs.neural_context.len() > 20 { bs.neural_context.pop_front(); }
                     snap
@@ -1062,9 +1065,11 @@ async fn async_main() {
                 // Single swap lock for all updates
                 if let Ok(mut sw) = swap_manager.try_lock() {
                     for val in &placeholder_valences {
-                        for palavra in palavras_ativas.iter() {
-                            if sw.palavra_para_id.contains_key(palavra.as_str()) {
-                                sw.aprender_conceito(palavra, val * 0.10);
+                        for &cid in cids_ativas.iter() {
+                            if let Some(palavra) = sw.id_to_word.get(&cid).cloned() {
+                                if sw.pop_para_palavra(&palavra).is_some() {
+                                    sw.aprender_conceito(&palavra, val * 0.10);
+                                }
                             }
                         }
                     }
@@ -1114,13 +1119,15 @@ async fn async_main() {
             // Emoções intensas fortalecem sinapses entre palavras co-ativas — LTP episódico.
             if !conexoes_hippo.is_empty() {
                 if let Ok(bs) = brain_state.try_lock() {
-                    let ctx: Vec<String> = bs.neural_context.iter().cloned().collect();
+                    let ctx_ids: Vec<u32> = bs.neural_context.iter().copied().collect();
                     drop(bs);
                     let valence_hippo = emotion.abs().clamp(0.05, 1.0);
                     if let Ok(mut sw) = swap_manager.try_lock() {
                         // Aprende conceitos co-ativos — STDP sequencial entre pares do contexto
-                        for i in 0..ctx.len().min(6) {
-                            sw.aprender_conceito(&ctx[i], valence_hippo * emotion.signum());
+                        for &cid in ctx_ids.iter().take(6) {
+                            if let Some(palavra) = sw.id_to_word.get(&cid).cloned() {
+                                sw.aprender_conceito(&palavra, valence_hippo * emotion.signum());
+                            }
                         }
                         // P1-B: consolida conexoes_hippo como pares causais no swap.
                         // Mapeia UUID canônico → palavra via lookup inverso,
@@ -1169,9 +1176,12 @@ async fn async_main() {
         // injeta palavras do neural_context no buffer do frontal e sincroniza ao brain_state.
         if arousal > 0.4 {
             if let Ok(mut bs) = brain_state.try_lock() {
-                let ctx_snapshot: Vec<String> = bs.neural_context.iter().take(4).cloned().collect();
+                let ctx_ids_ep: Vec<u32> = bs.neural_context.iter().take(4).copied().collect();
+                let ctx_words_ep: Vec<String> = if let Ok(sw) = bs.swap_manager.try_lock() {
+                    ctx_ids_ep.iter().filter_map(|id| sw.id_to_word.get(id).cloned()).collect()
+                } else { Vec::new() };
                 let spike_zero: [u64; 8] = [0u64; 8]; // spike placeholder — spike real via spike_vocab
-                for palavra in &ctx_snapshot {
+                for palavra in &ctx_words_ep {
                     frontal.push_episodio(palavra, spike_zero, arousal);
                 }
                 // Sincroniza snapshot para server.rs usar no walk
@@ -1274,12 +1284,9 @@ async fn async_main() {
                 // RPE forte (|rpe|>0.1) → atualiza mais agressivamente.
                 if rl_rpe.abs() > 0.05 {
                     let q_atual = rl.valor_de(&recognized);
-                    let palavras_ativas: Vec<String> = bs.neural_context.iter()
-                        .filter(|w| w.len() >= 2)
-                        .cloned()
-                        .collect();
-                    for palavra in palavras_ativas {
-                        let entry = bs.palavra_qvalores.entry(palavra).or_insert(0.0);
+                    let cids_q: Vec<u32> = bs.neural_context.iter().copied().collect();
+                    for cid in cids_q {
+                        let entry = bs.palavra_qvalores.entry(cid).or_insert(0.0);
                         // Média exponencial: 90% histórico + 10% novo sinal
                         *entry = *entry * 0.90 + q_atual * 0.10;
                         // Clamp para evitar deriva em sessões longas
@@ -1316,7 +1323,7 @@ async fn async_main() {
                 // Wernicke: consome um lote da fila FIFO por tick (evita starvation)
                 if let Some(tokens) = bs.pending_wernicke_tokens.pop_front() {
                     let valencias_w = if let Ok(sw) = swap_manager.try_lock() {
-                        sw.valencias_palavras()
+                        sw.valencias_conceitos()
                     } else {
                         std::collections::HashMap::new()
                     };
@@ -1369,8 +1376,11 @@ async fn async_main() {
             // OFC: atualiza valor esperado do contexto + detecta reversal.
             // Roda a cada 10 ticks (mapa de valor muda lentamente).
             if step % 10 == 0 {
-                let ctx_ofc: Vec<String> = if let Ok(bs) = brain_state.try_lock() {
-                    bs.neural_context.iter().cloned().collect()
+                let ctx_ofc_ids: Vec<u32> = if let Ok(bs) = brain_state.try_lock() {
+                    bs.neural_context.iter().copied().collect()
+                } else { Vec::new() };
+                let ctx_ofc: Vec<String> = if let Ok(sw) = swap_manager.try_lock() {
+                    ctx_ofc_ids.iter().filter_map(|id| sw.id_to_word.get(id).cloned()).collect()
                 } else { Vec::new() };
                 let (val_bias, reversal_sig, ltd_boost) = ofc.update(
                     &ctx_ofc, rl_rpe, dt, current_time, &config
@@ -1481,14 +1491,16 @@ async fn async_main() {
 
             // Embeddings: atualiza co-ativações semânticas a cada 50 ticks
             if step % 50 == 0 {
-                if let Ok(bs) = brain_state.try_lock() {
-                    let ctx: Vec<String> = bs.neural_context.iter().cloned().collect();
-                    drop(bs);
-                    if ctx.len() >= 2 {
-                        if let Ok(mut sw) = swap_manager.try_lock() {
-                            for i in 0..ctx.len().saturating_sub(1) {
-                                sw.atualizar_embeddings_coativacao(&ctx[i], &ctx[i+1], 0.008);
-                            }
+                let ctx_ids_emb: Vec<u32> = if let Ok(bs) = brain_state.try_lock() {
+                    bs.neural_context.iter().copied().collect()
+                } else { Vec::new() };
+                if ctx_ids_emb.len() >= 2 {
+                    if let Ok(mut sw) = swap_manager.try_lock() {
+                        let ctx_emb: Vec<String> = ctx_ids_emb.iter()
+                            .filter_map(|id| sw.id_to_word.get(id).cloned())
+                            .collect();
+                        for i in 0..ctx_emb.len().saturating_sub(1) {
+                            sw.atualizar_embeddings_coativacao(&ctx_emb[i], &ctx_emb[i+1], 0.008);
                         }
                     }
                 }
@@ -1545,30 +1557,34 @@ async fn async_main() {
         if step % 200 == 0 {
             let pares_hebb = temporal.hebbian_pares_fortes(0.2);
             if !pares_hebb.is_empty() {
-                if let Ok(bs) = brain_state.try_lock() {
-                    let ctx: Vec<String> = bs.neural_context.iter().cloned().collect();
-                    drop(bs);
-                    if ctx.len() >= 2 {
-                        let n_ctx = ctx.len();
-                        let pares_swap: Vec<(String, String, f32)> = pares_hebb.iter()
-                            .take(10) // limite por tick para não sobrecarregar
-                            .filter_map(|&(i, j, peso)| {
-                                let w1 = ctx.get(i % n_ctx)?;
-                                let w2 = ctx.get(j % n_ctx)?;
-                                if w1 == w2 || w1.len() < 2 || w2.len() < 2 { return None; }
-                                Some((w1.clone(), w2.clone(), peso * 0.3))
-                            })
+                let ctx_ids_hebb: Vec<u32> = if let Ok(bs) = brain_state.try_lock() {
+                    bs.neural_context.iter().copied().collect()
+                } else { Vec::new() };
+                if ctx_ids_hebb.len() >= 2 {
+                    if let Ok(mut sw) = swap_manager.try_lock() {
+                        let ctx: Vec<String> = ctx_ids_hebb.iter()
+                            .filter_map(|id| sw.id_to_word.get(id).cloned())
                             .collect();
-                        if !pares_swap.is_empty() {
-                            if let Ok(mut sw) = swap_manager.try_lock() {
+                        if ctx.len() >= 2 {
+                            let n_ctx = ctx.len();
+                            let pares_swap: Vec<(String, String, f32)> = pares_hebb.iter()
+                                .take(10) // limite por tick para não sobrecarregar
+                                .filter_map(|&(i, j, peso)| {
+                                    let w1 = ctx.get(i % n_ctx)?;
+                                    let w2 = ctx.get(j % n_ctx)?;
+                                    if w1 == w2 || w1.len() < 2 || w2.len() < 2 { return None; }
+                                    Some((w1.clone(), w2.clone(), peso * 0.3))
+                                })
+                                .collect();
+                            if !pares_swap.is_empty() {
                                 sw.importar_causal(pares_swap.clone());
+                                log::debug!("[Hebbian→Swap] {} pares exportados do temporal", pares_swap.len());
                             }
-                            log::debug!("[Hebbian→Swap] {} pares exportados do temporal", pares_swap.len());
-                        }
-                    }
-                }
-            }
-        }
+                        } // if ctx.len() >= 2
+                    } // if let Ok(mut sw)
+                } // if ctx_ids_hebb.len() >= 2
+            } // if !pares_hebb.is_empty()
+        } // if step % 200 == 0
 
         // Salva firing rates para o próximo tick (projeções inter-lobe usam t-1)
         let v1_len = vision_full.len().min(n_neurons);
@@ -1628,19 +1644,19 @@ async fn async_main() {
                     let id_to_word = sw.id_para_palavra();
                     // Mapeia índice D1 → UUID canônico via palavra_para_id (por ordem de inserção)
                     let palavras_d1: Vec<String> = {
-                        let all_palavras: Vec<&String> = sw.palavra_para_id.keys().collect();
+                        let all_palavras: Vec<String> = sw.todas_palavras();
                         d1_top.iter()
-                            .filter_map(|&idx| all_palavras.get(idx % all_palavras.len().max(1)).copied())
+                            .filter_map(|&idx| all_palavras.get(idx % all_palavras.len().max(1)).cloned())
                             .filter(|w| w.len() >= 3)
-                            .cloned()
                             .collect()
                     };
                     drop(sw);
                     if !palavras_d1.is_empty() {
                         if let Ok(mut bs) = brain_state.try_lock() {
                             for w in &palavras_d1 {
-                                if !bs.neural_context.contains(w) {
-                                    bs.neural_context.push_back(w.clone());
+                                let cid = word_to_concept_id(w);
+                                if !bs.neural_context.contains(&cid) {
+                                    bs.neural_context.push_back(cid);
                                 }
                             }
                             while bs.neural_context.len() > 20 {
@@ -1680,11 +1696,12 @@ async fn async_main() {
                         vec![] // atalho rápido quando não há nada no NVMe
                     } else {
                         // Coleta UUIDs no NVMe pertencentes a conceitos do neural_context
-                        let ctx_words: Vec<String> = if let Ok(bs) = brain_state.try_lock() {
-                            bs.neural_context.iter().cloned().collect()
+                        let ctx_ids_nvme: Vec<u32> = if let Ok(bs) = brain_state.try_lock() {
+                            bs.neural_context.iter().copied().collect()
                         } else { vec![] };
-                        ctx_words.iter()
-                            .flat_map(|w| sw.ids_nvme_para_conceito(w))
+                        ctx_ids_nvme.iter()
+                            .filter_map(|id| sw.id_to_word.get(id).cloned())
+                            .flat_map(|w| sw.ids_nvme_para_conceito(&w))
                             .map(|uuid| (uuid, sw.swap_path.clone()))
                             .take(20) // limite por tick para não sobrecarregar o executor
                             .collect()
@@ -1745,7 +1762,10 @@ async fn async_main() {
             // A cada 50 ticks: aprende do output motor + observa neural_context + propaga ressonância
             if step % 50 == 0 {
                 if let Ok(mut bs) = brain_state.try_lock() {
-                    let ctx_words: Vec<String> = bs.neural_context.iter().cloned().collect();
+                    let ctx_ids_mir: Vec<u32> = bs.neural_context.iter().copied().collect();
+                    let ctx_words: Vec<String> = if let Ok(sw) = bs.swap_manager.try_lock() {
+                        ctx_ids_mir.iter().filter_map(|id| sw.id_to_word.get(id).cloned()).collect()
+                    } else { Vec::new() };
                     for palavra in ctx_words.iter().take(3) {
                         mirror.learn_from_action(palavra, &action);
                     }
@@ -1797,7 +1817,7 @@ async fn async_main() {
             };
             if !top_parietal.is_empty() {
                 if let Ok(sw) = swap_manager.try_lock() {
-                    let all_palavras: Vec<String> = sw.palavra_para_id.keys().cloned().collect();
+                    let all_palavras: Vec<String> = sw.todas_palavras();
                     let palavras_parietal: Vec<String> = top_parietal.iter()
                         .filter_map(|&idx| all_palavras.get(idx % all_palavras.len().max(1)).cloned())
                         .filter(|w| w.len() >= 3)
@@ -1806,7 +1826,7 @@ async fn async_main() {
                     if !palavras_parietal.is_empty() {
                         if let Ok(mut bs) = brain_state.try_lock() {
                             for w in &palavras_parietal {
-                                let g = bs.grounding.entry(w.clone()).or_insert(0.0);
+                                let g = bs.grounding.entry(word_to_concept_id(w)).or_insert(0.0);
                                 *g = (*g + 0.05).min(1.0);
                             }
                         }
@@ -1829,11 +1849,13 @@ async fn async_main() {
                 &cochlea_input.iter().take(32).copied().collect::<Vec<_>>()
             );
             if let Ok(mut bs) = brain_state.try_lock() {
-                let palavras: Vec<String> = bs.neural_context.iter()
-                    .filter(|w| w.len() > 2)
-                    .cloned()
-                    .take(8)
-                    .collect();
+                let palavras: Vec<String> = {
+                    let ids: Vec<u32> = bs.neural_context.iter().take(8).copied().collect();
+                    if let Ok(sw) = bs.swap_manager.try_lock() {
+                        ids.iter().filter_map(|id| sw.id_to_word.get(id).cloned())
+                            .filter(|w| w.len() > 2).collect()
+                    } else { Vec::new() }
+                };
                 if !palavras.is_empty() {
                     let tms = current_time * 1000.0;
                     bs.grounding_bind(&palavras, vpad, apad, emotion, atividade_recente, tms as f64);
@@ -1897,8 +1919,11 @@ async fn async_main() {
                         let n_tokens = ((prio * 3.0) as usize).max(1); // prioridade → tokens injetados
                         for token in texto.split_whitespace().take(n_tokens) {
                             let t = token.to_lowercase();
-                            if t.len() > 2 && !bs.neural_context.contains(&t) {
-                                bs.neural_context.push_back(t);
+                            if t.len() > 2 {
+                                let cid = word_to_concept_id(&t);
+                                if !bs.neural_context.contains(&cid) {
+                                    bs.neural_context.push_back(cid);
+                                }
                             }
                         }
                         while bs.neural_context.len() > 20 { bs.neural_context.pop_front(); }
@@ -2009,8 +2034,11 @@ async fn async_main() {
                         let p = palavra.to_lowercase()
                             .trim_matches(|c: char| !c.is_alphabetic())
                             .to_string();
-                        if p.len() > 2 && !bs.neural_context.contains(&p) {
-                            bs.neural_context.push_back(p);
+                        if p.len() > 2 {
+                            let cid = word_to_concept_id(&p);
+                            if !bs.neural_context.contains(&cid) {
+                                bs.neural_context.push_back(cid);
+                            }
                         }
                     }
                     while bs.neural_context.len() > 20 {
@@ -2030,7 +2058,7 @@ async fn async_main() {
         // Cap em 1.5 para não saturar o sistema dopaminérgico.
         if step % 1000 == 0 && step > 0 {
             if let Ok(bs) = brain_state.try_lock() {
-                let snapshot: Vec<String> = bs.neural_context.iter().cloned().collect();
+                let snapshot: Vec<u32> = bs.neural_context.iter().copied().collect();
                 drop(bs);
 
                 if !snapshot.is_empty() {
@@ -2039,13 +2067,13 @@ async fn async_main() {
                         contexto_historico.pop_front();
                     }
 
-                    // Conta frequência de cada palavra nos últimos snapshots
+                    // Conta frequência de cada conceito (u32 ID) nos últimos snapshots
                     if contexto_historico.len() >= 3 {
-                        let mut freq: std::collections::HashMap<&str, u32> =
+                        let mut freq: std::collections::HashMap<u32, u32> =
                             std::collections::HashMap::new();
                         for snap in &contexto_historico {
-                            for w in snap {
-                                *freq.entry(w.as_str()).or_insert(0) += 1;
+                            for &cid in snap {
+                                *freq.entry(cid).or_insert(0) += 1;
                             }
                         }
                         // Palavras estáveis: aparecem em ≥3 snapshots
@@ -2075,8 +2103,11 @@ async fn async_main() {
                     if let Ok(mut bs) = brain_state.try_lock() {
                         for palavra in goal.descricao.split_whitespace() {
                             let p = palavra.to_lowercase();
-                            if p.len() > 2 && !bs.neural_context.contains(&p) {
-                                bs.neural_context.push_back(p);
+                            if p.len() > 2 {
+                                let cid = word_to_concept_id(&p);
+                                if !bs.neural_context.contains(&cid) {
+                                    bs.neural_context.push_back(cid);
+                                }
                             }
                         }
                         while bs.neural_context.len() > 20 {
@@ -2092,21 +2123,21 @@ async fn async_main() {
             let wm_ativo = wm_snap.iter().any(|(sal, med)| *sal > 0.5 && *med > 0.3);
             if wm_ativo {
                 if let Ok(mut bs) = brain_state.try_lock() {
-                    // WM ativo: move palavras com representação neural para o final da fila
-                    let swap_vocab: std::collections::HashSet<String> = if let Ok(sw) = bs.swap_manager.try_lock() {
-                        sw.palavra_para_id.keys().cloned().collect()
+                    // WM ativo: move IDs de conceitos conhecidos no swap para o final da fila
+                    let swap_cid_set: std::collections::HashSet<u32> = if let Ok(sw) = bs.swap_manager.try_lock() {
+                        sw.id_to_word.keys().copied().collect()
                     } else {
                         std::collections::HashSet::new()
                     };
-                    let boost: Vec<String> = bs.neural_context.iter()
-                        .filter(|w| swap_vocab.contains(w.as_str()))
-                        .cloned()
+                    let boost: Vec<u32> = bs.neural_context.iter()
+                        .copied()
+                        .filter(|cid| swap_cid_set.contains(cid))
                         .collect();
-                    for w in &boost {
+                    for &cid in &boost {
                         // Remove a ocorrência existente e reinsere no final (sem duplicar)
-                        if let Some(pos) = bs.neural_context.iter().position(|x| x == w) {
+                        if let Some(pos) = bs.neural_context.iter().position(|&x| x == cid) {
                             bs.neural_context.remove(pos);
-                            bs.neural_context.push_back(w.clone());
+                            bs.neural_context.push_back(cid);
                         }
                     }
                     while bs.neural_context.len() > 20 {
@@ -2147,7 +2178,7 @@ async fn async_main() {
                     let dopa_bias = neuro.dopamine - 1.0;
                     for (palavra, ativacao) in &conceitos_ativos {
                         let q_boost = dopa_bias * ativacao * 0.05;
-                        let entry = bs.palavra_qvalores.entry(palavra.clone()).or_insert(0.0);
+                        let entry = bs.palavra_qvalores.entry(word_to_concept_id(palavra)).or_insert(0.0);
                         *entry = (*entry * 0.95 + q_boost).clamp(-2.0, 2.0);
                     }
                 }
@@ -2158,7 +2189,7 @@ async fn async_main() {
         if step % 500 == 0 {
             // Fase 1e: atualiza metacognição com estado neural atual
             let n_vocab = swap_manager.try_lock()
-                .map(|sw| sw.palavra_para_id.len()).unwrap_or(0);
+                .map(|sw| sw.conceito_para_id.len()).unwrap_or(0);
             metacognitive.observe(arousal, emotion, n_vocab);
 
             let chunk_stats = chunking.stats();
@@ -2232,24 +2263,33 @@ async fn async_main() {
         // Fonte de verdade: swap_manager (sinapses_conceito) em vez de grafo_associacoes.
         if step % 5000 == 0 && step > 0 {
             // Coleta dados do swap (fora do lock do brain_state)
-            let (valencias_export, grafo_export) = if let Ok(mut sw) = swap_manager.try_lock() {
-                (sw.valencias_palavras(), sw.grafo_palavras())
+            let (valencias_export, grafo_export, id_to_word_export) = if let Ok(mut sw) = swap_manager.try_lock() {
+                (sw.valencias_palavras(), sw.grafo_palavras(), sw.id_to_word.clone())
             } else {
                 (std::collections::HashMap::<String, f32>::new(),
-                 std::collections::HashMap::<String, Vec<(String, f32)>>::new())
+                 std::collections::HashMap::<String, Vec<(String, f32)>>::new(),
+                 std::collections::HashMap::<u32, String>::new())
             };
             let causal_export: std::collections::HashMap<String, Vec<(String, f32)>> = std::collections::HashMap::new();
             let export_payload = if !valencias_export.is_empty() {
                 if let Ok(bs) = brain_state.try_lock() {
                     let n_assoc: usize = grafo_export.values().map(|v| v.len()).sum();
-                    let ctx_vec: Vec<String> = bs.neural_context.iter().cloned().collect();
+                    let ctx_vec: Vec<String> = bs.neural_context.iter()
+                        .filter_map(|id| id_to_word_export.get(id).cloned())
+                        .collect();
+                    let grounding_export: std::collections::HashMap<String, f32> = bs.grounding.iter()
+                        .filter_map(|(&id, &v)| id_to_word_export.get(&id).map(|w| (w.clone(), v)))
+                        .collect();
+                    let emocao_export: std::collections::HashMap<String, f32> = bs.emocao_palavras.iter()
+                        .filter_map(|(&id, &v)| id_to_word_export.get(&id).map(|w| (w.clone(), v)))
+                        .collect();
                     let json = crate::storage::exportar_linguagem(
                         &valencias_export,
                         &grafo_export,
                         &bs.frases_padrao,
                         &causal_export,
-                        &bs.grounding,
-                        &bs.emocao_palavras,
+                        &grounding_export,
+                        &emocao_export,
                         &bs.auto_learn_contagem,
                         &ctx_vec,
                     );
@@ -2291,17 +2331,25 @@ async fn async_main() {
                     let _ = tokio::fs::write(get_state_path("selene_hypotheses.json"), hj).await;
                 }
             }
-            // Auto-save do estado semântico do swap_manager
+            // Auto-save do estado semântico do swap_manager (async-safe: serializa dentro do lock, escreve fora)
             if let Ok(swap) = swap_manager.try_lock() {
-                if let Err(e) = swap.salvar_estado("selene_swap_state.json") {
-                    log::warn!("[SwapState] Falha ao salvar: {}", e);
+                match swap.serializar_estado_json() {
+                    Ok(json_str) => {
+                        let path = get_state_path("selene_swap_state.json");
+                        tokio::spawn(async move {
+                            if let Err(e) = tokio::fs::write(&path, json_str).await {
+                                log::warn!("[SwapState] Falha ao salvar: {}", e);
+                            }
+                        });
+                    }
+                    Err(e) => log::warn!("[SwapState] Falha ao serializar: {}", e),
                 }
             }
 
             // ── Atualiza e salva métricas de ontogenia ───────────────────────────
             {
                 let (vocab_n, edges_n) = if let Ok(mut sw) = swap_manager.try_lock() {
-                    let v = sw.palavra_para_id.len();
+                    let v = sw.conceito_para_id.len();
                     let e: usize = sw.sinapses_conceito.len();
                     (v, e)
                 } else { (0, 0) };

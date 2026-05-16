@@ -919,8 +919,8 @@ fn benchmark_grounding(state: &mut BrainState) {
         &fmt_throughput(bind_per_s),
         &format!("({} por bind)", fmt_ns(bind_ns / n_binds as f64)));
 
-    let g_quente = state.grounding.get("quente").copied().unwrap_or(0.0);
-    let g_musica = state.grounding.get("musica").copied().unwrap_or(0.0);
+    let g_quente = state.grounding.get(&word_to_concept_id("quente")).copied().unwrap_or(0.0);
+    let g_musica = state.grounding.get(&word_to_concept_id("musica")).copied().unwrap_or(0.0);
     linha("Score 'quente' após 10k binds", &format!("{:.4}", g_quente), "(saturação → 1.0)");
     linha("Score 'musica' após 10k binds", &format!("{:.4}", g_musica), "");
     separador();
@@ -985,14 +985,14 @@ fn benchmark_grounding(state: &mut BrainState) {
     separador();
 
     subsecao("E4 — Decay de grounding (meia-vida)");
-    state.grounding.insert("teste_decay".to_string(), 0.5);
+    state.grounding.insert(word_to_concept_id("teste_decay"), 0.5);
     let mut ticks_mv = 0usize;
     let mut g_atual  = 0.5f32;
     let t_decay = Instant::now();
     while g_atual > 0.25 && ticks_mv < 10_000 {
         state.grounding.iter_mut().for_each(|(_, v)| *v *= 0.999);
         ticks_mv += 1;
-        g_atual = state.grounding.get("teste_decay").copied().unwrap_or(0.0);
+        g_atual = state.grounding.get(&word_to_concept_id("teste_decay")).copied().unwrap_or(0.0);
     }
     let decay_ns  = t_decay.elapsed().as_nanos() as f64;
     let ticks_reais = ticks_mv * 1000;

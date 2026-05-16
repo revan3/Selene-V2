@@ -37,6 +37,7 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use uuid::Uuid;
+use crate::neural_pool::word_to_concept_id;
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
@@ -80,19 +81,42 @@ pub enum Dominio {
     Motor,
     Sensorial,
     Causal,
-    Composto(Vec<String>), // domínios que contribuíram — emerge do uso
+    Composto(Vec<u32>), // concept_ids dos domínios que contribuíram
 }
 
 impl Dominio {
+    /// Identidade canônica para indexação (u32 FNV hash do nome).
+    pub fn como_id(&self) -> u32 {
+        match self {
+            Dominio::Linguagem    => word_to_concept_id("linguagem"),
+            Dominio::Matematica   => word_to_concept_id("matematica"),
+            Dominio::Logica       => word_to_concept_id("logica"),
+            Dominio::Motor        => word_to_concept_id("motor"),
+            Dominio::Sensorial    => word_to_concept_id("sensorial"),
+            Dominio::Causal       => word_to_concept_id("causal"),
+            Dominio::Composto(ds) => {
+                // FNV-1a combinando os IDs em ordem (estável)
+                let mut h: u32 = 2166136261;
+                for &id in ds {
+                    h = h.wrapping_mul(16777619) ^ id;
+                }
+                if h == 0 { 1 } else { h }
+            }
+        }
+    }
+
+    /// Rótulo human-readable para display/serialização (não para keying).
     pub fn como_str(&self) -> String {
         match self {
-            Dominio::Linguagem         => "linguagem".into(),
-            Dominio::Matematica        => "matematica".into(),
-            Dominio::Logica            => "logica".into(),
-            Dominio::Motor             => "motor".into(),
-            Dominio::Sensorial         => "sensorial".into(),
-            Dominio::Causal            => "causal".into(),
-            Dominio::Composto(ds)      => ds.join("+"),
+            Dominio::Linguagem    => "linguagem".into(),
+            Dominio::Matematica   => "matematica".into(),
+            Dominio::Logica       => "logica".into(),
+            Dominio::Motor        => "motor".into(),
+            Dominio::Sensorial    => "sensorial".into(),
+            Dominio::Causal       => "causal".into(),
+            Dominio::Composto(ds) => ds.iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>().join("+"),
         }
     }
 }
@@ -135,15 +159,15 @@ pub struct Slot {
     pub tipo:        TipoSlot,
     pub obrigatorio: bool,
 
-    /// Histórico de conteúdos que preencheram este slot com sucesso.
+    /// Histórico de concept_ids que preencheram este slot com sucesso.
     /// Permite inferir restrições semânticas emergentes.
-    /// Formato: (conceito, score_de_validacao)
-    pub historico: Vec<(String, f32)>,
+    /// Formato: (concept_id, score_de_validacao)
+    pub historico: Vec<(u32, f32)>,
 
-    /// Conteúdo atual — EFÊMERO.
+    /// Conteúdo atual — EFÊMERO (concept_id u32).
     /// Preenchido durante o uso via `Template::preencher()`.
     /// Limpo via `Template::limpar_slots()` após uso.
-    pub conteudo_atual: Option<String>,
+    pub conteudo_atual: Option<u32>,
 }
 
 impl Slot {
@@ -161,15 +185,15 @@ impl Slot {
         self.conteudo_atual = None;
     }
 
-    /// Top-N conceitos mais frequentes no histórico — restrição semântica emergente.
-    pub fn restricao_emergente(&self, top_n: usize) -> Vec<String> {
-        let mut freq: HashMap<&str, u32> = HashMap::new();
-        for (c, _) in &self.historico {
-            *freq.entry(c.as_str()).or_insert(0) += 1;
+    /// Top-N concept_ids mais frequentes no histórico — restrição semântica emergente.
+    pub fn restricao_emergente(&self, top_n: usize) -> Vec<u32> {
+        let mut freq: HashMap<u32, u32> = HashMap::new();
+        for (id, _) in &self.historico {
+            *freq.entry(*id).or_insert(0) += 1;
         }
-        let mut sorted: Vec<(&str, u32)> = freq.into_iter().collect();
+        let mut sorted: Vec<(u32, u32)> = freq.into_iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(&a.1));
-        sorted.into_iter().take(top_n).map(|(s, _)| s.to_string()).collect()
+        sorted.into_iter().take(top_n).map(|(id, _)| id).collect()
     }
 
     /// Score médio de validação do histórico deste slot.
@@ -302,12 +326,12 @@ impl Template {
         }
     }
 
-    /// Preenche slots com o mapa fornecido `{ indice → conteúdo }`.
+    /// Preenche slots com o mapa fornecido `{ indice → concept_id }`.
     /// Retorna `true` se todos os slots obrigatórios foram preenchidos (uso completo).
-    pub fn preencher(&mut self, valores: &HashMap<usize, String>) -> bool {
+    pub fn preencher(&mut self, valores: &HashMap<usize, u32>) -> bool {
         for (idx, conteudo) in valores {
             if let Some(slot) = self.slots.get_mut(*idx) {
-                slot.conteudo_atual = Some(conteudo.clone());
+                slot.conteudo_atual = Some(*conteudo);
             }
         }
         self.slots.iter()
@@ -315,9 +339,9 @@ impl Template {
             .all(|s| s.conteudo_atual.is_some())
     }
 
-    /// Renderiza o template preenchido como sequência de tokens.
+    /// Renderiza o template preenchido como sequência de concept_ids.
     /// Segue a ordem das relações sequenciais; fallback: ordem dos slots.
-    pub fn renderizar(&self) -> Vec<String> {
+    pub fn renderizar(&self) -> Vec<u32> {
         // Tenta ordenar slots pela topologia sequencial
         let mut ordem: Vec<usize> = Vec::new();
         let seq: Vec<(usize, usize)> = self.relacoes.iter()
@@ -358,8 +382,8 @@ impl Template {
 
         ordem.iter()
             .filter_map(|&i| self.slots.get(i))
-            .filter_map(|s| s.conteudo_atual.clone())
-            .filter(|c| !c.is_empty())
+            .filter_map(|s| s.conteudo_atual)
+            .filter(|&id| id != 0)
             .collect()
     }
 
@@ -368,12 +392,12 @@ impl Template {
         for slot in &mut self.slots { slot.limpar(); }
     }
 
-    /// Registra no histórico de cada slot o conteúdo usado.
+    /// Registra no histórico de cada slot o concept_id usado.
     /// Só atualiza se a plasticidade permitir.
     pub fn registrar_historico(&mut self, score: f32) {
         if self.plasticidade() < 0.05 { return; }
         for slot in &mut self.slots {
-            if let Some(c) = slot.conteudo_atual.clone() {
+            if let Some(c) = slot.conteudo_atual {
                 if slot.historico.len() >= MAX_HISTORICO_SLOT {
                     slot.historico.remove(0);
                 }
@@ -433,8 +457,8 @@ impl Template {
 pub struct TemplateStore {
     pub templates: HashMap<Uuid, Template>,
 
-    /// Índice por domínio para lookup rápido.
-    por_dominio: HashMap<String, Vec<Uuid>>,
+    /// Índice por domínio (concept_id) para lookup rápido.
+    por_dominio: HashMap<u32, Vec<Uuid>>,
 
     /// Histórico de pilhas recentes: detecta combinações recorrentes.
     pilhas_recentes: VecDeque<Vec<Uuid>>,
@@ -464,23 +488,23 @@ impl TemplateStore {
 
     /// Registra um template no repositório.
     pub fn registrar(&mut self, template: Template) -> Uuid {
-        let id           = template.id;
-        let dominio_str  = template.dominio.como_str();
-        self.por_dominio.entry(dominio_str).or_default().push(id);
+        let id          = template.id;
+        let dominio_id  = template.dominio.como_id();
+        self.por_dominio.entry(dominio_id).or_default().push(id);
         self.templates.insert(id, template);
         id
     }
 
     /// Usa um template simples (não empilhado).
     /// Preenche slots, renderiza, registra histórico e reforça.
-    /// Retorna os tokens renderizados + se foi uso completo.
+    /// Retorna os concept_ids renderizados + se foi uso completo.
     pub fn usar(
         &mut self,
         id: Uuid,
-        valores: &HashMap<usize, String>,
+        valores: &HashMap<usize, u32>,
         validado: bool,
         t_atual_s: f64,
-    ) -> Option<(Vec<String>, TipoUso)> {
+    ) -> Option<(Vec<u32>, TipoUso)> {
         let template = self.templates.get_mut(&id)?;
         let completo = template.preencher(valores);
         let tipo = if completo { TipoUso::Completo } else { TipoUso::Parcial };
@@ -548,19 +572,17 @@ impl TemplateStore {
         novo_composto
     }
 
-    /// Reconhece quais templates melhor se encaixam com um conjunto de conceitos.
+    /// Reconhece quais templates melhor se encaixam com um conjunto de concept_ids.
     /// Retorna lista ordenada por score (sobreposição histórica × força).
-    pub fn reconhecer(&self, conceitos: &[String]) -> Vec<(Uuid, f32)> {
-        let cset: std::collections::HashSet<&str> = conceitos.iter()
-            .map(|s| s.as_str())
-            .collect();
+    pub fn reconhecer(&self, conceitos: &[u32]) -> Vec<(Uuid, f32)> {
+        let cset: std::collections::HashSet<u32> = conceitos.iter().copied().collect();
 
         let mut scores: Vec<(Uuid, f32)> = self.templates.iter()
             .filter(|(_, t)| t.estado != EstadoTemplate::Arquivado)
             .map(|(&id, t)| {
                 let overlap = t.slots.iter()
                     .flat_map(|s| &s.historico)
-                    .filter(|(c, _)| cset.contains(c.as_str()))
+                    .filter(|(c, _)| cset.contains(c))
                     .count() as f32;
                 let score = overlap * 0.6 + t.forca * 0.4;
                 (id, score)
@@ -639,9 +661,19 @@ impl TemplateStore {
     }
 
     pub fn por_dominio_str(&self, dominio: &str) -> Vec<&Template> {
-        self.por_dominio.get(dominio)
+        let id = word_to_concept_id(dominio);
+        self.por_dominio.get(&id)
             .map(|ids| ids.iter()
-                .filter_map(|id| self.templates.get(id))
+                .filter_map(|tid| self.templates.get(tid))
+                .collect())
+            .unwrap_or_default()
+    }
+
+    /// Lookup direto por concept_id de domínio.
+    pub fn por_dominio_id(&self, dominio_id: u32) -> Vec<&Template> {
+        self.por_dominio.get(&dominio_id)
+            .map(|ids| ids.iter()
+                .filter_map(|tid| self.templates.get(tid))
                 .collect())
             .unwrap_or_default()
     }
@@ -681,8 +713,8 @@ impl TemplateStore {
         }
 
         let dominio = Dominio::Composto(vec![
-            a.dominio.como_str(),
-            b.dominio.como_str(),
+            a.dominio.como_id(),
+            b.dominio.como_id(),
         ]);
         let mut t = Template::novo(dominio, slots, relacoes);
         t.sub_templates = vec![a.id, b.id];
@@ -694,7 +726,7 @@ impl TemplateStore {
         self.por_dominio.clear();
         for (&id, t) in &self.templates {
             self.por_dominio
-                .entry(t.dominio.como_str())
+                .entry(t.dominio.como_id())
                 .or_default()
                 .push(id);
         }
@@ -1049,12 +1081,12 @@ mod tests {
         let mut t = Template::novo(Dominio::Linguagem, slots, vec![]);
 
         let mut vals = HashMap::new();
-        vals.insert(0, "calor".to_string());
-        vals.insert(1, "fogo".to_string());
+        vals.insert(0, word_to_concept_id("calor"));
+        vals.insert(1, word_to_concept_id("fogo"));
 
         assert!(t.preencher(&vals));
         let tokens = t.renderizar();
-        assert_eq!(tokens, vec!["calor", "fogo"]);
+        assert_eq!(tokens, vec![word_to_concept_id("calor"), word_to_concept_id("fogo")]);
 
         t.limpar_slots();
         assert!(t.slots[0].conteudo_atual.is_none());

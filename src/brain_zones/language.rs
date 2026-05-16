@@ -51,9 +51,8 @@ pub struct LanguageAreas {
     /// Biologicamente: Wernicke → fascículo arqueado → Broca.
     pub semantic_buffer: Vec<f32>,
 
-    /// Familiaridade de vocabulário: palavra → n_exposições.
-    /// Palavras mais frequentes → comprehension_score maior.
-    familiarity_map: std::collections::HashMap<String, u32>,
+    /// Familiaridade de vocabulário: concept_id → n_exposições.
+    familiarity_map: std::collections::HashMap<u32, u32>,
 
     // ── Área de Broca ───────────────────────────────────────────────────────
     /// Camada de planejamento motor verbal — RS + FS (sincronização gamma).
@@ -138,8 +137,8 @@ impl LanguageAreas {
     /// Retorna `comprehension_score`.
     pub fn wernicke_process(
         &mut self,
-        tokens: &[String],
-        valencias: &std::collections::HashMap<String, f32>,
+        tokens: &[u32],
+        valencias: &std::collections::HashMap<u32, f32>,
         dt: f32,
         current_time: f32,
         config: &Config,
@@ -153,39 +152,34 @@ impl LanguageAreas {
         let mut rng = thread_rng();
         let n = self.wernicke_layer.neuronios.len();
 
-        // 1. Calcula familiaridade do input
+        // 1. Familiaridade do input
         let n_known = tokens.iter()
-            .filter(|w| valencias.contains_key(w.as_str())
-                || self.familiarity_map.contains_key(w.as_str()))
+            .filter(|id| valencias.contains_key(id) || self.familiarity_map.contains_key(id))
             .count();
-        let familiarity = if tokens.is_empty() { 0.5 }
-            else { n_known as f32 / tokens.len() as f32 };
+        let familiarity = n_known as f32 / tokens.len() as f32;
 
         // 2. Atualiza mapa de familiaridade
-        for token in tokens {
+        for &token in tokens {
             if self.familiarity_map.len() >= FAMILIARITY_MAX {
-                // Remove o menos familiar
                 if let Some(min_key) = self.familiarity_map.iter()
-                    .min_by_key(|(_, &v)| v).map(|(k, _)| k.clone()) {
+                    .min_by_key(|(_, &v)| v).map(|(k, _)| *k) {
                     self.familiarity_map.remove(&min_key);
                 }
             }
-            let count = self.familiarity_map.entry(token.clone()).or_insert(0);
+            let count = self.familiarity_map.entry(token).or_insert(0);
             *count = count.saturating_add(1);
         }
 
-        // 3. Input para Wernicke: intensidade proporcional à familiaridade + valência
-        let val_mean: f32 = if tokens.is_empty() { 0.0 } else {
-            tokens.iter()
-                .filter_map(|w| valencias.get(w.as_str()).copied())
-                .sum::<f32>() / tokens.len() as f32
-        };
+        // 3. Input para Wernicke
+        let val_mean: f32 = tokens.iter()
+            .filter_map(|id| valencias.get(id).copied())
+            .sum::<f32>() / tokens.len() as f32;
         let input_strength = familiarity * 30.0 + val_mean.abs() * 10.0;
         let wernicke_input: Vec<f32> = (0..n)
             .map(|i| {
                 let token_idx = i * tokens.len() / n;
                 let tok_familiarity = tokens.get(token_idx)
-                    .and_then(|w| self.familiarity_map.get(w.as_str()))
+                    .and_then(|id| self.familiarity_map.get(id))
                     .copied()
                     .unwrap_or(0) as f32 / 10.0;
                 input_strength * (0.5 + tok_familiarity * 0.5) + rng.gen_range(-2.0..2.0)

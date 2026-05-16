@@ -21,7 +21,14 @@ use crate::learning::multimodal::ConvergenciaMultimodal;
 use crate::learning::active_context::ActiveContext;
 use crate::learning::go_nogo::GoNoGoFilter;
 use crate::sensors::audio::WordAccumulator;
-use crate::neural_pool::{NeuralPool, CorticalLevel};
+use crate::neural_pool::{NeuralPool, CorticalLevel, word_to_concept_id};
+
+/// FNV-1a 64-bit hash for spike vocab label strings (preserves u64 key space).
+pub fn spike_label_hash(s: &str) -> u64 {
+    let mut h: u64 = 14695981039346656037;
+    for b in s.bytes() { h ^= b as u64; h = h.wrapping_mul(1099511628211); }
+    h
+}
 
 /// Evento episódico rico — registra um momento de experiência com contexto perceptual completo.
 /// Substitui o antigo `(String, String, f32)` do historico_episodico, adicionando:
@@ -135,9 +142,11 @@ pub struct BrainState {
     /// Viés emocional derivado da roda de Plutchik (joy - fear - sadness).
     /// Desloca o alvo emocional da caminhada no grafo, colorindo o vocabulário.
     pub emocao_bias: f32,
-    /// In-memory spike vocabulary: palavra → SpikePattern
+    /// In-memory spike vocabulary: FNV-1a u64 hash of label → SpikePattern.
     /// Built incrementally from `learn` actions; persisted via HelixStore.
-    pub spike_vocab: HashMap<String, SpikePattern>,
+    pub spike_vocab: HashMap<u64, SpikePattern>,
+    /// Companion label table for reverse lookup: u64 hash → original label string.
+    pub spike_labels: HashMap<u64, String>,
     /// Persistent mmap-based spike store (selene_spikes.hlx).
     /// None if the file could not be opened (e.g. permission error).
     pub helix: Option<HelixStore>,
@@ -152,7 +161,7 @@ pub struct BrainState {
     pub reply_count: u64,
     /// Contagem de travessias por aresta do grafo: (a, b) → vezes percorrida.
     /// Usada pela consolidação noturna para reforçar sinapses mais ativas.
-    pub aresta_contagem: HashMap<(String, String), u32>,
+    pub aresta_contagem: HashMap<(u32, u32), u32>,
     /// Último caminho percorrido no grafo durante um walk de resposta.
     /// Usado pelo evento `feedback` para reforçar/penalizar arestas específicas.
     pub ultimo_caminho_walk: Vec<String>,
@@ -168,7 +177,7 @@ pub struct BrainState {
     /// quando RPE < 0 ganham Q negativo. Consultado pelo graph-walk para preferir
     /// palavras com histórico positivo e evitar palavras associadas a punições.
     /// Chave: palavra em minúsculas. Valor: média ponderada dos Q-values observados.
-    pub palavra_qvalores: HashMap<String, f32>,
+    pub palavra_qvalores: HashMap<u32, f32>,
 
     /// Palavras do goal atual do FrontalLobe — injetadas como semente do graph-walk.
     /// O loop neural extrai tokens da descrição do goal e os persiste aqui.
@@ -196,7 +205,7 @@ pub struct BrainState {
     /// Positivo = palavra associada a experiências positivas (alegria/confiança).
     /// Negativo = palavra associada a experiências negativas (medo/tristeza).
     /// Usado no graph-walk para priorizar palavras emocionalmente congruentes.
-    pub emocao_palavras: HashMap<String, f32>,
+    pub emocao_palavras: HashMap<u32, f32>,
     /// Histórico episódico rico — eventos com contexto perceptual completo.
     /// Substitui o antigo tuple (String, String, f32): agora inclui padrão visual,
     /// auditivo e estado corporal para grounding semântico real.
@@ -204,7 +213,7 @@ pub struct BrainState {
     /// Grounding semântico por palavra: 0.0 = só linguístico, 1.0 = totalmente grounded.
     /// Aumenta quando a palavra é co-ativada com percepções reais (visual/auditivo/interoceptivo).
     /// Decresce lentamente por decaimento temporal. Usado como peso extra na seleção de âncora.
-    pub grounding: std::collections::HashMap<String, f32>,
+    pub grounding: std::collections::HashMap<u32, f32>,
     /// Último padrão visual computado (SpikePattern do occipital).
     /// Atualizado a cada tick pelo loop neural. Lido pelo chat handler para binding.
     pub ultimo_padrao_visual: SpikePattern,
@@ -218,7 +227,7 @@ pub struct BrainState {
     /// Preenchido pelo loop neural (main.rs) a cada tick com novos_chunks.simbolo
     /// e frontal.goal_queue. Consultado pela linguagem como semente de tópico adicional.
     /// Máximo 20 entradas — janela deslizante dos últimos ~100ms de atividade.
-    pub neural_context: VecDeque<String>,
+    pub neural_context: VecDeque<u32>,
     /// Score de ressonância dos neurônios espelho (0.0–1.0).
     /// Atualizado pelo loop neural quando Selene "observa" palavras com padrão motor conhecido.
     /// Alta ressonância → Selene compreende a ação descrita encarnadamente → viés empático.
@@ -369,7 +378,7 @@ pub struct BrainState {
 
     /// Cache de trigramas: (w1, w2) → [w3, ...] extraído de frases_padrao.
     /// Evita reconstrução a cada resposta — rebuild via reconstruir_trigrama_cache().
-    pub trigrama_cache: HashMap<(String, String), Vec<String>>,
+    pub trigrama_cache: HashMap<(u32, u32), Vec<u32>>,
 
     /// Motor de reconhecimento e predição de padrões (3 camadas: episódica → extração → consolidação).
     /// Grave episódios via `pattern_engine.gravar()`; extração + consolidação ocorre no sono N3.
@@ -383,7 +392,7 @@ pub struct BrainState {
     /// (chat/passive_hear) e consumidos um lote por tick pelo loop neural via
     /// language.wernicke_process(). Capacidade máxima: 10 lotes. Antes era
     /// Option<Vec<>> (canal único que sobrescrevia); agora acumula corretamente.
-    pub pending_wernicke_tokens: std::collections::VecDeque<Vec<String>>,
+    pub pending_wernicke_tokens: std::collections::VecDeque<Vec<u32>>,
 
     /// Integração multimodal audiovisual — predição cruzada visual↔audio.
     /// Usado para amplificar sinal congruente e detectar incongruência (surpresa).
@@ -467,21 +476,21 @@ impl BrainState {
 
         // Restaura backup de linguagem se existir
         let mut frases_padrao: Vec<Vec<String>> = Vec::new();
-        let mut grounding_init: std::collections::HashMap<String, f32> = HashMap::new();
-        let mut emocao_palavras_init: HashMap<String, f32> = HashMap::new();
+        let mut grounding_init: std::collections::HashMap<u32, f32> = HashMap::new();
+        let mut emocao_palavras_init: HashMap<u32, f32> = HashMap::new();
         let mut auto_learn_init: HashMap<String, u32> = HashMap::new();
-        let mut neural_ctx_init: VecDeque<String> = VecDeque::with_capacity(20);
+        let mut neural_ctx_init: VecDeque<u32> = VecDeque::with_capacity(20);
 
         if let Ok(content) = std::fs::read_to_string("selene_linguagem.json") {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
                 if let Some(lingua) = json.get("selene_linguagem_v1") {
 
-                    let carregar_f32_map = |chave: &str| -> HashMap<String, f32> {
-                        let mut mapa: HashMap<String, f32> = HashMap::new();
+                    let carregar_f32_map = |chave: &str| -> HashMap<u32, f32> {
+                        let mut mapa: HashMap<u32, f32> = HashMap::new();
                         if let Some(obj) = lingua.get(chave).and_then(|v| v.as_object()) {
                             for (w, val) in obj {
                                 if let Some(v) = val.as_f64() {
-                                    mapa.insert(w.clone(), v as f32);
+                                    mapa.insert(word_to_concept_id(w), v as f32);
                                 }
                             }
                         }
@@ -570,7 +579,7 @@ impl BrainState {
                     if let Some(arr) = lingua.get("neural_context").and_then(|v| v.as_array()) {
                         for v in arr {
                             if let Some(s) = v.as_str() {
-                                neural_ctx_init.push_back(s.to_string());
+                                neural_ctx_init.push_back(word_to_concept_id(s));
                             }
                         }
                     }
@@ -581,13 +590,16 @@ impl BrainState {
         }
 
         // Open (or create) the Helix spike store and restore spike_vocab from it
-        let mut spike_vocab: HashMap<String, SpikePattern> = HashMap::new();
+        let mut spike_vocab: HashMap<u64, SpikePattern> = HashMap::new();
+        let mut spike_labels: HashMap<u64, String> = HashMap::new();
         let helix = match HelixStore::open("selene_spikes.hlx") {
             Ok(store) => {
                 let n = store.len();
                 if n > 0 {
                     for (label, pattern) in store.iter_all() {
-                        spike_vocab.insert(label, pattern);
+                        let h = spike_label_hash(&label);
+                        spike_vocab.insert(h, pattern);
+                        spike_labels.insert(h, label);
                     }
                     println!("🧬 Helix restaurado: {} padrões spike carregados.", n);
                 }
@@ -650,9 +662,12 @@ impl BrainState {
                 let w = w.to_lowercase()
                     .trim_matches(|c: char| !c.is_alphabetic())
                     .to_string();
-                if w.len() > 3 && !neural_ctx_init.contains(&w) {
-                    neural_ctx_init.push_back(w);
-                    if neural_ctx_init.len() >= 20 { break; }
+                if w.len() > 3 {
+                    let cid = word_to_concept_id(&w);
+                    if !neural_ctx_init.contains(&cid) {
+                        neural_ctx_init.push_back(cid);
+                        if neural_ctx_init.len() >= 20 { break; }
+                    }
                 }
             }
         }
@@ -706,6 +721,7 @@ impl BrainState {
             n_passos_walk: 9,
             emocao_bias: 0.0,
             spike_vocab,
+            spike_labels,
             helix,
             curiosity_level: 0.0,
             perguntas_proprias: VecDeque::with_capacity(5),
@@ -853,10 +869,11 @@ impl BrainState {
         self.trigrama_cache.clear();
         for frase in &self.frases_padrao {
             for w in frase.windows(3) {
+                let k = (word_to_concept_id(&w[0]), word_to_concept_id(&w[1]));
                 self.trigrama_cache
-                    .entry((w[0].clone(), w[1].clone()))
+                    .entry(k)
                     .or_default()
-                    .push(w[2].clone());
+                    .push(word_to_concept_id(&w[2]));
             }
         }
     }
@@ -864,11 +881,13 @@ impl BrainState {
     /// Insere padrão spike no vocab com evicção LRU quando acima do cap.
     pub fn inserir_spike_vocab(&mut self, chave: String, pat: crate::encoding::spike_codec::SpikePattern) {
         const SPIKE_VOCAB_CAP: usize = 50_000;
-        self.spike_vocab.insert(chave, pat);
+        let h = spike_label_hash(&chave);
+        self.spike_vocab.insert(h, pat);
+        self.spike_labels.insert(h, chave);
         if self.spike_vocab.len() > SPIKE_VOCAB_CAP {
             let n_remover = self.spike_vocab.len() - SPIKE_VOCAB_CAP;
-            let keys: Vec<String> = self.spike_vocab.keys().take(n_remover).cloned().collect();
-            for k in keys { self.spike_vocab.remove(&k); }
+            let keys: Vec<u64> = self.spike_vocab.keys().take(n_remover).copied().collect();
+            for k in keys { self.spike_vocab.remove(&k); self.spike_labels.remove(&k); }
         }
     }
 
@@ -909,9 +928,10 @@ impl BrainState {
             let visual_ativo = is_active(&ev.padrao_visual);
             let audio_ativo  = is_active(&ev.padrao_audio);
             for w in &ev.palavras {
-                let entry = self.emocao_palavras.entry(w.clone()).or_insert(0.0);
+                let cid = word_to_concept_id(w);
+                let entry = self.emocao_palavras.entry(cid).or_insert(0.0);
                 *entry = (*entry * 0.90 + ev.emocao * 0.10).clamp(-1.0, 1.0);
-                let g = self.grounding.entry(w.clone()).or_insert(0.0);
+                let g = self.grounding.entry(cid).or_insert(0.0);
                 if visual_ativo { *g = (*g + bonus * 0.4).min(1.0); }
                 if audio_ativo  { *g = (*g + bonus * 0.25).min(1.0); }
                 *g = (*g + bonus * 0.15).min(1.0);
@@ -1023,14 +1043,18 @@ impl BrainState {
         }
 
         // Hipóteses confiáveis → sinapses
-        let confiaveis = self.hypothesis_engine.hipoteses_confiaveis();
-        if !confiaveis.is_empty() {
+        if let Ok(mut sw) = self.swap_manager.try_lock() {
+            let confiaveis = self.hypothesis_engine.hipoteses_confiaveis();
             let pares: Vec<(String, String, f32)> = confiaveis.iter()
                 .flat_map(|h| h.premissas.iter()
-                    .map(|p| (p.clone(), h.conclusao.clone(), h.confianca * 0.4))
+                    .filter_map(|&p| {
+                        let wa = sw.id_to_word.get(&p)?.clone();
+                        let wc = sw.id_to_word.get(&h.conclusao)?.clone();
+                        Some((wa, wc, h.confianca * 0.4))
+                    })
                     .collect::<Vec<_>>())
                 .collect();
-            if let Ok(mut sw) = self.swap_manager.try_lock() {
+            if !pares.is_empty() {
                 sw.importar_causal(pares);
             }
         }
@@ -1110,7 +1134,8 @@ impl BrainState {
 
         for palavra in palavras {
             if palavra.len() < 2 { continue; }
-            let g = self.grounding.entry(palavra.clone()).or_insert(0.0);
+            let cid = word_to_concept_id(palavra);
+            let g = self.grounding.entry(cid).or_insert(0.0);
             if visual_ativo { *g = (*g + 0.25).min(1.0); }
             if audio_ativo  { *g = (*g + 0.15).min(1.0); }
             *g = (*g + 0.08).min(1.0); // interoceptivo — sempre contribui
@@ -1151,10 +1176,10 @@ impl BrainState {
         if rpe.abs() < 0.05 { return; }
         // VecDeque: push_back insere no fim → últimas N são as mais recentes.
         // rev().take(8) pega as 8 últimas em ordem inversa (irrelevante p/ RPE).
-        let palavras: Vec<String> = self.neural_context.iter()
-            .rev().take(8).cloned().collect();
-        for w in palavras {
-            let g = self.grounding.entry(w).or_insert(0.0);
+        let cids: Vec<u32> = self.neural_context.iter()
+            .rev().take(8).copied().collect();
+        for cid in cids {
+            let g = self.grounding.entry(cid).or_insert(0.0);
             if rpe > 0.0 {
                 *g = (*g + rpe * 0.05).min(1.0);
             } else {
@@ -1172,6 +1197,14 @@ impl BrainState {
         }
         // Remove palavras com grounding irrisório (< 0.001) para não crescer sem limite
         self.grounding.retain(|_, g| *g >= 0.001);
+    }
+
+    /// Convert neural_context u32 IDs to word strings for String-based APIs (graph walk, etc.).
+    /// IDs with no known label are silently dropped.
+    pub fn neural_ctx_to_strings(ctx: &std::collections::VecDeque<u32>, id_to_word: &HashMap<u32, String>) -> Vec<String> {
+        ctx.iter()
+            .filter_map(|&id| id_to_word.get(&id).cloned())
+            .collect()
     }
 }
 
