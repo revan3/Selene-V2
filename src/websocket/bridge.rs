@@ -467,7 +467,8 @@ impl BrainState {
                     if let Ok(mut sw) = swap.try_lock() {
                         let n = lexicon_pairs.len();
                         for (word, val) in lexicon_pairs {
-                            sw.aprender_conceito(&word, val * 0.5);
+                            let cid = word_to_concept_id(&word);
+                            sw.aprender_conceito(cid, val * 0.5);
                         }
                         println!("📖 Léxico pré-carregado: {} palavras → swap_manager.", n);
                     }
@@ -523,7 +524,8 @@ impl BrainState {
                             let mut n_vocab = 0usize;
                             for (palavra, val) in obj {
                                 if let Some(v) = val.as_f64() {
-                                    sw.aprender_conceito(palavra, v as f32);
+                                    let cid = word_to_concept_id(palavra);
+                                    sw.aprender_conceito(cid, v as f32);
                                     n_vocab += 1;
                                 }
                             }
@@ -550,7 +552,7 @@ impl BrainState {
                             if !pares.is_empty() {
                                 // importar_causal em lotes de 500 para não travar
                                 for chunk in pares.chunks(500) {
-                                    sw.importar_causal(chunk.to_vec());
+                                    sw.importar_causal_compat(chunk.to_vec());
                                 }
                                 println!("🔗 Associações migradas: {} arestas → swap_manager.", n_arestas);
                             }
@@ -559,8 +561,10 @@ impl BrainState {
                         if sem_grafo && sw.grafo_palavras().is_empty() && !frases_padrao.is_empty() {
                             for frase in &frases_padrao {
                                 for w in frase.windows(2) {
-                                    sw.aprender_conceito(&w[0], 0.1);
-                                    sw.importar_causal(vec![(w[0].clone(), w[1].clone(), 0.10)]);
+                                    let c0 = word_to_concept_id(&w[0]);
+                                    let c1 = word_to_concept_id(&w[1]);
+                                    sw.aprender_conceito(c0, 0.1);
+                                    sw.importar_causal(vec![(c0, c1, 0.10)]);
                                 }
                             }
                             println!("🗣️  Bootstrap swap (fallback): {} frases.", frases_padrao.len());
@@ -969,7 +973,7 @@ impl BrainState {
         let mut novas_atalho = 0usize;
 
         let atalhos: Vec<(u32, u32, f32)> = if let Ok(mut sw) = self.swap_manager.try_lock() {
-            sw.importar_causal(causal_pairs.clone());
+            sw.importar_causal_compat(causal_pairs.clone());
             let grafo = sw.grafo_conceitos();
             let valencias = sw.valencias_conceitos();
             let id_to_word = sw.id_to_word.clone();

@@ -726,9 +726,8 @@ impl SwapManager {
     /// A valência é distribuída com pequena variação por neurônio — permitindo que
     /// o mesmo conceito tenha representações emocionais ligeiramente distintas
     /// (base para ambivalência genuína após múltiplas experiências contraditórias).
-    pub fn aprender_conceito(&mut self, palavra: &str, valence: f32) -> Vec<Uuid> {
-        let chave = palavra.to_lowercase();
-        let cid = word_to_concept_id(&chave);
+    pub fn aprender_conceito(&mut self, cid: u32, valence: f32) -> Vec<Uuid> {
+        let chave = self.id_to_word.get(&cid).cloned().unwrap_or_else(|| format!("#{:x}", cid));
 
         let populacao: Vec<Uuid> = if let Some(pop) = self.conceito_para_id.get(&cid).cloned() {
             // Conceito já existe — atualiza acesso de toda a população
@@ -984,18 +983,29 @@ impl SwapManager {
         (Vec::new(), None)
     }
 
-    /// Injeta uma lista de pares causais (causa, efeito, peso) como sinapses
-    /// de alta prioridade no swap. Usado na migração do grafo_causal legado.
-    pub fn importar_causal(&mut self, pares: Vec<(String, String, f32)>) {
-        for (causa, efeito, peso) in pares {
-            let pop_c = self.aprender_conceito(&causa, 0.3);
-            let pop_e = self.aprender_conceito(&efeito, 0.3);
-            if let (Some(&pre), Some(&post)) = (pop_c.first(), pop_e.first()) {
+    /// Injeta uma lista de pares causais (causa_id, efeito_id, peso) como sinapses
+    /// de alta prioridade no swap. Versão u32-nativa — conceitos já devem estar aprendidos.
+    pub fn importar_causal(&mut self, pares: Vec<(u32, u32, f32)>) {
+        for (causa_id, efeito_id, peso) in pares {
+            if let (Some(pre), Some(post)) = (
+                self.conceito_para_id.get(&causa_id).and_then(|p| p.first()).copied(),
+                self.conceito_para_id.get(&efeito_id).and_then(|p| p.first()).copied(),
+            ) {
                 let entry = self.sinapses_conceito.entry((pre, post)).or_insert(0.0);
                 *entry = (*entry + peso * 0.5).clamp(0.0, PESO_MAX_CONCEITO);
             }
         }
         self.grafo_dirty = true;
+    }
+
+    /// Versão compatível que aceita strings e converte para u32 internally.
+    /// Usado durante transição — future: remover quando todos os callers usarem u32.
+    pub fn importar_causal_compat(&mut self, pares: Vec<(String, String, f32)>) {
+        use crate::neural_pool::word_to_concept_id;
+        let pares_u32: Vec<(u32, u32, f32)> = pares.into_iter()
+            .map(|(s1, s2, w)| (word_to_concept_id(&s1), word_to_concept_id(&s2), w))
+            .collect();
+        self.importar_causal(pares_u32);
     }
 
     /// Variante u32-nativa de `importar_causal`: conecta dois concept_ids já
@@ -1828,19 +1838,18 @@ impl SwapManager {
         }))
     }
 
-    /// Salva estado para disco (I/O síncrono — usar apenas em contextos não-async).
-    /// Em contexto async, prefira: coletar via serializar_estado_json() + tokio::fs::write.
-    pub fn salvar_estado(&self, caminho: &str) -> std::io::Result<()> {
+    /// Salva estado para disco (assíncrono via tokio).
+    pub async fn salvar_estado(&self, caminho: &str) -> std::io::Result<()> {
         let json = self.serializar_estado_json()?;
         let tmp_path = format!("{}.tmp", caminho);
-        std::fs::write(&tmp_path, &json)?;
-        std::fs::rename(&tmp_path, caminho)?;
+        tokio::fs::write(&tmp_path, &json).await?;
+        tokio::fs::rename(&tmp_path, caminho).await?;
         Ok(())
     }
 
-    /// Restaura o estado semântico a partir do arquivo salvo.
-    pub fn carregar_estado(&mut self, caminho: &str) {
-        let content = match std::fs::read_to_string(caminho) {
+    /// Restaura o estado semântico a partir do arquivo salvo (assíncrono via tokio).
+    pub async fn carregar_estado(&mut self, caminho: &str) {
+        let content = match tokio::fs::read_to_string(caminho).await {
             Ok(c) => c,
             Err(_) => return, // arquivo não existe ainda — normal na primeira execução
         };

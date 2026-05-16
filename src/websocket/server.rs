@@ -723,11 +723,13 @@ fn fase_n1_consolidar(state: &mut crate::websocket::bridge::BrainState) {
     pares.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
     let consolidados = pares.len().min(30);
     if let Ok(mut sw) = state.swap_manager.try_lock() {
-        let causal_pairs: Vec<(String, String, f32)> = pares.into_iter().take(30)
+        let causal_pairs: Vec<(u32, u32, f32)> = pares.into_iter().take(30)
             .filter_map(|((a, b), cnt)| {
-                let wa = sw.id_to_word.get(&a)?.clone();
-                let wb = sw.id_to_word.get(&b)?.clone();
-                Some((wa, wb, (cnt as f32 * 0.02).clamp(0.02, 0.25)))
+                if sw.conceito_para_id.contains_key(&a) && sw.conceito_para_id.contains_key(&b) {
+                    Some((a, b, (cnt as f32 * 0.02).clamp(0.02, 0.25)))
+                } else {
+                    None
+                }
             })
             .collect();
         if !causal_pairs.is_empty() {
@@ -786,7 +788,7 @@ fn fase_n3_rem(state: &mut crate::websocket::bridge::BrainState) {
             // Aplica os pesos reconsolidados de volta ao grafo
             for (a, b, peso, persiste) in resultados {
                 if persiste {
-                    sw.importar_causal(vec![(a, b, peso)]);
+                    sw.importar_causal_compat(vec![(a, b, peso)]);
                 } else {
                     // Remove sinapse apagada por contradição/erosão
                     let pop_a = sw.pop_para_palavra(&a).and_then(|p| p.first()).copied();
@@ -860,7 +862,7 @@ fn fase_n3_rem(state: &mut crate::websocket::bridge::BrainState) {
     }
 
     if let Ok(mut sw) = state.swap_manager.try_lock() {
-        sw.importar_causal(causal_pairs);
+        sw.importar_causal_compat(causal_pairs);
 
         // Transitional closure: connect words sharing common neighbors
         let grafo = sw.grafo_palavras();
@@ -883,7 +885,7 @@ fn fase_n3_rem(state: &mut crate::websocket::bridge::BrainState) {
                 let ja_existe = grafo.get(a).map(|v| v.iter().any(|(w, _)| w == b)).unwrap_or(false);
                 if !ja_existe {
                     let peso = (0.30 + em_comum as f32 * 0.08).clamp(0.30, 0.65);
-                    sw.importar_causal(vec![(a.clone(), b.clone(), peso)]);
+                    sw.importar_causal_compat(vec![(a.clone(), b.clone(), peso)]);
                     novas += 1;
                 }
             }
@@ -1673,7 +1675,9 @@ pub async fn handle_connection(
                                                     let swap_arc_caus = state.swap_manager.clone();
                                                     drop(state);
                                                     let mut sw = swap_arc_caus.lock().await;
-                                                    sw.importar_causal(vec![(c.clone(), e.clone(), 0.65)]);
+                                                    let cc = word_to_concept_id(&c);
+                                                    let ce = word_to_concept_id(&e);
+                                                    sw.importar_causal(vec![(cc, ce, 0.65)]);
                                                     log::debug!("[Causal/chat] {} → {} (sinapse neural)", c, e);
                                                     drop(sw);
                                                     state = brain.lock().await;
@@ -2068,14 +2072,16 @@ pub async fn handle_connection(
                                                 let mut top_arestas: Vec<_> = state.aresta_contagem
                                                     .iter().map(|(k, v)| (*k, *v)).collect();
                                                 top_arestas.sort_by(|a, b| b.1.cmp(&a.1));
-                                                let pares: Vec<(String, String, f32)> = top_arestas
+                                                let pares: Vec<(u32, u32, f32)> = top_arestas
                                                     .iter()
                                                     .take(20)
                                                     .filter_map(|&((id1, id2), cnt)| {
-                                                        let w1 = sw.id_to_word.get(&id1)?.clone();
-                                                        let w2 = sw.id_to_word.get(&id2)?.clone();
-                                                        let peso = (cnt as f32 * 0.01).clamp(0.02, 0.3);
-                                                        Some((w1, w2, peso))
+                                                        if sw.conceito_para_id.contains_key(&id1) && sw.conceito_para_id.contains_key(&id2) {
+                                                            let peso = (cnt as f32 * 0.01).clamp(0.02, 0.3);
+                                                            Some((id1, id2, peso))
+                                                        } else {
+                                                            None
+                                                        }
                                                     })
                                                     .collect();
                                                 if !pares.is_empty() {
@@ -2125,7 +2131,8 @@ pub async fn handle_connection(
                                             .collect();
                                         if let Ok(mut sw) = swap_arc_al2.try_lock() {
                                             for (tok, val) in auto_tokens {
-                                                sw.aprender_conceito(&tok, val);
+                                                let cid = word_to_concept_id(&tok);
+                                                sw.aprender_conceito(cid, val);
                                             }
                                         }
                                         println!("💬 [CHAT] Reply gerado: «{}»", reply);
@@ -2171,12 +2178,14 @@ pub async fn handle_connection(
                                             {
                                                 if let Ok(mut sw) = state.swap_manager.try_lock() {
                                                     let confiaveis = state.hypothesis_engine.hipoteses_confiaveis();
-                                                    let pares: Vec<(String, String, f32)> = confiaveis.iter()
+                                                    let pares: Vec<(u32, u32, f32)> = confiaveis.iter()
                                                         .flat_map(|h| h.premissas.iter()
                                                             .filter_map(|&p| {
-                                                                let wa = sw.id_to_word.get(&p)?.clone();
-                                                                let wc = sw.id_to_word.get(&h.conclusao)?.clone();
-                                                                Some((wa, wc, h.confianca * 0.4))
+                                                                if sw.conceito_para_id.contains_key(&p) && sw.conceito_para_id.contains_key(&h.conclusao) {
+                                                                    Some((p, h.conclusao, h.confianca * 0.4))
+                                                                } else {
+                                                                    None
+                                                                }
                                                             })
                                                             .collect::<Vec<_>>()
                                                         )
@@ -2592,8 +2601,10 @@ pub async fn handle_connection(
                                         drop(state);
                                         if let Ok(mut sw) = swap_arc_al.try_lock() {
                                             for (w1, w2) in audio_pairs {
-                                                sw.aprender_conceito(&w1, 0.1);
-                                                sw.importar_causal(vec![(w1, w2, 0.60)]);
+                                                let c1 = word_to_concept_id(&w1);
+                                                let c2 = word_to_concept_id(&w2);
+                                                sw.aprender_conceito(c1, 0.1);
+                                                sw.importar_causal(vec![(c1, c2, 0.60)]);
                                             }
                                         }
                                         println!("🎧 [AUDIO_LEARN] {} palavras vinculadas (transcript: «{}»)",
@@ -2818,7 +2829,8 @@ pub async fn handle_connection(
                                     if let Ok(mut sw) = swap_arc.try_lock() {
                                         let valence = score * energia_fft.sqrt() * 0.2;
                                         for palavra in &tokens_str {
-                                            sw.aprender_conceito(palavra, valence);
+                                            let cid = word_to_concept_id(palavra);
+                                            sw.aprender_conceito(cid, valence);
                                         }
                                     }
 
@@ -2901,8 +2913,10 @@ pub async fn handle_connection(
                                         drop(state);
                                         if let Ok(mut sw) = swap_arc_vl.try_lock() {
                                             for (w1, w2) in visual_pairs {
-                                                sw.aprender_conceito(&w1, 0.1);
-                                                sw.importar_causal(vec![(w1, w2, 0.55)]);
+                                                let c1 = word_to_concept_id(&w1);
+                                                let c2 = word_to_concept_id(&w2);
+                                                sw.aprender_conceito(c1, 0.1);
+                                                sw.importar_causal(vec![(c1, c2, 0.55)]);
                                             }
                                         }
                                         println!("👁 [VISUAL_LEARN] {} palavras vinculadas ({} pixels, label: «{}»)",
@@ -3354,11 +3368,12 @@ pub async fn handle_connection(
                                     }
                                     state.ultimo_padrao_audio = spike_pat;
 
-                                    // SwapManager: usa a chave do spike como label de conceito
-                                    // (será trocado por u32 ID no Sprint 2). O aprendizado real
-                                    // é feito via padrão de spike, não via texto bruto.
+                                    // SwapManager: aprendizado via spike hash (u32 native)
+                                    // Chave é derivada do padrão de spike, não de texto.
                                     if let Ok(mut sw) = state.swap_manager.try_lock() {
-                                        sw.aprender_conceito(&chave, valence * 0.3);
+                                        let h = spike_pat.iter().fold(0u64, |a, &b| a.wrapping_mul(0x100000001b3).wrapping_add(b));
+                                        let cid = (h ^ (h >> 32)) as u32;
+                                        sw.aprender_conceito(cid, valence * 0.3);
                                     }
 
                                     // Registra pensamento no ego (display only)
@@ -3723,11 +3738,13 @@ pub async fn handle_connection(
                                         let swap_arc_assoc = brain.lock().await.swap_manager.clone();
                                         brain.lock().await.ws_atividade = 1.0;
                                         let n_assoc = if let Ok(mut sw) = swap_arc_assoc.try_lock() {
-                                            sw.aprender_conceito(&w1, 0.0);
-                                            sw.aprender_conceito(&w2, 0.0);
+                                            let c1 = word_to_concept_id(&w1);
+                                            let c2 = word_to_concept_id(&w2);
+                                            sw.aprender_conceito(c1, 0.0);
+                                            sw.aprender_conceito(c2, 0.0);
                                             sw.importar_causal(vec![
-                                                (w1.clone(), w2.clone(), weight),
-                                                (w2.clone(), w1.clone(), weight * 0.6),
+                                                (c1, c2, weight),
+                                                (c2, c1, weight * 0.6),
                                             ]);
                                             sw.sinapses_conceito.len()
                                         } else { 0 };
@@ -3800,7 +3817,8 @@ pub async fn handle_connection(
                                                 let mut sw = swap_arc_lf.lock().await;
                                                 // Valência base: neutro para texto de treino
                                                 for palavra in &palavras {
-                                                    sw.aprender_conceito(palavra, 0.1);
+                                                    let cid = word_to_concept_id(palavra);
+                                                    sw.aprender_conceito(cid, 0.1);
                                                 }
 
                                                 // Pares causais → sinapses de alta prioridade
@@ -3818,7 +3836,9 @@ pub async fn handle_connection(
                                                         .cloned();
                                                     if let (Some(c), Some(e)) = (causa, efeito) {
                                                         // Sinapse causal com peso alto (1.5×) para priorizar no walk
-                                                        sw.importar_causal(vec![(c.clone(), e.clone(), 0.8)]);
+                                                        let cc = word_to_concept_id(&c);
+                                                        let ce = word_to_concept_id(&e);
+                                                        sw.importar_causal(vec![(cc, ce, 0.8)]);
                                                         log::debug!("[Causal] {} → {} (sinapse neural)", c, e);
                                                     }
                                                 }
@@ -3905,7 +3925,7 @@ pub async fn handle_connection(
                                         Ok(_) => {
                                             let swap_arc_rb = brain.lock().await.swap_manager.clone();
                                             if let Ok(mut sw) = swap_arc_rb.try_lock() {
-                                                sw.carregar_estado(&path);
+                                                sw.carregar_estado(&path).await;
                                             }
                                             let (n_grafo, n_vocab) = if let Ok(sw) = swap_arc_rb.try_lock() {
                                                 (sw.sinapses_conceito.len(), sw.conceito_para_id.len())
@@ -4072,8 +4092,12 @@ pub async fn handle_connection(
                                             gr_pairs.push((l1.clone(), l2.clone(), 0.90));
                                         }
                                         let n_nos = if let Ok(mut sw) = swap_arc_gr.try_lock() {
-                                            sw.aprender_conceito(&grafema, 0.5);
-                                            sw.importar_causal(gr_pairs);
+                                            let cid = word_to_concept_id(&grafema);
+                                            sw.aprender_conceito(cid, 0.5);
+                                            let gr_pairs_u32: Vec<(u32, u32, f32)> = gr_pairs.iter()
+                                                .map(|(s1, s2, w)| (word_to_concept_id(s1), word_to_concept_id(s2), *w))
+                                                .collect();
+                                            sw.importar_causal(gr_pairs_u32);
                                             sw.sinapses_conceito.len()
                                         } else { 0 };
                                         log::debug!("[FONETICO] grounding '{}' letras={:?} sinapses={} audio_ativo={}",

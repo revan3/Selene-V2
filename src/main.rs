@@ -324,7 +324,7 @@ async fn async_main() {
     ));
     // Restaura pesos sinápticos STDP da sessão anterior (se existir)
     if let Ok(mut sw) = swap_manager.try_lock() {
-        sw.carregar_estado(&get_state_path("selene_swap_state.json"));
+        sw.carregar_estado(&get_state_path("selene_swap_state.json")).await;
         println!("💾 SwapManager restaurado: {} conceitos | {} sinapses",
             sw.conceito_para_id.len(), sw.sinapses_conceito.len());
     }
@@ -370,7 +370,7 @@ async fn async_main() {
     // Restaura estado semântico do swap_manager (palavra_para_id + sinapses_conceito)
     {
         let mut swap = swap_manager.lock().await;
-        swap.carregar_estado(&get_state_path("selene_swap_state.json"));
+        swap.carregar_estado(&get_state_path("selene_swap_state.json")).await;
         // Garante que todos os 55 neurônios primitivos existam (idempotente).
         // Deve ser chamado DEPOIS de carregar_estado para não duplicar UUIDs
         // que foram persistidos em sessões anteriores.
@@ -785,7 +785,8 @@ async fn async_main() {
                             if let Ok(mut sw) = swap_arc.try_lock() {
                                 // Valência neutra para palavras ouvidas mas não reconhecidas
                                 let valence = sig.energia * 0.1;
-                                sw.aprender_conceito("_audio_novo", valence);
+                                let cid = word_to_concept_id("_audio_novo");
+                                sw.aprender_conceito(cid, valence);
                             };
                         }
                     }
@@ -1066,15 +1067,14 @@ async fn async_main() {
                 if let Ok(mut sw) = swap_manager.try_lock() {
                     for val in &placeholder_valences {
                         for &cid in cids_ativas.iter() {
-                            if let Some(palavra) = sw.id_to_word.get(&cid).cloned() {
-                                if sw.pop_para_palavra(&palavra).is_some() {
-                                    sw.aprender_conceito(&palavra, val * 0.10);
-                                }
+                            if sw.conceito_para_id.contains_key(&cid) {
+                                sw.aprender_conceito(cid, val * 0.10);
                             }
                         }
                     }
                     for (simbolo, valence) in &real_simbolos {
-                        sw.aprender_conceito(simbolo, *valence);
+                        let cid = word_to_concept_id(simbolo);
+                        sw.aprender_conceito(cid, *valence);
                     }
                 }
             }
@@ -1125,8 +1125,8 @@ async fn async_main() {
                     if let Ok(mut sw) = swap_manager.try_lock() {
                         // Aprende conceitos co-ativos — STDP sequencial entre pares do contexto
                         for &cid in ctx_ids.iter().take(6) {
-                            if let Some(palavra) = sw.id_to_word.get(&cid).cloned() {
-                                sw.aprender_conceito(&palavra, valence_hippo * emotion.signum());
+                            if sw.conceito_para_id.contains_key(&cid) {
+                                sw.aprender_conceito(cid, valence_hippo * emotion.signum());
                             }
                         }
                         // P1-B: consolida conexoes_hippo como pares causais no swap.
@@ -1144,7 +1144,7 @@ async fn async_main() {
                             })
                             .collect();
                         if !pares.is_empty() {
-                            sw.importar_causal(pares);
+                            sw.importar_causal_compat(pares);
                             log::debug!("[Hippo→Swap] {} pares causais consolidados (emocao={:.2})",
                                 conexoes_hippo.len(), emotion);
                         }
@@ -1394,7 +1394,7 @@ async fn async_main() {
                             .map(|(a, b)| (a.clone(), b.clone(), -(ltd_boost * 0.2).clamp(0.02, 0.3)))
                             .collect();
                         if !pares_penalizar.is_empty() {
-                            sw.importar_causal(pares_penalizar);
+                            sw.importar_causal_compat(pares_penalizar);
                         }
                     }
                 }
@@ -1408,7 +1408,7 @@ async fn async_main() {
                             let pares_causal: Vec<(String, String, f32)> = pares_valor.iter()
                                 .map(|(w, v)| (w.clone(), w.clone(), (v * 0.1).clamp(-0.3, 0.3)))
                                 .collect();
-                            sw.importar_causal(pares_causal);
+                            sw.importar_causal_compat(pares_causal);
                         }
                     }
                 }
@@ -1578,7 +1578,7 @@ async fn async_main() {
                                 })
                                 .collect();
                             if !pares_swap.is_empty() {
-                                sw.importar_causal(pares_swap.clone());
+                                sw.importar_causal_compat(pares_swap.clone());
                                 log::debug!("[Hebbian→Swap] {} pares exportados do temporal", pares_swap.len());
                             }
                         } // if ctx.len() >= 2

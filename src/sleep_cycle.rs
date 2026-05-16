@@ -297,7 +297,10 @@ impl CicloSono {
                             if a != b && a.len() >= 2 && b.len() >= 2 {
                                 // arc reverso (recompensa → causa) com peso reduzido
                                 if let Ok(mut sw) = bs.swap_manager.try_lock() {
-                                    sw.importar_causal(vec![(b.clone(), a.clone(), 0.05)]);
+                                    use crate::neural_pool::word_to_concept_id;
+                                    let cb = word_to_concept_id(b);
+                                    let ca = word_to_concept_id(a);
+                                    sw.importar_causal(vec![(cb, ca, 0.05)]);
                                 }
                                 n_rev += 1;
                             }

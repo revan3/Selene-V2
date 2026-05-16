@@ -1002,9 +1002,9 @@ fn test_grounding_rem_replay() -> usize {
     // Pré-popula grafo com associações
     if let Ok(mut sw) = bs.swap_manager.try_lock() {
         sw.importar_causal(vec![
-            ("amor".to_string(), "carinho".to_string(), 0.5),
+            (word_to_concept_id("amor"), word_to_concept_id("carinho"), 0.5),
         ]);
-        sw.aprender_conceito("carinho", 0.3);
+        sw.aprender_conceito(word_to_concept_id("carinho"), 0.3);
     }
 
     // Injeta evento episódico rico com padrão visual ativo
