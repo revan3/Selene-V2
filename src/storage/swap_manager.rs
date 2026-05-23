@@ -125,7 +125,9 @@ pub const SWAP_POOL_PATH: &str = "F:/selene_pool_swap/";
 /// Chamada a cada 1000 ticks do loop 200Hz → timer sobe 1000/call.
 const TICK_BATCH_SIZE: u64 = 1000;
 /// Máx de neurônios por lote de escrita no NVMe por ciclo de evicção.
-const NVME_LOTE_MAX: usize = 200;
+/// Aumentado de 200 (V3.6) para conter OOM de runtime — drena a RAM
+/// muito mais rápido. Neurônios paginados são restauráveis do NVMe.
+pub const NVME_LOTE_MAX: usize = 5000;
 
 pub struct SwapManager {
     // RAM: neurônios ativos
@@ -534,6 +536,37 @@ impl SwapManager {
             limite_fisico: (self.max_ram_neurons as f32 * RAM_PERCENT_FOR_NEURONS) as usize,
             limite_biologico: LIMITE_BIOLOGICO,
         }
+    }
+
+    /// Estimativa read-only de footprint de RAM por estrutura.
+    /// Lower bound (ignora capacidade extra de HashMap/Vec e sub-structs Box
+    /// de NeuronioHibrido), mas suficiente para identificar o hog dominante.
+    /// Logado a cada ciclo de evicção para revelar neurônios vs grafo.
+    pub fn estimar_memoria(&self) -> String {
+        let sz_n = std::mem::size_of::<crate::synaptic_core::NeuronioHibrido>();
+        let b_neuron = (self.ram.len() + self.ssd.len()) * sz_n;
+        let b_sinapses = self.sinapses_conceito.len()
+            * (std::mem::size_of::<(Uuid, Uuid)>() + 4 + 16);
+        let b_emb = self.embeddings.len() * (4 + 32 * 4);
+        let b_concept = self.conceito_para_id.values()
+            .map(|v| 4 + v.len() * 16).sum::<usize>();
+        let b_val = self.valencia_neuronio.len() * (16 + 4);
+        let b_corr = self.correntes.len() * (16 + 4);
+        let b_grafo = self.grafo_cache.as_ref()
+            .map(|g| g.values().map(|v| v.len() * 8).sum::<usize>())
+            .unwrap_or(0);
+        let mb = |b: usize| b as f64 / 1_048_576.0;
+        format!(
+            "[MEM] ram={} ssd={} nvme={} | neurônios≈{:.1}MB sinapses_conceito={}≈{:.1}MB \
+             grafo_cache≈{:.1}MB embeddings={}≈{:.1}MB conceito_map≈{:.1}MB \
+             valência≈{:.1}MB correntes≈{:.1}MB",
+            self.ram.len(), self.ssd.len(), self.nvme_index.len(),
+            mb(b_neuron),
+            self.sinapses_conceito.len(), mb(b_sinapses),
+            mb(b_grafo),
+            self.embeddings.len(), mb(b_emb),
+            mb(b_concept), mb(b_val), mb(b_corr),
+        )
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1690,13 +1723,13 @@ fn tipo_para_regiao(regiao: &RegionType) -> TipoNeuronal {
 impl SwapManager {
     /// Arquiva um neurônio do SSD para o cold storage em disco (D:/Selene_Archive/).
     /// Cria o diretório se não existir.
-    pub fn arquivar_para_hdd(&mut self, id: &Uuid) -> std::io::Result<()> {
+    pub async fn arquivar_para_hdd(&mut self, id: &Uuid) -> std::io::Result<()> {
         if let Some(neuronio) = self.ssd.remove(id) {
             let dir = "D:/Selene_Archive";
-            std::fs::create_dir_all(dir)?;
+            tokio::fs::create_dir_all(dir).await?;
             let path = format!("{}/{}.json", dir, id);
             let dados = serde_json::to_string(&neuronio).unwrap_or_default();
-            std::fs::write(&path, dados)?;
+            tokio::fs::write(&path, dados).await?;
             log::debug!("[ColdStorage] Neurônio {} arquivado → {}", id, path);
         }
         Ok(())
@@ -1704,9 +1737,9 @@ impl SwapManager {
 
     /// Restaura um neurônio do cold storage para a RAM.
     /// Retorna true se encontrado e carregado com sucesso.
-    pub fn restaurar_do_hdd(&mut self, id: &Uuid) -> bool {
+    pub async fn restaurar_do_hdd(&mut self, id: &Uuid) -> bool {
         let path = format!("D:/Selene_Archive/{}.json", id);
-        match std::fs::read_to_string(&path) {
+        match tokio::fs::read_to_string(&path).await {
             Ok(dados) => {
                 match serde_json::from_str::<NeuronioHibrido>(&dados) {
                     Ok(mut neuronio) => {
@@ -1973,5 +2006,57 @@ impl SwapManager {
             "🧠 [SwapState] Restaurado: {} conceituais | {} fonemas | {} visuais | {} sinapses",
             n_palavras, n_fonemas, n_visuais, n_sinapses
         );
+
+        // ── DSU startup diagnostic ──────────────────────────────────────────
+        // Conta componentes conectados no grafo semântico recém-carregado.
+        // Fragmentação alta indica corrupção de estado ou bug de serialização.
+        // Operação O(V+E) one-shot, só executa no carregamento.
+        if !self.sinapses_conceito.is_empty() {
+            let mut parent: HashMap<Uuid, Uuid> = HashMap::new();
+            // find iterativo com path compression (evita stack overflow em grafos grandes)
+            fn find_iter(parent: &mut HashMap<Uuid, Uuid>, x: Uuid) -> Uuid {
+                let mut atual = x;
+                loop {
+                    let p = *parent.entry(atual).or_insert(atual);
+                    if p == atual { break atual; }
+                    let gp = *parent.entry(p).or_insert(p);
+                    parent.insert(atual, gp); // path compression
+                    atual = gp;
+                }
+            }
+            for ((pre, post), _w) in &self.sinapses_conceito {
+                let ra = find_iter(&mut parent, *pre);
+                let rb = find_iter(&mut parent, *post);
+                if ra != rb { parent.insert(ra, rb); }
+            }
+            // Conta raízes únicas entre todos os nós que aparecem em arestas
+            let mut nodes: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+            for (a, b) in self.sinapses_conceito.keys() {
+                nodes.insert(*a);
+                nodes.insert(*b);
+            }
+            let n_nodes = nodes.len();
+            let raizes: std::collections::HashSet<Uuid> = nodes.into_iter()
+                .map(|id| find_iter(&mut parent, id))
+                .collect();
+            let n_componentes = raizes.len();
+            let limite_aviso = (n_palavras / 10).max(5);
+            if n_componentes > limite_aviso {
+                log::warn!(
+                    "[DSU-STARTUP] grafo fragmentado: {} componentes para {} nós \
+                     / {} conceitos — possível corrupção de estado",
+                    n_componentes, n_nodes, n_palavras
+                );
+                println!(
+                    "⚠️  [DSU-STARTUP] grafo fragmentado: {} componentes / {} conceitos",
+                    n_componentes, n_palavras
+                );
+            } else {
+                println!(
+                    "✓ [DSU-STARTUP] grafo íntegro: {} componente(s) / {} nós / {} conceitos",
+                    n_componentes, n_nodes, n_palavras
+                );
+            }
+        }
     }
 }

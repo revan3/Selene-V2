@@ -39,7 +39,7 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 use crate::synaptic_core::{CamadaHibrida, NeuronioHibrido};
@@ -179,9 +179,61 @@ struct Registro {
 // CHUNKING ENGINE
 // =============================================================================
 
+/// Union-Find (DSU) leve sobre índices de neurônios.
+/// Une neurônios que participam de chunks co-ativados — habilita queries
+/// O(α(n)) sobre "estes dois neurônios estão no mesmo cluster funcional?"
+/// e abre caminho para chunking hierárquico (clusters de clusters).
+pub struct ChunkDsu {
+    parent: HashMap<usize, usize>,
+    rank:   HashMap<usize, usize>,
+}
+
+impl ChunkDsu {
+    pub fn new() -> Self {
+        Self { parent: HashMap::new(), rank: HashMap::new() }
+    }
+
+    pub fn find(&mut self, x: usize) -> usize {
+        let p = *self.parent.entry(x).or_insert(x);
+        if p != x {
+            let root = self.find(p);
+            self.parent.insert(x, root); // path compression
+            root
+        } else { x }
+    }
+
+    pub fn union(&mut self, a: usize, b: usize) {
+        let (ra, rb) = (self.find(a), self.find(b));
+        if ra == rb { return; }
+        let rank_a = *self.rank.get(&ra).unwrap_or(&0);
+        let rank_b = *self.rank.get(&rb).unwrap_or(&0);
+        match rank_a.cmp(&rank_b) {
+            std::cmp::Ordering::Less    => { self.parent.insert(ra, rb); }
+            std::cmp::Ordering::Greater => { self.parent.insert(rb, ra); }
+            std::cmp::Ordering::Equal   => {
+                self.parent.insert(rb, ra);
+                *self.rank.entry(ra).or_insert(0) += 1;
+            }
+        }
+    }
+
+    /// Conta raízes únicas — número de clusters funcionais disjuntos.
+    pub fn n_clusters(&mut self) -> usize {
+        let nodes: Vec<usize> = self.parent.keys().copied().collect();
+        let raizes: HashSet<usize> = nodes.into_iter()
+            .map(|n| self.find(n))
+            .collect();
+        raizes.len()
+    }
+}
+
 pub struct ChunkingEngine {
     registros: HashMap<String, Registro>,
     pub chunks: Vec<Chunk>,
+    /// Índice O(1) para `ja_existe()` — espelha `chunks[*].simbolo`/chave canônica.
+    chaves_set: HashSet<String>,
+    /// DSU sobre índices de neurônios — clusters de co-ativação.
+    dsu: ChunkDsu,
     regiao: RegionType,
     tick_counter: u64,
 }
@@ -191,9 +243,27 @@ impl ChunkingEngine {
         Self {
             registros: HashMap::new(),
             chunks: Vec::new(),
+            chaves_set: HashSet::new(),
+            dsu: ChunkDsu::new(),
             regiao,
             tick_counter: 0,
         }
+    }
+
+    /// Retorna o cluster (raiz DSU) ao qual o neurônio pertence.
+    /// Útil para "este novo spike pertence a um chunk já conhecido?"
+    pub fn cluster_of(&mut self, neuronio_idx: usize) -> usize {
+        self.dsu.find(neuronio_idx)
+    }
+
+    /// Total de clusters funcionais disjuntos atualmente.
+    pub fn n_clusters(&mut self) -> usize {
+        self.dsu.n_clusters()
+    }
+
+    /// Testa se dois neurônios estão no mesmo cluster (mesma raiz DSU).
+    pub fn mesmo_cluster(&mut self, a: usize, b: usize) -> bool {
+        self.dsu.find(a) == self.dsu.find(b)
     }
 
     // -------------------------------------------------------------------------
@@ -281,12 +351,16 @@ impl ChunkingEngine {
         // Limpeza periódica
         if self.tick_counter % 1000 == 0 {
             self.registros.retain(|_, r| r.trace > 0.05);
+            // Re-sincroniza o índice O(1) com o vetor real
+            // (chunks podem ter sido removidos por outras rotinas)
+            self.chaves_set = self.chunks.iter()
+                .map(|c| Self::chave(&c.indices))
+                .collect();
         }
 
-        // Verifica emergência
+        // Verifica emergência — O(1) via HashSet (antes: O(n) iterando Vec<Chunk>)
         let mut novos = Vec::new();
-        let ja_existe = self.chunks.iter()
-            .any(|c| Self::chave(&c.indices) == chave);
+        let ja_existe = self.chaves_set.contains(&chave);
 
         if contagem >= CHUNK_THRESHOLD
             && forca_acum >= TRACE_MINIMO_CHUNK
@@ -307,6 +381,13 @@ impl ChunkingEngine {
                 criado_em: Instant::now(),
             };
 
+            // Une todos os neurônios deste chunk no DSU (cluster funcional)
+            if let Some(&primeiro) = ativos.first() {
+                for &idx in &ativos[1..] {
+                    self.dsu.union(primeiro, idx);
+                }
+            }
+            self.chaves_set.insert(chave.clone());
             self.chunks.push(chunk.clone());
             novos.push(chunk);
         }

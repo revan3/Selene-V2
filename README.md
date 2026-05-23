@@ -1,14 +1,15 @@
-# Selene Brain V4.0 — Neurônio Híbrido Multicompartimental Bio-Inspirado
+# Selene Brain V4.1 — Resiliência + DSU sobre V4 Multicompartimental
 
-> **Simulação de cérebro artificial em Rust com neurônio V4 multicompartimental (5 compartimentos + metabolismo ATP + [K⁺]o dinâmico + acoplamento ephaptic), 17 tipos Izhikevich, pool neural 4096-bloco FP4–FP32, codificação localista, STDP 3-fatores, 14 regiões cerebrais, 11 neurotransmissores dinâmicos, processamento interno 100% em frequência/u32 (sem texto no núcleo neural), e motor de hipóteses preditivo.**
+> **Simulação de cérebro artificial em Rust com neurônio V4 multicompartimental (5 compartimentos + metabolismo ATP + [K⁺]o dinâmico + acoplamento ephaptic), 17 tipos Izhikevich, pool neural 4096-bloco FP4–FP32, codificação localista, STDP 3-fatores, 14 regiões cerebrais, 11 neurotransmissores dinâmicos, processamento interno 100% em frequência/u32 (sem texto no núcleo neural), motor de hipóteses preditivo, watchdog + invariants do loop 200Hz, e estrutura Union-Find (DSU) no `ChunkingEngine` e no diagnóstico de grafo do `SwapManager`.**
 
 ---
 
 ## Índice
 
 1. [Visão Geral](#visão-geral)
-2. [Estado Atual — V4.0](#estado-atual--v40)
-3. [V4 — Neurônio Híbrido Multicompartimental](#v4--neurônio-híbrido-multicompartimental)
+2. [Estado Atual — V4.1](#estado-atual--v41)
+3. [V4.1 — Resiliência + DSU](#v41--resiliência--dsu)
+4. [V4 — Neurônio Híbrido Multicompartimental](#v4--neurônio-híbrido-multicompartimental)
 4. [Migração Texto→Frequência (Sprints 1–4)](#migração-textofrequência-sprints-14)
 5. [V3.5 — Melhorias Biológicas](#v35--melhorias-biológicas)
 6. [Arquitetura do Sistema](#arquitetura-do-sistema)
@@ -52,7 +53,7 @@ Microfone  → FFT coclear → SpikePattern → u32 concept_ids → núcleo neur
 
 ---
 
-## Estado Atual — V4.0
+## Estado Atual — V4.1
 
 ### Testes
 
@@ -66,6 +67,12 @@ Sistema completamente validado:
   - lib unit tests:            103/103 ✅  (inclui voices.rs Multi-Self — 2 falhas corrigidas)
 ```
 
+> **Auditoria V4.1 (2026-05-22):** watchdog + invariants no loop 200Hz, DSU
+> (Union-Find) no `ChunkingEngine` para clusters O(α(n)) + `chaves_set` O(1),
+> diagnostic DSU de componentes conectados no startup do `SwapManager`, I/O
+> assíncrono completo no cold storage (`arquivar_para_hdd`/`restaurar_do_hdd`
+> 100% `tokio::fs`).
+>
 > **Auditoria texto→u32 (2026-05-16):** todo caminho de processamento neural —
 > hot path 200Hz, ciclos de pensamento (Eternal Hole), consolidação onírica/sono
 > N3, `treinar_semantico`, hipóteses e `frontal_goal_words` — opera 100% em
@@ -102,7 +109,107 @@ Sistema completamente validado:
 | Pool neural 4096-bloco FP4–FP32 (V3.2) | ✅ |
 | WebSocket heartbeat + Message ID + Thinking event | ✅ V3.2 |
 | GPU (wgpu, feature "gpu") | ✅ opcional |
+| **Watchdog `AtomicU64` no loop 200Hz** | ✅ V4.1 |
+| **Invariants no save cycle (vocab/edges)** | ✅ V4.1 |
+| **`ChunkDsu` — Union-Find no `ChunkingEngine`** | ✅ V4.1 |
+| **`chaves_set` — `ja_existe()` em O(1)** | ✅ V4.1 |
+| **DSU startup diagnostic — componentes conectados** | ✅ V4.1 |
+| **`arquivar_para_hdd`/`restaurar_do_hdd` 100% `tokio::fs`** | ✅ V4.1 |
 | Fase 3 (brain_zones V3, HNSW, ToM) | ⏳ pendente |
+
+---
+
+## V4.1 — Resiliência + DSU
+
+Auditoria 2026-05-22 adicionou camada de resiliência sobre o V4 e introduziu
+Union-Find (DSU / Disjoint Set Union) em dois pontos de impacto real.
+
+### Watchdog do loop 200Hz (`main.rs`)
+
+```rust
+static LOOP_HEARTBEAT: AtomicU64 = AtomicU64::new(0);
+
+// No bloco de telemetria (step % 500):
+LOOP_HEARTBEAT.store(step, Ordering::Relaxed);
+
+// Task paralela (5s):
+let cur = LOOP_HEARTBEAT.load(Ordering::Relaxed);
+if cur == last && last > 0 {
+    log::error!("[WATCHDOG] loop neural parado há >5s (step={cur})");
+}
+```
+
+Detecta deadlock, panic não capturado, ou stall por I/O síncrono acidental.
+Custo: 1 store atômico a cada 500 steps + 1 load a cada 5s.
+
+### Invariants no save cycle (`main.rs`)
+
+Antes de chamar `ontogeny.tick(vocab_n, edges_n, ...)`:
+
+| Condição (`step > N`) | Mensagem |
+|----------------------|---------|
+| `vocab_n == 0 && step > 10_000` | `[INVARIANTE] possível lock starvation` |
+| `edges_n == 0 && step > 20_000` | `[INVARIANTE] grafo pode estar desconexo` |
+| `vocab_n > 0 && edges_n == 0 && step > 15_000` | `[INVARIANTE] sinapses não estão sendo criadas` |
+
+Detecta a exata classe de bug que custou horas de debug no incidente
+2026-05-17 ("Neonatal travada para sempre" — `ontogeny.tick(0,0,...)`
+zerando métricas quando o swap estava locked).
+
+### `ChunkDsu` — Union-Find em `chunking.rs`
+
+```rust
+pub struct ChunkDsu {
+    parent: HashMap<usize, usize>,  // path compression
+    rank:   HashMap<usize, usize>,  // union by rank
+}
+
+// API pública do ChunkingEngine:
+pub fn cluster_of(&mut self, neuronio_idx: usize) -> usize;
+pub fn n_clusters(&mut self) -> usize;
+pub fn mesmo_cluster(&mut self, a: usize, b: usize) -> bool;
+```
+
+A cada chunk emergido, todos os neurônios componentes são unidos no DSU.
+Query "estes dois neurônios participam de chunks que se sobrepõem
+transitivamente?" responde em **O(α(n))** ≈ O(1) amortizado (Ackermann
+inversa).
+
+Adicionalmente, `chaves_set: HashSet<String>` substitui a iteração linear
+sobre `Vec<Chunk>` em `ja_existe()` — agora O(1).
+
+**Por que NÃO usar DSU para causalidade STDP:** causalidade é direcional
+(`t_pre < t_post`). Union-Find é não-direcional — `union(A,B)` apaga a
+distinção entre `A→B` e `B→A`. Causalidade direcional permanece no grafo
+dirigido `sinapses_conceito: HashMap<(Uuid,Uuid),f32>`. DSU só atua sobre
+relações de **co-pertencimento** (clusters), não de causa.
+
+### DSU diagnostic no startup (`swap_manager.rs`)
+
+Em `carregar_estado()`, após reconstruir `sinapses_conceito`:
+
+```
+✓ [DSU-STARTUP] grafo íntegro: N componente(s) / M nós / K conceitos
+  (ou)
+⚠ [DSU-STARTUP] grafo fragmentado: N componentes para M nós — possível corrupção
+```
+
+Operação O(V+E) one-shot. Alerta quando `n_componentes > max(n_conceitos/10, 5)`
+— detecta corrupção de schema, edição manual do JSON ou save cycle interrompido
+no meio.
+
+### Sprint 0: `tokio::fs` no cold storage
+
+`arquivar_para_hdd` e `restaurar_do_hdd` agora são `async fn` com
+`tokio::fs::*` — fecha a auditoria I/O assíncrono do BUG 1 original
+(sincronia bloqueando o executor Tokio).
+
+### Itens deliberadamente descartados
+
+- **Checksums JSON**: `salvar_estado` já usa rename atômico (`.tmp` → final);
+  checksum só protegeria contra corrupção física de disco (raro demais)
+- **DSU safe pruning**: nenhuma evidência de fragmentação em produção;
+  bridge detection incremental tem complexidade alta sem ganho comprovado
 
 ---
 

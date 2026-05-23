@@ -149,6 +149,10 @@ fn calcular_max_neurons() -> usize {
 // Track whether timeBeginPeriod was successfully called
 static TIME_PERIOD_SET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+// Heartbeat do loop neural 200Hz — detecta stall (deadlock/panic não capturado).
+// Atualizado em step%200; watchdog task verifica a cada 5s.
+static LOOP_HEARTBEAT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 // ================== ESTADO PERSISTIDO - Caminhos ==================
 /// Construir caminho para arquivo de estado, permitindo override via env var
 fn get_state_path(filename: &str) -> String {
@@ -356,6 +360,22 @@ async fn async_main() {
                 // vazio intencional
             }
             log::debug!("Sleep manager heart-beat");
+        }
+    });
+
+    // Watchdog do loop 200Hz: lê LOOP_HEARTBEAT a cada 5s. Se valor não mudou
+    // (e já foi inicializado), o loop neural está parado — alerta no log.
+    tokio::spawn(async move {
+        let mut iv = tokio::time::interval(Duration::from_secs(5));
+        let mut last: u64 = 0;
+        loop {
+            iv.tick().await;
+            let cur = LOOP_HEARTBEAT.load(std::sync::atomic::Ordering::Relaxed);
+            if cur == last && last > 0 {
+                log::error!("[WATCHDOG] loop neural parado há >5s (step={})", cur);
+                eprintln!("⚠️  [WATCHDOG] loop neural parado há >5s (step={})", cur);
+            }
+            last = cur;
         }
     });
 
@@ -1463,16 +1483,24 @@ async fn async_main() {
                 }
             }
 
-            // V3.6 — Ciclo de evicção NVMe a cada 20.000 ticks (~100s @ 200Hz).
+            // Ciclo de evicção NVMe a cada 4.000 ticks (~20s @ 200Hz).
+            // Janela anti-skip de 5 ticks: se o try_lock falhar no tick exato
+            // (lock quente no aprendizado pesado), reattempta nos 4 ticks
+            // seguintes em vez de pular o ciclo inteiro (~20s perdidos).
             // Fase 1 (dentro do lock): move Dormant→SSD, prepara lote para disco.
             // Fase 2 (fora do lock):   escreve atomicamente (write+rename) sem bloquear cpal.
-            if step % 20_000 == 0 && step > 0 {
+            if step % 4_000 < 5 && step > 0 {
                 let (lote_nvme, swap_path_clone) = if let Ok(mut sw) = swap_manager.try_lock() {
                     let n_mov = sw.evicir_dormentes_para_ssd();
-                    let lote  = sw.preparar_lote_nvme(200);
+                    let lote  = sw.preparar_lote_nvme(storage::swap_manager::NVME_LOTE_MAX);
                     let path  = sw.swap_path.clone();
                     if n_mov > 0 || !lote.is_empty() {
                         log::info!("[NVMe] Ciclo evicção: {}→SSD, {}→NVMe", n_mov, lote.len());
+                    }
+                    // Telemetria de memória: 1x por ciclo (no tick exato, sem spam
+                    // pela janela anti-skip). Revela neurônios vs grafo como hog.
+                    if step % 4_000 == 0 {
+                        log::info!("{}", sw.estimar_memoria());
                     }
                     (lote, path)
                 } else {
@@ -2203,6 +2231,7 @@ async fn async_main() {
                     && n.last_spike_ms >= (current_time * 1000.0) - 500.0)
                 .count();
             neuronios_ativos_handle.store(spikes_vivos, std::sync::atomic::Ordering::Relaxed);
+            LOOP_HEARTBEAT.store(step, std::sync::atomic::Ordering::Relaxed);
             let (ram_cache, ram_gb) = swap_manager.try_lock()
                 .map(|sw| (sw.ram_count(), 0.0f32))
                 .unwrap_or((0, 0.0));
@@ -2349,15 +2378,38 @@ async fn async_main() {
 
             // ── Atualiza e salva métricas de ontogenia ───────────────────────────
             {
-                let (vocab_n, edges_n) = if let Ok(mut sw) = swap_manager.try_lock() {
-                    let v = sw.conceito_para_id.len();
-                    let e: usize = sw.sinapses_conceito.len();
-                    (v, e)
-                } else { (0, 0) };
-                let progressou = if let Ok(mut bs) = brain_state.try_lock() {
-                    let rpe = bs.ultimo_rpe;
-                    bs.ontogeny.tick(vocab_n, edges_n, Some(rpe), None)
-                } else { false };
+                // Só atualiza ontogenia se conseguir LER o swap. Se o lock
+                // está contencioso (chat segurando durante treino pesado),
+                // PULA este ciclo — nunca passar (0,0), pois ontogeny.tick()
+                // sobrescreve incondicionalmente e zeraria vocab/edges,
+                // travando a Selene em Neonatal para sempre.
+                let metricas_swap = swap_manager.try_lock().ok().map(|sw| {
+                    (sw.conceito_para_id.len(), sw.sinapses_conceito.len())
+                });
+                // Invariants: detecta classes de bug silenciosas que custaram horas
+                // de debug (ex: incidente 2026-05-17 — vocab=0 / Neonatal travada).
+                if let Some((vocab_n, edges_n)) = metricas_swap {
+                    if vocab_n == 0 && step > 10_000 {
+                        log::warn!("[INVARIANTE] vocab=0 em step={} — possível lock \
+                                    starvation ou reset não intencional", step);
+                    }
+                    if edges_n == 0 && step > 20_000 {
+                        log::warn!("[INVARIANTE] edges=0 em step={} — grafo pode \
+                                    estar desconexo", step);
+                    }
+                    if vocab_n > 0 && edges_n == 0 && step > 15_000 {
+                        log::warn!("[INVARIANTE] vocab={} mas edges=0 — sinapses \
+                                    não estão sendo criadas", vocab_n);
+                    }
+                }
+                let progressou = if let Some((vocab_n, edges_n)) = metricas_swap {
+                    if let Ok(mut bs) = brain_state.try_lock() {
+                        let rpe = bs.ultimo_rpe;
+                        bs.ontogeny.tick(vocab_n, edges_n, Some(rpe), None)
+                    } else { false }
+                } else {
+                    false  // swap indisponível — métricas preservadas
+                };
                 if let Ok(bs) = brain_state.try_lock() {
                     let onto = bs.ontogeny.clone();
                     // Spawn async save to avoid blocking the 200Hz loop
