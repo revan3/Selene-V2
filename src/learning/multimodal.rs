@@ -86,6 +86,14 @@ impl ConvergenciaMultimodal {
         let cong_av = cosseno_sim(&self.pred_visual, &vis);
         self.binding_score = (cong_va + cong_av) * 0.5;
 
+        // V4.2 — engajamento corporal modula o binding AV.
+        // Biologicamente: STS/insula integra sinais somatosensoriais ao
+        // binding multimodal (Critchley 2004). Corpo engajado (variância alta
+        // do sinal interoceptivo) amplia atenção crossmodal; corpo "neutro"
+        // mantém binding em baseline.
+        let intero_gain = self.engajamento_corporal();
+        self.binding_score = (self.binding_score * intero_gain).clamp(-1.0, 1.0);
+
         // Amplificação AV: sinal congruente é mais forte
         let amplificado = if self.binding_score > BINDING_THRESHOLD {
             let g = 1.0 + (self.binding_score - BINDING_THRESHOLD) * AV_AMPLIFICACAO;
@@ -143,6 +151,25 @@ impl ConvergenciaMultimodal {
     /// Define o sinal interoceptivo corrente (body state).
     pub fn atualizar_interoceptivo(&mut self, sinal: &[f32]) {
         self.interoceptivo = sinal.to_vec();
+    }
+
+    /// V4.2 — quantifica engajamento corporal a partir do sinal interoceptivo.
+    /// Retorna gain ∈ [0.7, 1.3]:
+    ///   • Sem sinal → 1.0 (neutro)
+    ///   • Variância baixa (corpo calmo/uniforme) → 0.7-0.9 (atenua binding)
+    ///   • Variância alta (corpo ativado, arousal) → 1.0-1.3 (amplifica binding)
+    /// Base: insula anterior integra interocepção → modula atenção (Critchley 2004,
+    /// Craig 2009 "How do you feel — now? The anterior insula and human awareness").
+    pub fn engajamento_corporal(&self) -> f32 {
+        if self.interoceptivo.is_empty() { return 1.0; }
+        let n = self.interoceptivo.len() as f32;
+        let mean = self.interoceptivo.iter().sum::<f32>() / n;
+        let var: f32 = self.interoceptivo.iter()
+            .map(|x| (x - mean).powi(2))
+            .sum::<f32>() / n;
+        let std_dev = var.sqrt().clamp(0.0, 1.0);
+        // Mapeia [0, 1] → [0.7, 1.3]
+        0.7 + 0.6 * std_dev
     }
 
     /// Contexto combinado reduzido a `n` dimensões via média de janelas.

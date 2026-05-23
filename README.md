@@ -1,15 +1,16 @@
-# Selene Brain V4.1 — Resiliência + DSU sobre V4 Multicompartimental
+# Selene Brain V4.2 — Hardware Real + BG-RL + Interocepção + Curriculo PT-BR
 
-> **Simulação de cérebro artificial em Rust com neurônio V4 multicompartimental (5 compartimentos + metabolismo ATP + [K⁺]o dinâmico + acoplamento ephaptic), 17 tipos Izhikevich, pool neural 4096-bloco FP4–FP32, codificação localista, STDP 3-fatores, 14 regiões cerebrais, 11 neurotransmissores dinâmicos, processamento interno 100% em frequência/u32 (sem texto no núcleo neural), motor de hipóteses preditivo, watchdog + invariants do loop 200Hz, e estrutura Union-Find (DSU) no `ChunkingEngine` e no diagnóstico de grafo do `SwapManager`.**
+> **Simulação de cérebro artificial em Rust com neurônio V4 multicompartimental (5 compartimentos + metabolismo ATP + [K⁺]o dinâmico + acoplamento ephaptic), 17 tipos Izhikevich, pool neural 4096-bloco FP4–FP32, codificação localista, STDP 3-fatores, 14 regiões cerebrais, 11 neurotransmissores dinâmicos, processamento interno 100% em frequência/u32 (sem texto no núcleo neural), motor de hipóteses preditivo, watchdog + invariants do loop 200Hz, Union-Find (DSU) no `ChunkingEngine`, temperatura real via WMI, projeção nigrostriatal `BG←RPE` (rl.rs), interocepção modulando binding multimodal, e curriculo fonético PT-BR completo nas 11 fases.**
 
 ---
 
 ## Índice
 
 1. [Visão Geral](#visão-geral)
-2. [Estado Atual — V4.1](#estado-atual--v41)
-3. [V4.1 — Resiliência + DSU](#v41--resiliência--dsu)
-4. [V4 — Neurônio Híbrido Multicompartimental](#v4--neurônio-híbrido-multicompartimental)
+2. [Estado Atual — V4.2](#estado-atual--v42)
+3. [V4.2 — Hardware Real + BG-RL + Interocepção + Curriculo PT-BR](#v42--hardware-real--bg-rl--interocepção--curriculo-pt-br)
+4. [V4.1 — Resiliência + DSU](#v41--resiliência--dsu)
+5. [V4 — Neurônio Híbrido Multicompartimental](#v4--neurônio-híbrido-multicompartimental)
 4. [Migração Texto→Frequência (Sprints 1–4)](#migração-textofrequência-sprints-14)
 5. [V3.5 — Melhorias Biológicas](#v35--melhorias-biológicas)
 6. [Arquitetura do Sistema](#arquitetura-do-sistema)
@@ -53,7 +54,7 @@ Microfone  → FFT coclear → SpikePattern → u32 concept_ids → núcleo neur
 
 ---
 
-## Estado Atual — V4.1
+## Estado Atual — V4.2
 
 ### Testes
 
@@ -115,7 +116,113 @@ Sistema completamente validado:
 | **`chaves_set` — `ja_existe()` em O(1)** | ✅ V4.1 |
 | **DSU startup diagnostic — componentes conectados** | ✅ V4.1 |
 | **`arquivar_para_hdd`/`restaurar_do_hdd` 100% `tokio::fs`** | ✅ V4.1 |
+| **Temperatura CPU real via WMI** (Win32 ACPI) | ✅ V4.2 |
+| **Projeção nigrostriatal: BG ← RPE do `rl.rs`** | ✅ V4.2 |
+| **Interocepção modulando binding AV (insula gate)** | ✅ V4.2 |
+| **Curriculo PT-BR completo Fases 1-11 (33 sílabas novas)** | ✅ V4.2 |
 | Fase 3 (brain_zones V3, HNSW, ToM) | ⏳ pendente |
+
+---
+
+## V4.2 — Hardware Real + BG-RL + Interocepção + Curriculo PT-BR
+
+Auditoria 2026-05-23 fechou 4 itens pendentes do roadmap da V4.1, removendo
+heurísticas e conectando módulos que existiam isolados.
+
+### Temperatura CPU real via WMI (`sensors/hardware.rs`)
+
+```toml
+[target.'cfg(windows)'.dependencies]
+wmi = "0.13"
+```
+
+```rust
+#[cfg(target_os = "windows")]
+pub fn get_cpu_temp_wmi(&self) -> Option<f32> {
+    let com = COMLibrary::new().ok()?;
+    let wmi = WMIConnection::with_namespace_path("ROOT\\WMI", com).ok()?;
+    let zonas: Vec<ThermalZone> = wmi.raw_query(
+        "SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature"
+    ).ok()?;
+    // WMI retorna em décimos de Kelvin; convertemos para Celsius
+    let media = soma / zonas.len() as f32;
+    if (0.0..=120.0).contains(&media) { Some(media) } else { None }
+}
+```
+
+`get_cpu_temp()` agora tenta WMI primeiro, faz fallback para estimativa
+baseada em uso da CPU. Impacto direto no `cortisol` da Selene — agora
+reage à temperatura física, não a heurística.
+
+### Projeção nigrostriatal: BG ← RPE do RL (`basal_ganglia/mod.rs`)
+
+Fechamento do TODO de longo prazo em `rl.rs:504-508`:
+
+```rust
+pub fn aplicar_rpe(&mut self, rpe: f32) {
+    let alvo = (1.0 + rpe * 0.5).clamp(0.5, 2.0);
+    // EMA suave (τ ≈ 20 ticks) — evita oscilação caótica do gate
+    self.dopamine_mod = self.dopamine_mod * 0.95 + alvo * 0.05;
+}
+
+pub fn update_habits(&mut self, ...) {
+    let effective_lr = self.learning_rate * self.dopamine_mod;
+    // ...usa effective_lr ao reforçar/enfraquecer hábitos
+}
+```
+
+Chamado em `main.rs` logo após `rl.update()`:
+
+```rust
+let rl_rpe = rl.update(&recognized, neuro.dopamine, action_scalar, &config);
+neuro.dopamine = (neuro.dopamine + rl_rpe * 0.04).clamp(0.3, 2.0);
+basal_ganglia.aplicar_rpe(rl_rpe);  // projeção nigrostriatal
+```
+
+Biologicamente: SNpc projeta para striatum (gânglios da base) via fibras
+dopaminérgicas. RPE > 0 acelera plasticidade de hábitos (mais aprendizado);
+RPE < 0 a suprime.
+
+### Interocepção modula binding multimodal (`learning/multimodal.rs`)
+
+```rust
+pub fn engajamento_corporal(&self) -> f32 {
+    if self.interoceptivo.is_empty() { return 1.0; }
+    let n = self.interoceptivo.len() as f32;
+    let mean = self.interoceptivo.iter().sum::<f32>() / n;
+    let var: f32 = self.interoceptivo.iter()
+        .map(|x| (x - mean).powi(2)).sum::<f32>() / n;
+    // Mapeia stdev [0, 1] → gain [0.7, 1.3]
+    0.7 + 0.6 * var.sqrt().clamp(0.0, 1.0)
+}
+```
+
+Aplicado dentro de `processar()` antes da amplificação AV:
+```rust
+self.binding_score = (cong_va + cong_av) * 0.5;
+let intero_gain = self.engajamento_corporal();
+self.binding_score = (self.binding_score * intero_gain).clamp(-1.0, 1.0);
+```
+
+Base: insula anterior integra sinais somatosensoriais ao binding multimodal
+(Critchley 2004 "Neural systems supporting interoceptive awareness"; Craig
+2009 "How do you feel — now? The anterior insula and human awareness").
+
+### Curriculo fonético PT-BR completo (`learning/curriculo.rs`)
+
+As Fases 8-11 estavam vazias. Agora populadas com 33 sílabas calibradas:
+
+| Fase | Tipo | Exemplos | Duração típica |
+|------|------|----------|----------------|
+| 8 (CVC) | Sílaba fechada | pan, sol, mar, luz, bem, dom, tom | ~280ms |
+| 9 (CVCV) | Reduplicação | mama, papa, baba, dada, vovo, gaga, nene, titi | ~420ms |
+| 10 (CCV) | Clusters | bra, pra, tra, dra, gra, cra, bla, fla | ~280ms |
+| 11 (Alta freq) | Palavras inteiras | casa, vida, agua, amor, filho, bom, sim, nao, tudo, muito | ~440ms |
+
+Cada sílaba inclui formantes F1/F2/F3, VOT, F0 e duração calibrados para
+fones de falantes nativos de PT-BR. Cinco testes novos em `curriculo::tests`
+validam a presença dos marcadores universais de aquisição (mama, papa) e
+das palavras de alta frequência lexical.
 
 ---
 

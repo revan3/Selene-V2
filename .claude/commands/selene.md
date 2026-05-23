@@ -10,37 +10,32 @@ Você está trabalhando no projeto **Selene Brain 2.0** — uma IA com cérebro 
 
 ---
 
-## Estado atual — V3.5 (commits principais)
+## Estado atual — V4.2 (2026-05-23)
 
-```
-f5edea6 feat(V3.5): FASE 2 — melhorias biológicas completas
-ec6f119 feat(oxytocin): integrate oxytocin_bla_gate to amygdala fear modulation
-53ce50b feat(evolution): FASE 1 bugfixes + FASE 2 biological improvements (V3.5)
-46cb41d feat(v3.4): Multi-Self Kernel — 4 vozes, escuta ativa, recálculo em voo
-```
+Versões mais recentes:
+- **V4.2** — Hardware real (WMI), BG↔RL nigrostriatal, interocepção em multimodal, curriculo PT-BR fases 8-11
+- **V4.1** — Resiliência (watchdog/invariants) + DSU em chunking/swap
+- **V4.0** — Neurônio Híbrido Multicompartimental (5 comp. + ATP + Nernst + ephaptic)
+- Histórico: V3.5 (BDNF/BCM/Adenosina-D2/Oxitocina-BLA/WM+Cowan/Baddeley/Prospectiva),
+  V3.4 (Multi-Self), V3.2 (Pool localista)
 
-### Melhorias V3.5 implementadas (Fase 1 + Fase 2)
+### Melhorias V4.2 (2026-05-23)
 
 | Feature | Arquivo | Base científica |
 |---------|---------|----------------|
-| Correção protocolo WS treinar_templates.py | `treinar_templates.py` | — |
-| Persistência métricas ontogênéticas | `main.rs` | — |
-| RegionType enum corrigido (9→14 regiões) | `brain_zones/mod.rs` | — |
-| **BDNF** como mediador early→late LTP | `synaptic_core.rs` | Turrigiano 2022 |
-| **Adenosina→D2** antagonismo | `neurochem.rs` | Ferré 2022 |
-| **Oxitocina→BLA gate** | `neurochem.rs` + `amygdala.rs` + `main.rs` | Kirsch 2005 |
-| **BCM rule dinâmica** — theta_m por neurônio | `synaptic_core.rs` | BCM 1982 |
-| **WM Capacity Limit** 4±1 chunks (Cowan) | `brain_zones/frontal.rs` | Cowan 2001 |
-| **Episodic Buffer** Baddeley — interface WM↔LTM | `frontal.rs` + `bridge.rs` + `main.rs` + `server.rs` | Baddeley 2000 |
-| **Memória Prospectiva** — fila de intenções | `bridge.rs` + `main.rs` + `server.rs` | Pfeiffer 2020 |
+| **CPU temp real via WMI** | `sensors/hardware.rs` + Cargo `[target.cfg(windows)]` | — |
+| **BG ← RPE (nigrostriatal)** `aplicar_rpe` + `dopamine_mod` | `basal_ganglia/mod.rs` + `main.rs` | Schultz 1998, SNpc→striatum |
+| **Interocepção modula binding AV** `engajamento_corporal` | `learning/multimodal.rs` | Critchley 2004, Craig 2009 |
+| **Curriculo PT-BR fases 8-11** (CVC, CVCV, CCV, alta freq) | `learning/curriculo.rs` | Bortolini PT-BR fonologia |
 
-### Pendente — Fase 3 (médio prazo)
+### Pendente
 
 - Migração brain_zones para composição neuronal V3 (PV/SST/VIP/DA_N por região)
 - HelixStore O(n) → HNSW quando vocab > 10.000
 - Núcleos neuromoduladores reais: Raphe (5-HT), LC (NA), VTA (DA) como módulos próprios
 - Theory of Mind básico (`src/learning/tom.rs`)
-- Orquestrador de treinamento `treinar_selene.py`
+- Whisper ASR para validação de produção (audio.rs TODO)
+- Busca externa via WS para `GapConhecimento` (hypothesis.rs)
 
 ---
 
@@ -197,20 +192,19 @@ Campos novos adicionados em V3.5 (além dos existentes):
 | Feedback 👍👎 | ✅ conectado ao RL |
 | Locks não-bloqueantes (loop 200Hz) | ✅ sem deadlock |
 | Reconsolidação de memória (sono N3) | ✅ janela de labilidade |
-| Integração multimodal AV | ✅ predição cruzada |
+| Integração multimodal AV (com interocepção) | ✅ V4.2 |
 | Ontogenia (5 estágios + handlers WS) | ✅ |
 | Áudio nativo input (cpal mic) | ✅ |
 | Áudio nativo output (Klatt/neural → cpal) | ✅ |
 | Porta mobile (audio_raw + voz_params WS) | ✅ |
 | Multi-Self Kernel (4 vozes V3.4) | ✅ |
-| BDNF early→late LTP | ✅ V3.5 |
-| Adenosina→D2 antagonismo | ✅ V3.5 |
-| Oxitocina→BLA gate | ✅ V3.5 |
-| BCM rule dinâmica (theta_m por neurônio) | ✅ V3.5 |
-| WM Capacity Limit 4±1 (Cowan 2001) | ✅ V3.5 |
-| Episodic Buffer (Baddeley 2000) | ✅ V3.5 |
-| Memória Prospectiva + set_intention WS | ✅ V3.5 |
-| RegionType enum completo (14 regiões) | ✅ V3.5 |
+| Neurônio V4 multicompartimental (ATP + Nernst + ephaptic) | ✅ V4.0 |
+| Resiliência: watchdog + invariants + DSU | ✅ V4.1 |
+| **CPU temp real via WMI** | ✅ V4.2 |
+| **BG nigrostriatal (RPE→dopamine_mod)** | ✅ V4.2 |
+| **Interocepção→binding AV (insula gate)** | ✅ V4.2 |
+| **Curriculo fonético PT-BR completo (Fase 1-11)** | ✅ V4.2 |
+| BDNF/BCM/Adenosina-D2/Oxitocina-BLA/WM/Episodic/Prospectiva | ✅ V3.5 |
 | Fase 3 (brain_zones V3, HNSW, ToM) | ⏳ pendente |
 
 ---

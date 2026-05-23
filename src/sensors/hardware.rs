@@ -173,21 +173,14 @@ impl HardwareSensor {
     /// Alta temperatura → noradrenalina sobe → Selene entra em modo "alerta".
     /// Biologicamente análogo à febre: o organismo está sob estresse físico.
     pub fn get_cpu_temp(&self) -> f32 {
+        // V4.2 — primeira tentativa: WMI real. Fallback: estimativa por uso.
+        if let Some(temp_real) = self.get_cpu_temp_wmi() {
+            return temp_real;
+        }
         let system = self.system.lock().unwrap();
-
-        // Usa a média global de uso de CPU de todos os cores
         let cpu_usage = system.global_cpu_info().cpu_usage();
-        
-        // Fórmula de estimativa: temperatura base 35°C + fator de carga
-        // 35°C = temperatura típica de CPU em idle com boa ventilação
-        // 85°C = temperatura de throttling típica (CPU reduz frequência)
-        let temp_estimada = 35.0 + (cpu_usage * 0.5);
-
-        // Log de aviso (apenas uma vez, no primeiro uso)
-        // TODO: adicionar flag `temperatura_aviso_exibido` para não logar toda tick
-        // eprintln!("[HARDWARE] ⚠️  Temperatura estimada (não real). Use get_cpu_temp_wmi() para temperatura real.");
-
-        temp_estimada
+        // Estimativa: 35°C idle + 0.5°C por % de uso → 35-85°C
+        35.0 + (cpu_usage * 0.5)
     }
 
     /// Temperatura REAL da CPU via Windows Management Instrumentation (WMI).
@@ -208,25 +201,36 @@ impl HardwareSensor {
     /// # Nota sobre permissões:
     /// WMI pode requerer execução como Administrador em alguns sistemas.
     ///
-    // #[cfg(target_os = "windows")]
-    // pub fn get_cpu_temp_wmi(&self) -> Option<f32> {
-    //     use wmi::{COMLibrary, WMIConnection};
-    //     use serde::Deserialize;
-    //
-    //     #[derive(Deserialize, Debug)]
-    //     #[allow(non_snake_case)]
-    //     struct ThermalZone { CurrentTemperature: u32 }
-    //
-    //     let com = COMLibrary::new().ok()?;
-    //     let wmi = WMIConnection::with_namespace_path("ROOT\\WMI", com).ok()?;
-    //     let zonas: Vec<ThermalZone> = wmi.query().ok()?;
-    //
-    //     // WMI retorna temperatura em décimos de Kelvin (ex: 3031 = 30.31K = 30.31-273.15 = -242°C)
-    //     // Fórmula correta: (valor / 10.0) - 273.15
-    //     zonas.first().map(|z| z.CurrentTemperature as f32 / 10.0 - 273.15)
-    // }
+    /// Implementação real via WMI (Windows). Em outras plataformas retorna None.
+    /// V4.2 — ativada após adicionar `wmi = "0.13"` ao Cargo.toml.
+    #[cfg(target_os = "windows")]
     pub fn get_cpu_temp_wmi(&self) -> Option<f32> {
-        None // Implementar quando adicionar crate `wmi`
+        use wmi::{COMLibrary, WMIConnection};
+        use serde::Deserialize;
+
+        #[derive(Deserialize, Debug)]
+        #[allow(non_snake_case)]
+        struct ThermalZone { CurrentTemperature: u32 }
+
+        let com = COMLibrary::new().ok()?;
+        let wmi = WMIConnection::with_namespace_path("ROOT\\WMI", com).ok()?;
+        let zonas: Vec<ThermalZone> = wmi.raw_query("SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature").ok()?;
+
+        // WMI retorna temperatura em décimos de Kelvin → Celsius = valor/10 - 273.15.
+        // Pega a média de todas as zonas térmicas (CPU pode ter múltiplas).
+        if zonas.is_empty() { return None; }
+        let soma: f32 = zonas.iter()
+            .map(|z| z.CurrentTemperature as f32 / 10.0 - 273.15)
+            .sum();
+        let media = soma / zonas.len() as f32;
+        // Sanidade: se WMI retornou valor patológico (sensor offline), descarta
+        if !(0.0..=120.0).contains(&media) { return None; }
+        Some(media)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    pub fn get_cpu_temp_wmi(&self) -> Option<f32> {
+        None // WMI é exclusivo do Windows
     }
 
     /// Temperatura REAL da GPU NVIDIA via NVML (NVIDIA Management Library).

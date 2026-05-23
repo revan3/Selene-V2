@@ -1286,6 +1286,8 @@ async fn async_main() {
             // RPE negativo contínuo deprimia dopamina → reward sempre negativo → ciclo vicioso.
             // Baseline biológica: neurônios dopaminérgicos da SNpc nunca param completamente.
             neuro.dopamine = (neuro.dopamine + rl_rpe * 0.04).clamp(0.3, 2.0);
+            // V4.2: projeção nigrostriatal — RPE da SNpc modula plasticidade do BG.
+            basal_ganglia.aplicar_rpe(rl_rpe);
             // Fix 7: Thalamus aprende a filtrar com base no erro do RL.
             // RPE positivo (recompensa inesperada) → abre o filtro (mais sensível).
             // RPE negativo (punição) → fecha o filtro (filtra ruído para focar).

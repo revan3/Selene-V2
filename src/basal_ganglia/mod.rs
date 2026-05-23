@@ -34,22 +34,40 @@ impl BasalGanglia {
         }
     }
     
-    /// Atualiza hábitos com base no estado atual e recompensa
+    /// V4.2 — Recebe o RPE (Reward Prediction Error) do `ReinforcementLearning`
+    /// e modula `dopamine_mod`. Biologicamente: SNpc → BG via projeção
+    /// dopaminérgica nigrostriatal. RPE positivo amplifica plasticidade
+    /// dos hábitos; RPE negativo a suprime.
+    ///
+    /// Fórmula: `dopamine_mod = (1.0 + rpe * 0.5).clamp(0.5, 2.0)`
+    /// Chamar APÓS `rl.update()` no loop neural, ANTES de `update_habits()`.
+    pub fn aplicar_rpe(&mut self, rpe: f32) {
+        let alvo = (1.0 + rpe * 0.5).clamp(0.5, 2.0);
+        // EMA suave (τ ≈ 20 ticks) — evita oscilação caótica do gate
+        self.dopamine_mod = self.dopamine_mod * 0.95 + alvo * 0.05;
+    }
+
+    /// Atualiza hábitos com base no estado atual e recompensa.
+    /// V4.2: `effective_lr = learning_rate × dopamine_mod` — RPE do RL
+    /// modula a taxa de plasticidade dos hábitos via `aplicar_rpe()`.
     pub fn update_habits(&mut self, current_state: &[f32], acao_executada: &[f32], recompensa: f32) {
         self.historico_recompensas.push_back(recompensa);
         if self.historico_recompensas.len() > 100 {
             self.historico_recompensas.pop_front();
         }
-        
+
+        // V4.2: dopamine_mod modula a taxa efetiva (vem de aplicar_rpe).
+        let effective_lr = self.learning_rate * self.dopamine_mod;
+
         // CORRIGIDO: clonar antes de iterar para evitar borrow checker
         let habitos_clone = self.habitos.clone();
-        
+
         // Verifica se estado atual corresponde a algum hábito existente
         for (i, habito) in habitos_clone.iter().enumerate() {
             let similaridade = self.cosseno_similaridade(current_state, &habito.padrao_entrada);
             if similaridade > 0.8 {
-                // Reforça ou enfraquece baseado na recompensa
-                self.habitos[i].forca += recompensa * self.learning_rate;
+                // Reforça ou enfraquece baseado na recompensa × dopamine_mod
+                self.habitos[i].forca += recompensa * effective_lr;
                 self.habitos[i].forca = self.habitos[i].forca.clamp(0.0, 1.0);
                 self.habitos[i].recompensa_acumulada += recompensa;
                 self.habitos[i].vezes_executado += 1;

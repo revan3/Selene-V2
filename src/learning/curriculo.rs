@@ -29,7 +29,7 @@ use crate::storage::ondas::TipoOnset;
 
 // ─── Estágios ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EstagioCurriculo {
     Fase0BandasPuras      = 0,
     Fase1VogaisPuras      = 1,
@@ -363,6 +363,216 @@ static CATALOGO_SILABAS: &[Silaba] = &[
         vogal_f1: 800.0, vogal_f2: 1200.0, vogal_f3: 2550.0,
         vot_ms: 0.0, f0_medio_hz: F0, duracao_ms: 200,
         estagio: EstagioCurriculo::Fase7AfricadasCV, prioridade: 4 },
+
+    // ── Fase 8: CVC — sílaba fechada (V4.2) ──────────────────────────────
+    // Coda nasal/oclusiva fecha a sílaba. Duração ~50ms maior que CV.
+    Silaba { referencia_humana: "pan",  // /pãn/ — coda nasal
+        onset_tipo: TipoOnset::OclusivaSurda, onset_freq_hz: 300.0,
+        vogal_f1: 600.0, vogal_f2: 1100.0, vogal_f3: 2500.0,
+        vot_ms: 60.0, f0_medio_hz: F0, duracao_ms: 280,
+        estagio: EstagioCurriculo::Fase8CVC, prioridade: 0 },
+
+    Silaba { referencia_humana: "sol",  // /sɔl/ — coda lateral
+        onset_tipo: TipoOnset::Fricativa, onset_freq_hz: 5500.0,
+        vogal_f1: 500.0, vogal_f2: 900.0, vogal_f3: 2500.0,
+        vot_ms: 0.0, f0_medio_hz: F0, duracao_ms: 290,
+        estagio: EstagioCurriculo::Fase8CVC, prioridade: 1 },
+
+    Silaba { referencia_humana: "mar",  // /maɾ/ — coda tepe
+        onset_tipo: TipoOnset::Nasal, onset_freq_hz: 250.0,
+        vogal_f1: 800.0, vogal_f2: 1200.0, vogal_f3: 2550.0,
+        vot_ms: 0.0, f0_medio_hz: F0, duracao_ms: 280,
+        estagio: EstagioCurriculo::Fase8CVC, prioridade: 2 },
+
+    Silaba { referencia_humana: "luz",  // /lus/ — coda fricativa
+        onset_tipo: TipoOnset::Lateral, onset_freq_hz: 2700.0,
+        vogal_f1: 300.0, vogal_f2: 800.0, vogal_f3: 2400.0,
+        vot_ms: 0.0, f0_medio_hz: F0, duracao_ms: 270,
+        estagio: EstagioCurriculo::Fase8CVC, prioridade: 3 },
+
+    Silaba { referencia_humana: "bem",  // /bẽj̃/ — coda nasal palatal
+        onset_tipo: TipoOnset::OclusivaSonora, onset_freq_hz: 200.0,
+        vogal_f1: 400.0, vogal_f2: 1600.0, vogal_f3: 2400.0,
+        vot_ms: -20.0, f0_medio_hz: F0, duracao_ms: 290,
+        estagio: EstagioCurriculo::Fase8CVC, prioridade: 4 },
+
+    Silaba { referencia_humana: "dom",  // /dõ/ — coda nasal velar
+        onset_tipo: TipoOnset::OclusivaSonora, onset_freq_hz: 2500.0,
+        vogal_f1: 400.0, vogal_f2: 850.0, vogal_f3: 2400.0,
+        vot_ms: -10.0, f0_medio_hz: F0, duracao_ms: 280,
+        estagio: EstagioCurriculo::Fase8CVC, prioridade: 5 },
+
+    Silaba { referencia_humana: "tom",  // /tõ/ — alta freq lexical PT-BR
+        onset_tipo: TipoOnset::OclusivaSurda, onset_freq_hz: 3500.0,
+        vogal_f1: 400.0, vogal_f2: 850.0, vogal_f3: 2400.0,
+        vot_ms: 55.0, f0_medio_hz: F0, duracao_ms: 280,
+        estagio: EstagioCurriculo::Fase8CVC, prioridade: 6 },
+
+    // ── Fase 9: CVCV — reduplicação (primeiras palavras) (V4.2) ──────────
+    // Marcador linguístico clássico de aquisição: mama, papa, vovó.
+    // Duração total ~400ms (duas sílabas concatenadas).
+    Silaba { referencia_humana: "mama",
+        onset_tipo: TipoOnset::Nasal, onset_freq_hz: 250.0,
+        vogal_f1: 800.0, vogal_f2: 1200.0, vogal_f3: 2550.0,
+        vot_ms: 0.0, f0_medio_hz: F0, duracao_ms: 420,
+        estagio: EstagioCurriculo::Fase9CVCV, prioridade: 0 },
+
+    Silaba { referencia_humana: "papa",
+        onset_tipo: TipoOnset::OclusivaSurda, onset_freq_hz: 300.0,
+        vogal_f1: 800.0, vogal_f2: 1200.0, vogal_f3: 2550.0,
+        vot_ms: 60.0, f0_medio_hz: F0, duracao_ms: 410,
+        estagio: EstagioCurriculo::Fase9CVCV, prioridade: 1 },
+
+    Silaba { referencia_humana: "baba",
+        onset_tipo: TipoOnset::OclusivaSonora, onset_freq_hz: 200.0,
+        vogal_f1: 800.0, vogal_f2: 1200.0, vogal_f3: 2550.0,
+        vot_ms: -20.0, f0_medio_hz: F0, duracao_ms: 400,
+        estagio: EstagioCurriculo::Fase9CVCV, prioridade: 2 },
+
+    Silaba { referencia_humana: "dada",
+        onset_tipo: TipoOnset::OclusivaSonora, onset_freq_hz: 2500.0,
+        vogal_f1: 800.0, vogal_f2: 1200.0, vogal_f3: 2550.0,
+        vot_ms: -10.0, f0_medio_hz: F0, duracao_ms: 400,
+        estagio: EstagioCurriculo::Fase9CVCV, prioridade: 3 },
+
+    Silaba { referencia_humana: "vovo",  // vovô — F2 baixo (vogal /o/)
+        onset_tipo: TipoOnset::Fricativa, onset_freq_hz: 6500.0,
+        vogal_f1: 500.0, vogal_f2: 900.0, vogal_f3: 2500.0,
+        vot_ms: 0.0, f0_medio_hz: F0, duracao_ms: 430,
+        estagio: EstagioCurriculo::Fase9CVCV, prioridade: 4 },
+
+    Silaba { referencia_humana: "gaga",
+        onset_tipo: TipoOnset::OclusivaSonora, onset_freq_hz: 1800.0,
+        vogal_f1: 800.0, vogal_f2: 1200.0, vogal_f3: 2550.0,
+        vot_ms: -15.0, f0_medio_hz: F0, duracao_ms: 410,
+        estagio: EstagioCurriculo::Fase9CVCV, prioridade: 5 },
+
+    Silaba { referencia_humana: "nene",  // nenê
+        onset_tipo: TipoOnset::Nasal, onset_freq_hz: 300.0,
+        vogal_f1: 500.0, vogal_f2: 1700.0, vogal_f3: 2500.0,
+        vot_ms: 0.0, f0_medio_hz: F0, duracao_ms: 420,
+        estagio: EstagioCurriculo::Fase9CVCV, prioridade: 6 },
+
+    Silaba { referencia_humana: "titi",  // titia
+        onset_tipo: TipoOnset::OclusivaSurda, onset_freq_hz: 3500.0,
+        vogal_f1: 300.0, vogal_f2: 2300.0, vogal_f3: 3100.0,
+        vot_ms: 55.0, f0_medio_hz: F0, duracao_ms: 380,
+        estagio: EstagioCurriculo::Fase9CVCV, prioridade: 7 },
+
+    // ── Fase 10: Clusters CCV (V4.2) ──────────────────────────────────────
+    // Onset complexo: oclusiva + líquida (l/r). Comum em PT-BR.
+    // Duração ~50ms maior que CV simples por causa do cluster.
+    Silaba { referencia_humana: "bra",  // /bɾa/ — onset complexo
+        onset_tipo: TipoOnset::OclusivaSonora, onset_freq_hz: 200.0,
+        vogal_f1: 800.0, vogal_f2: 1200.0, vogal_f3: 2550.0,
+        vot_ms: -20.0, f0_medio_hz: F0, duracao_ms: 270,
+        estagio: EstagioCurriculo::Fase10ClustersCCV, prioridade: 0 },
+
+    Silaba { referencia_humana: "pra",
+        onset_tipo: TipoOnset::OclusivaSurda, onset_freq_hz: 300.0,
+        vogal_f1: 800.0, vogal_f2: 1200.0, vogal_f3: 2550.0,
+        vot_ms: 60.0, f0_medio_hz: F0, duracao_ms: 280,
+        estagio: EstagioCurriculo::Fase10ClustersCCV, prioridade: 1 },
+
+    Silaba { referencia_humana: "tra",
+        onset_tipo: TipoOnset::OclusivaSurda, onset_freq_hz: 3500.0,
+        vogal_f1: 800.0, vogal_f2: 1200.0, vogal_f3: 2550.0,
+        vot_ms: 55.0, f0_medio_hz: F0, duracao_ms: 280,
+        estagio: EstagioCurriculo::Fase10ClustersCCV, prioridade: 2 },
+
+    Silaba { referencia_humana: "dra",
+        onset_tipo: TipoOnset::OclusivaSonora, onset_freq_hz: 2500.0,
+        vogal_f1: 800.0, vogal_f2: 1200.0, vogal_f3: 2550.0,
+        vot_ms: -10.0, f0_medio_hz: F0, duracao_ms: 270,
+        estagio: EstagioCurriculo::Fase10ClustersCCV, prioridade: 3 },
+
+    Silaba { referencia_humana: "gra",
+        onset_tipo: TipoOnset::OclusivaSonora, onset_freq_hz: 1800.0,
+        vogal_f1: 800.0, vogal_f2: 1200.0, vogal_f3: 2550.0,
+        vot_ms: -15.0, f0_medio_hz: F0, duracao_ms: 280,
+        estagio: EstagioCurriculo::Fase10ClustersCCV, prioridade: 4 },
+
+    Silaba { referencia_humana: "cra",  // /kɾa/
+        onset_tipo: TipoOnset::OclusivaSurda, onset_freq_hz: 2000.0,
+        vogal_f1: 800.0, vogal_f2: 1200.0, vogal_f3: 2550.0,
+        vot_ms: 70.0, f0_medio_hz: F0, duracao_ms: 290,
+        estagio: EstagioCurriculo::Fase10ClustersCCV, prioridade: 5 },
+
+    Silaba { referencia_humana: "bla",  // /bla/
+        onset_tipo: TipoOnset::OclusivaSonora, onset_freq_hz: 200.0,
+        vogal_f1: 800.0, vogal_f2: 1200.0, vogal_f3: 2550.0,
+        vot_ms: -20.0, f0_medio_hz: F0, duracao_ms: 270,
+        estagio: EstagioCurriculo::Fase10ClustersCCV, prioridade: 6 },
+
+    Silaba { referencia_humana: "fla",  // /fla/
+        onset_tipo: TipoOnset::Fricativa, onset_freq_hz: 7000.0,
+        vogal_f1: 800.0, vogal_f2: 1200.0, vogal_f3: 2550.0,
+        vot_ms: 0.0, f0_medio_hz: 0.0, duracao_ms: 290,
+        estagio: EstagioCurriculo::Fase10ClustersCCV, prioridade: 7 },
+
+    // ── Fase 11: Padrões de alta frequência lexical (V4.2) ───────────────
+    // Sílabas que ocorrem em palavras de altíssima frequência do PT-BR.
+    // Critério: > 100/milhão no corpus Sub-IMS BR. Cada uma é um "template"
+    // de palavra inteira para reconhecimento direto (fast path lexical).
+    Silaba { referencia_humana: "casa",  // /kaza/ — alta freq
+        onset_tipo: TipoOnset::OclusivaSurda, onset_freq_hz: 2000.0,
+        vogal_f1: 800.0, vogal_f2: 1200.0, vogal_f3: 2550.0,
+        vot_ms: 70.0, f0_medio_hz: F0, duracao_ms: 450,
+        estagio: EstagioCurriculo::Fase11AltaFrequencia, prioridade: 0 },
+
+    Silaba { referencia_humana: "vida",  // /vida/
+        onset_tipo: TipoOnset::Fricativa, onset_freq_hz: 6500.0,
+        vogal_f1: 300.0, vogal_f2: 2300.0, vogal_f3: 3100.0,
+        vot_ms: 0.0, f0_medio_hz: F0, duracao_ms: 440,
+        estagio: EstagioCurriculo::Fase11AltaFrequencia, prioridade: 1 },
+
+    Silaba { referencia_humana: "agua",  // /agwa/
+        onset_tipo: TipoOnset::Vogal, onset_freq_hz: 0.0,
+        vogal_f1: 800.0, vogal_f2: 1200.0, vogal_f3: 2550.0,
+        vot_ms: 0.0, f0_medio_hz: F0, duracao_ms: 460,
+        estagio: EstagioCurriculo::Fase11AltaFrequencia, prioridade: 2 },
+
+    Silaba { referencia_humana: "amor",  // /amoɾ/
+        onset_tipo: TipoOnset::Vogal, onset_freq_hz: 0.0,
+        vogal_f1: 800.0, vogal_f2: 1200.0, vogal_f3: 2550.0,
+        vot_ms: 0.0, f0_medio_hz: F0, duracao_ms: 470,
+        estagio: EstagioCurriculo::Fase11AltaFrequencia, prioridade: 3 },
+
+    Silaba { referencia_humana: "filho",  // /fiʎo/
+        onset_tipo: TipoOnset::Fricativa, onset_freq_hz: 7000.0,
+        vogal_f1: 300.0, vogal_f2: 2300.0, vogal_f3: 3100.0,
+        vot_ms: 0.0, f0_medio_hz: 0.0, duracao_ms: 460,
+        estagio: EstagioCurriculo::Fase11AltaFrequencia, prioridade: 4 },
+
+    Silaba { referencia_humana: "bom",  // /bõ/ — alta freq, CVC reciclado
+        onset_tipo: TipoOnset::OclusivaSonora, onset_freq_hz: 200.0,
+        vogal_f1: 400.0, vogal_f2: 850.0, vogal_f3: 2400.0,
+        vot_ms: -20.0, f0_medio_hz: F0, duracao_ms: 290,
+        estagio: EstagioCurriculo::Fase11AltaFrequencia, prioridade: 5 },
+
+    Silaba { referencia_humana: "sim",  // /sĩ/
+        onset_tipo: TipoOnset::Fricativa, onset_freq_hz: 5500.0,
+        vogal_f1: 280.0, vogal_f2: 2100.0, vogal_f3: 3000.0,
+        vot_ms: 0.0, f0_medio_hz: 0.0, duracao_ms: 290,
+        estagio: EstagioCurriculo::Fase11AltaFrequencia, prioridade: 6 },
+
+    Silaba { referencia_humana: "nao",  // /nãw/ — não
+        onset_tipo: TipoOnset::Nasal, onset_freq_hz: 300.0,
+        vogal_f1: 600.0, vogal_f2: 1100.0, vogal_f3: 2500.0,
+        vot_ms: 0.0, f0_medio_hz: F0, duracao_ms: 300,
+        estagio: EstagioCurriculo::Fase11AltaFrequencia, prioridade: 7 },
+
+    Silaba { referencia_humana: "tudo",  // /tudu/
+        onset_tipo: TipoOnset::OclusivaSurda, onset_freq_hz: 3500.0,
+        vogal_f1: 300.0, vogal_f2: 800.0, vogal_f3: 2400.0,
+        vot_ms: 55.0, f0_medio_hz: F0, duracao_ms: 440,
+        estagio: EstagioCurriculo::Fase11AltaFrequencia, prioridade: 8 },
+
+    Silaba { referencia_humana: "muito",  // /mũjtu/
+        onset_tipo: TipoOnset::Nasal, onset_freq_hz: 250.0,
+        vogal_f1: 280.0, vogal_f2: 750.0, vogal_f3: 2300.0,
+        vot_ms: 0.0, f0_medio_hz: F0, duracao_ms: 460,
+        estagio: EstagioCurriculo::Fase11AltaFrequencia, prioridade: 9 },
 ];
 
 // ─── Critério de progressão ───────────────────────────────────────────────────
@@ -416,5 +626,61 @@ mod tests {
         let (f1, f2, _) = formantes_vogal_oral('a');
         assert!(f1 > 700.0 && f1 < 900.0, "F1 /a/ = {}", f1);
         assert!(f2 > 1000.0 && f2 < 1400.0, "F2 /a/ = {}", f2);
+    }
+
+    // V4.2 — testes das novas fases 8-11
+    #[test]
+    fn fase8_cvc_tem_silabas_fechadas() {
+        let s = silabas_da_fase(EstagioCurriculo::Fase8CVC);
+        assert!(s.len() >= 5, "Fase8CVC deve ter >=5 sílabas; got {}", s.len());
+        // CVC dura ~280ms (mais que CV simples ~220ms)
+        for sil in &s {
+            assert!(sil.duracao_ms >= 260,
+                "CVC '{}' duração deveria ser >=260ms; got {}",
+                sil.referencia_humana, sil.duracao_ms);
+        }
+    }
+
+    #[test]
+    fn fase9_cvcv_reduplicacao_classica() {
+        let s = silabas_da_fase(EstagioCurriculo::Fase9CVCV);
+        let refs: Vec<&str> = s.iter().map(|x| x.referencia_humana).collect();
+        // Marcadores universais de aquisição
+        assert!(refs.contains(&"mama"), "Fase9 deve ter 'mama' (universal)");
+        assert!(refs.contains(&"papa"), "Fase9 deve ter 'papa' (universal)");
+        // Duração ~400ms (duas sílabas)
+        for sil in &s {
+            assert!(sil.duracao_ms >= 380,
+                "CVCV '{}' deveria durar >=380ms; got {}",
+                sil.referencia_humana, sil.duracao_ms);
+        }
+    }
+
+    #[test]
+    fn fase10_clusters_ccv_pt_br() {
+        let s = silabas_da_fase(EstagioCurriculo::Fase10ClustersCCV);
+        let refs: Vec<&str> = s.iter().map(|x| x.referencia_humana).collect();
+        assert!(refs.contains(&"bra"), "Fase10 deve ter cluster 'bra'");
+        assert!(refs.contains(&"pra"), "Fase10 deve ter cluster 'pra'");
+    }
+
+    #[test]
+    fn fase11_alta_frequencia_palavras_completas() {
+        let s = silabas_da_fase(EstagioCurriculo::Fase11AltaFrequencia);
+        let refs: Vec<&str> = s.iter().map(|x| x.referencia_humana).collect();
+        assert!(refs.contains(&"casa"), "Fase11 deve ter 'casa'");
+        assert!(refs.contains(&"amor"), "Fase11 deve ter 'amor'");
+        assert!(refs.contains(&"nao"),  "Fase11 deve ter 'nao'");
+    }
+
+    #[test]
+    fn silabas_ate_fase11_inclui_todas() {
+        let s = silabas_ate_fase(EstagioCurriculo::Fase11AltaFrequencia);
+        // Deve incluir fases 1-11 (Fase0 = bandas puras, sem sílabas)
+        let fases_unicas: std::collections::HashSet<EstagioCurriculo> =
+            s.iter().map(|x| x.estagio).collect();
+        assert!(fases_unicas.len() >= 9,
+            "Curriculo cumulativo até Fase11 deve cobrir >=9 fases; got {}",
+            fases_unicas.len());
     }
 }

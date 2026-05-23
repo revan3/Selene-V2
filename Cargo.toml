@@ -32,6 +32,10 @@ nokhwa = { version = "0.10", features = ["input-native"] }   # input-native = Wi
 base64 = "0.22"
 # Mantemos o windows APENAS para timeBeginPeriod/timeEndPeriod
 windows = { version = "0.52", features = ["Win32_Media"] }
+
+[target.'cfg(windows)'.dependencies]
+# V4.2: temperatura real CPU via WMI (Win32_PerfFormattedData_Counters_ThermalZoneInformation)
+wmi = "0.13"
 eframe = { version = "0.27", optional = true }
 egui_graphs = { version = "0.21", optional = true }
 petgraph = { version = "0.6", optional = true }
@@ -91,3 +95,16 @@ lto = "thin"
 codegen-units = 16
 debug = true
 strip = "none"
+
+# Perfil para máquinas com pouca RAM (evita OOM do rustc ao compilar main.rs).
+# Uso: cargo build --profile release-lowmem --bin selene_brain
+#      binário em target/release-lowmem/selene_brain
+# Mantém opt-level=2 + codegen-units=16 → runtime do loop 200Hz ~inalterado.
+# Ganhos de memória: lto=false (sem IR cross-crate no link) + debug=false
+# (sem DWARF/PDB — zero custo de runtime, só perde símbolos de depuração).
+[profile.release-lowmem]
+inherits = "release"
+lto = false
+debug = false
+codegen-units = 16
+strip = "symbols"
