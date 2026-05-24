@@ -10,9 +10,12 @@ Você está trabalhando no projeto **Selene Brain 2.0** — uma IA com cérebro 
 
 ---
 
-## Estado atual — V4.4 (2026-05-24)
+## Estado atual — V4.5 (2026-05-24)
 
 Versões mais recentes:
+- **V4.5** — Persistência HIT (engrams + CA3 binário) + Export/Import
+  knowledge para clonagem entre agentes + script `clonar_conhecimento.py` +
+  Manual completo `MANUAL_ENGRAMS.md`
 - **V4.4** — Implante Tonegawa (false memory style): `EngramOrigem` (Organico/
   Implantado/Restaurado), `implantar_conhecimento()`, 3 handlers WS
   (implant_memory/list_implants/purge_implants), script Python com 9 domínios
@@ -26,6 +29,20 @@ Versões mais recentes:
 - **V4.0** — Neurônio Híbrido Multicompartimental (5 comp. + ATP + Nernst + ephaptic)
 - Histórico: V3.5 (BDNF/BCM/Adenosina-D2/Oxitocina-BLA/WM+Cowan/Baddeley/Prospectiva),
   V3.4 (Multi-Self), V3.2 (Pool localista)
+
+### Melhorias V4.5 (2026-05-24)
+
+| Feature | Arquivo | Função |
+|---------|---------|--------|
+| CA3 binário (`salvar_async`/`carregar_async`) | `brain_zones/ca3_attractor.rs` | 12 bytes/sinapse |
+| `HippocampalIndex.salvar/carregar_estado` | `brain_zones/hippocampal_index.rs` | Orquestra engrams + CA3 |
+| `export_knowledge_json` / `import_knowledge_json` | idem | Portabilidade entre agentes |
+| `EngramStore.clone()` / `CA3.clone()` | `*_engrams.rs`, `ca3_attractor.rs` | Necessário p/ snapshot save |
+| Hook save em step%5000 | `main.rs` | tokio::spawn — não bloqueia 200Hz |
+| Hook load no startup | `main.rs` | `carregar_estado("selene_hit").await` |
+| 2 WS handlers: `export_knowledge`, `import_knowledge` | `websocket/server.rs` | — |
+| `clonar_conhecimento.py` (CLI clone) | (raiz) | --exportar/--importar/--inspecionar |
+| `MANUAL_ENGRAMS.md` (10 seções) | (raiz) | Documentação completa de uso |
 
 ### Melhorias V4.4 (2026-05-24)
 

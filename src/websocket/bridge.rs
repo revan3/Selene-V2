@@ -798,7 +798,9 @@ impl BrainState {
             trigrama_cache: HashMap::new(),
             pattern_engine: PatternEngine::novo(),
             ontogeny: OntogenyState::carregar("selene_ontogeny.json"),
-            // V4.3/V4.4 — HIT inicializado com config default (2048 granular, 4% sparsity)
+            // V4.3/V4.4 — HIT inicializado com config default (2048 granular, 4% sparsity).
+            // V4.5 — estado persistido (engrams + CA3) é carregado em main.rs após
+            // o BrainState ser construído, via brain_state.lock().await.hippocampal_index.carregar_estado()
             hippocampal_index: HippocampalIndex::new(HippocampalIndexConfig::default()),
             convergencia_multimodal: ConvergenciaMultimodal::novo(),
             audio_frames: HashMap::new(),

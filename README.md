@@ -1,4 +1,4 @@
-# Selene Brain V4.4 — Implante Tonegawa (False Memory) sobre V4.3 Memória Episódica
+# Selene Brain V4.5 — Persistência HIT + Clonagem entre Agentes sobre V4.4 Implante
 
 > **Simulação de cérebro artificial em Rust com neurônio V4 multicompartimental (5 compartimentos + metabolismo ATP + [K⁺]o dinâmico + acoplamento ephaptic), 17 tipos Izhikevich, pool neural 4096-bloco FP4–FP32, codificação localista, STDP 3-fatores, 14 regiões cerebrais, 11 neurotransmissores dinâmicos, processamento interno 100% em frequência/u32 (sem texto no núcleo neural), motor de hipóteses preditivo, watchdog + invariants do loop 200Hz, Union-Find (DSU) no `ChunkingEngine`, temperatura real via WMI, projeção nigrostriatal `BG←RPE` (rl.rs), interocepção modulando binding multimodal, e curriculo fonético PT-BR completo nas 11 fases.**
 
@@ -7,9 +7,10 @@
 ## Índice
 
 1. [Visão Geral](#visão-geral)
-2. [Estado Atual — V4.4](#estado-atual--v44)
-3. [V4.4 — Implante Tonegawa (False Memory)](#v44--implante-tonegawa-false-memory)
-4. [V4.3 — Memória Episódica Avançada](#v43--memória-episódica-avançada)
+2. [Estado Atual — V4.5](#estado-atual--v45)
+3. [V4.5 — Persistência HIT + Clonagem entre Agentes](#v45--persistência-hit--clonagem-entre-agentes)
+4. [V4.4 — Implante Tonegawa (False Memory)](#v44--implante-tonegawa-false-memory)
+5. [V4.3 — Memória Episódica Avançada](#v43--memória-episódica-avançada)
 5. [V4.2 — Hardware Real + BG-RL + Interocepção + Curriculo PT-BR](#v42--hardware-real--bg-rl--interocepção--curriculo-pt-br)
 6. [V4.1 — Resiliência + DSU](#v41--resiliência--dsu)
 7. [V4 — Neurônio Híbrido Multicompartimental](#v4--neurônio-híbrido-multicompartimental)
@@ -56,7 +57,7 @@ Microfone  → FFT coclear → SpikePattern → u32 concept_ids → núcleo neur
 
 ---
 
-## Estado Atual — V4.4
+## Estado Atual — V4.5
 
 ### Testes
 
@@ -123,6 +124,99 @@ Sistema completamente validado:
 | **Interocepção modulando binding AV (insula gate)** | ✅ V4.2 |
 | **Curriculo PT-BR completo Fases 1-11 (33 sílabas novas)** | ✅ V4.2 |
 | Fase 3 (brain_zones V3, HNSW, ToM) | ⏳ pendente |
+
+---
+
+## V4.5 — Persistência HIT + Clonagem entre Agentes
+
+Fecha o ciclo de vida dos engrams: **persistência automática** (sobrevivem a
+restart) + **portabilidade JSON** (clonáveis para outros agentes). Inclui
+**manual completo** de uso em `MANUAL_ENGRAMS.md`.
+
+### Persistência automática
+
+A cada save cycle (`step % 5000`, ~25s @ 200Hz), o `HippocampalIndex` faz
+snapshot via `clone()` dentro do `try_lock` e spawn de save async:
+
+| Arquivo | Conteúdo |
+|---------|----------|
+| `selene_hit_engrams.json` | EngramStore (Organico+Implantado+Restaurado) |
+| `selene_hit_ca3.bin` | Pesos Hebbian CA3 — 12 bytes/sinapse binário |
+
+Garantias:
+- **Rename atômico** (`.tmp` → final) evita corrupção
+- **Não-bloqueante** (tokio::spawn não trava 200Hz)
+- **Recuperação suave** (arquivo ausente = init vazio, sem erro)
+
+Load no startup é explícito em `main.rs`:
+```rust
+bs.hippocampal_index.carregar_estado(&get_state_path("selene_hit")).await;
+```
+
+### Export/Import de conhecimento
+
+```rust
+// Rust API
+let knowledge_json = hit.export_knowledge_json(Some(&id_to_word));
+// → JSON portável: {"selene_knowledge_v1": {engrams, concept_aliases, ...}}
+
+let n = hit.import_knowledge_json(&knowledge_json);
+// → Engrams recebem origem=Restaurado e tag prefixada "imported:"
+```
+
+WS handlers:
+```json
+// Exportar
+{"action": "export_knowledge", "path": "backup.json"}
+// → {"event": "export_done", "n_engrams": 130, "n_aliases": 245}
+
+// Importar
+{"action": "import_knowledge", "path": "backup.json"}
+// → {"event": "import_done", "n_engrams_imported": 130}
+```
+
+### CLI Python — `clonar_conhecimento.py`
+
+```bash
+# Exportar conhecimento atual
+python clonar_conhecimento.py --exportar backup_2026-05-24.json
+
+# Inspecionar sem importar (read-only)
+python clonar_conhecimento.py --inspecionar backup_2026-05-24.json
+# → distribuição por origem/tag, stats de cells, valências
+
+# Importar em outra instância (ou na mesma após reset)
+python clonar_conhecimento.py --importar backup_2026-05-24.json
+```
+
+### Por que `Restaurado` ≠ `Implantado` ≠ `Organico`
+
+3 categorias auditáveis via `EngramOrigem`:
+- **Organico**: emergiu do pipeline sensorial (chat/áudio reais)
+- **Implantado**: criado via `implant_memory` (Tonegawa-style false memory)
+- **Restaurado**: importado de outro agente OU restaurado de backup
+
+Permite "purgar implantes mas manter orgânicos", ou "rastrear quais engrams
+vieram de outro agente". Salvaguarda de proveniência.
+
+### Manual `MANUAL_ENGRAMS.md` (10 seções)
+
+1. As 4 camadas de representação (u32/Uuid/SpikePattern/FFT)
+2. Pipeline interno do `implant_memory`
+3. 3 modos de uso (CLI/WS/Rust)
+4. Como criar novos corpora (template + boas práticas + exemplos)
+5. Persistência automática
+6. Clonagem de conhecimento
+7. Auditoria e salvaguardas
+8. Limitações + FAQ
+9. Arquitetura (onde tudo vive)
+10. Próximos passos
+
+### Validação
+
+- Lib tests V4.5: **33/33** ✓ (8 CA3 + 12 engrams + 13 HIT incluindo 2 novos de persist + import/export)
+- `cargo test --test stress_v41`: **12/12** ✓ (sem regressão V4.1)
+- `system_test`: **22/22** ✓ (sem regressão funcional)
 
 ---
 

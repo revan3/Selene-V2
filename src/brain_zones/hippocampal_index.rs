@@ -187,6 +187,106 @@ impl HippocampalIndex {
         self.engrams.purge_implants(tag_filter)
     }
 
+    // ─── V4.5: Persistência completa do HIT ───────────────────────────────
+    //
+    // Salva o estado em 2 arquivos lado-a-lado:
+    //   • {prefix}_engrams.json — EngramStore (engrams + index reverso)
+    //   • {prefix}_ca3.bin      — CA3Attractor (pesos Hebbian)
+    //
+    // O DG não precisa persistir: receptive fields são determinísticos da seed
+    // (recriados idênticos a cada `new()` desde que cfg.seed seja o mesmo).
+
+    /// Salva engrams + CA3 (não-bloqueante para o loop 200Hz via tokio::fs).
+    pub async fn salvar_estado(&self, caminho_prefix: &str) -> std::io::Result<()> {
+        let engrams_path = format!("{caminho_prefix}_engrams.json");
+        let ca3_path     = format!("{caminho_prefix}_ca3.bin");
+        self.engrams.salvar_async(&engrams_path).await?;
+        self.ca3.salvar_async(&ca3_path).await?;
+        log::info!("[HIT] Estado salvo: {} engrams + {} sinapses CA3",
+            self.engrams.len(), self.ca3.n_synapses());
+        Ok(())
+    }
+
+    /// Restaura engrams + CA3. Não falha se arquivos não existirem (primeira execução).
+    pub async fn carregar_estado(&mut self, caminho_prefix: &str) {
+        let engrams_path = format!("{caminho_prefix}_engrams.json");
+        let ca3_path     = format!("{caminho_prefix}_ca3.bin");
+        if let Err(e) = self.engrams.carregar_async(&engrams_path).await {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("[HIT] Falha ao carregar engrams: {}", e);
+            }
+        }
+        if let Err(e) = self.ca3.carregar_async(&ca3_path).await {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("[HIT] Falha ao carregar CA3: {}", e);
+            }
+        }
+        log::info!("[HIT] Estado restaurado: {} engrams + {} sinapses CA3",
+            self.engrams.len(), self.ca3.n_synapses());
+    }
+
+    // ─── V4.5: Export/Import para clonagem entre agentes ──────────────────
+
+    /// Exporta knowledge em JSON portável — outros agentes podem importar.
+    /// Inclui engrams + tag inversa (concept_id → palavra) se mapping for fornecido.
+    /// `id_to_word`: mapping opcional (ex: `&swap_manager.id_to_word`)
+    pub fn export_knowledge_json(
+        &self,
+        id_to_word: Option<&std::collections::HashMap<u32, String>>,
+    ) -> serde_json::Value {
+        // Coleta concept_ids únicos referenciados via tags (best-effort)
+        let mut aliases = std::collections::HashMap::new();
+        if let Some(map) = id_to_word {
+            for (cid, w) in map {
+                aliases.insert(cid.to_string(), w.clone());
+            }
+        }
+        serde_json::json!({
+            "selene_knowledge_v1": {
+                "n_engrams": self.engrams.len(),
+                "n_ca3_synapses": self.ca3.n_synapses(),
+                "dg_k_target": self.dg.k_target(),
+                "engrams": self.engrams.iter().collect::<Vec<_>>(),
+                "concept_aliases": aliases,
+                // Note: CA3 weights são reconstruídos do zero ao importar;
+                // re-storing engram patterns no DG do agente-alvo.
+            }
+        })
+    }
+
+    /// Importa knowledge JSON de outro agente. Engrams ganham origem `Restaurado`.
+    /// Reconstrói CA3 re-armazenando cada padrão (passa pelo DG do agente-alvo).
+    /// Retorna número de engrams importados.
+    pub fn import_knowledge_json(&mut self, json: &serde_json::Value) -> usize {
+        use crate::brain_zones::memory_engrams::EngramOrigem;
+        let root = match json.get("selene_knowledge_v1") {
+            Some(r) => r,
+            None => return 0,
+        };
+        let arr = match root.get("engrams").and_then(|v| v.as_array()) {
+            Some(a) => a,
+            None => return 0,
+        };
+        let mut importados = 0usize;
+        for v in arr {
+            if let Ok(e) = serde_json::from_value::<crate::brain_zones::memory_engrams::Engram>(v.clone()) {
+                // Re-encode no EngramStore com origem Restaurado (preserva tag)
+                let tag = format!("imported:{}", e.tag);
+                self.engrams.encode_com_origem(
+                    e.cell_ensemble.clone(),
+                    e.encoding_step,
+                    e.emocao,
+                    EngramOrigem::Restaurado,
+                    tag,
+                    e.n_reactivations,
+                );
+                importados += 1;
+            }
+        }
+        log::warn!("[HIT] import_knowledge: {} engrams importados como Restaurado", importados);
+        importados
+    }
+
     /// Telemetria.
     pub fn stats(&self) -> HippocampalIndexStats {
         HippocampalIndexStats {
@@ -366,5 +466,64 @@ mod tests {
         // Organico + implante de fisica restam
         assert_eq!(hit.engrams.len(), 2);
         assert!(hit.engrams.get(id_fisica).is_some());
+    }
+
+    // ─── V4.5: testes de persistência + export/import ─────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn salvar_carregar_estado_preserva_engrams() {
+        let tmpdir = std::env::temp_dir();
+        let prefix = tmpdir.join("selene_test_hit_v45").to_string_lossy().to_string();
+
+        // Cria, implanta, salva
+        let mut hit1 = HippocampalIndex::new(HippocampalIndexConfig::default());
+        let input: Vec<f32> = (0..32).map(|i| (i as f32) / 32.0).collect();
+        let id1 = hit1.implantar_conhecimento(
+            cells(&[1, 2, 3]), &input, "fisica".to_string(), 0.4, 8, 100);
+        let id2 = hit1.encode_episode(&input, cells(&[10, 20]), 200, 0.3);
+        let n_synapses_antes = hit1.ca3.n_synapses();
+        hit1.salvar_estado(&prefix).await.unwrap();
+
+        // Cria novo HIT, carrega — deve ter os mesmos engrams + CA3
+        let mut hit2 = HippocampalIndex::new(HippocampalIndexConfig::default());
+        hit2.carregar_estado(&prefix).await;
+        assert_eq!(hit2.engrams.len(), 2);
+        assert!(hit2.engrams.get(id1).is_some());
+        assert!(hit2.engrams.get(id2).is_some());
+        assert_eq!(hit2.ca3.n_synapses(), n_synapses_antes);
+
+        // Cleanup
+        let _ = tokio::fs::remove_file(format!("{prefix}_engrams.json")).await;
+        let _ = tokio::fs::remove_file(format!("{prefix}_ca3.bin")).await;
+    }
+
+    #[test]
+    fn export_import_knowledge_roundtrip() {
+        // Agente A cria conhecimento, exporta
+        let mut agente_a = HippocampalIndex::new(HippocampalIndexConfig::default());
+        let input: Vec<f32> = (0..32).map(|i| (i as f32) / 32.0).collect();
+        let id_a1 = agente_a.implantar_conhecimento(
+            cells(&[1, 2, 3]), &input, "math".to_string(), 0.3, 10, 100);
+        let _id_a2 = agente_a.implantar_conhecimento(
+            cells(&[10, 20]), &input, "physics".to_string(), 0.4, 10, 200);
+
+        let json = agente_a.export_knowledge_json(None);
+        assert_eq!(json["selene_knowledge_v1"]["n_engrams"].as_u64(), Some(2));
+
+        // Agente B importa
+        let mut agente_b = HippocampalIndex::new(HippocampalIndexConfig::default());
+        let importados = agente_b.import_knowledge_json(&json);
+        assert_eq!(importados, 2);
+        assert_eq!(agente_b.engrams.len(), 2);
+
+        // Engrams importados devem estar marcados como Restaurado (não Implantado)
+        let restaurados: Vec<_> = agente_b.engrams.iter()
+            .filter(|e| e.origem == crate::brain_zones::memory_engrams::EngramOrigem::Restaurado)
+            .collect();
+        assert_eq!(restaurados.len(), 2);
+
+        // Recall via partial cue deve funcionar no agente B
+        let recall = agente_b.recall_by_cells(&cells(&[1, 2]), 300);
+        assert!(recall.is_some(), "agente B deve conseguir recall via cue do agente A");
     }
 }

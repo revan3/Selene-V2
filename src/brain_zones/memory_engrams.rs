@@ -95,7 +95,7 @@ impl Engram {
 ///
 /// O índice reverso é o que torna reativação eficiente: dado um cue parcial,
 /// achamos rapidamente engrams candidatos sem varrer todos.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct EngramStore {
     /// Todos os engrams ativos.
     engrams: HashMap<EngramId, Engram>,

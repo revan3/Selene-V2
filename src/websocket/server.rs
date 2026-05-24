@@ -3369,6 +3369,91 @@ pub async fn handle_connection(
                                     let _ = ws_tx.send(Message::text(ack)).await;
                                 }
 
+                                // ── V4.5: EXPORT_KNOWLEDGE (clonagem para outros agentes) ─
+                                // {"action":"export_knowledge","path":"selene_knowledge.json"}
+                                Some("export_knowledge") => {
+                                    let path = json["path"].as_str()
+                                        .unwrap_or("selene_knowledge_export.json")
+                                        .to_string();
+                                    let state = brain.lock().await;
+                                    let swap_arc = state.swap_manager.clone();
+                                    let sw = swap_arc.lock().await;
+                                    let aliases = sw.id_to_word.clone();
+                                    drop(sw);
+                                    let knowledge = state.hippocampal_index
+                                        .export_knowledge_json(Some(&aliases));
+                                    let n_engrams = state.hippocampal_index.engrams.len();
+                                    drop(state);
+                                    match serde_json::to_string_pretty(&knowledge) {
+                                        Ok(s) => {
+                                            match tokio::fs::write(&path, s).await {
+                                                Ok(_) => {
+                                                    log::info!("[EXPORT] knowledge salvo: {} engrams → {}", n_engrams, path);
+                                                    let ack = serde_json::json!({
+                                                        "event": "export_done",
+                                                        "n_engrams": n_engrams,
+                                                        "n_aliases": aliases.len(),
+                                                        "path": path,
+                                                    }).to_string();
+                                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                                }
+                                                Err(e) => {
+                                                    let err = serde_json::json!({
+                                                        "event": "export_error",
+                                                        "reason": format!("write_failed: {e}"),
+                                                    }).to_string();
+                                                    let _ = ws_tx.send(Message::text(err)).await;
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            let err = serde_json::json!({
+                                                "event": "export_error",
+                                                "reason": format!("serialize_failed: {e}"),
+                                            }).to_string();
+                                            let _ = ws_tx.send(Message::text(err)).await;
+                                        }
+                                    }
+                                }
+
+                                // ── V4.5: IMPORT_KNOWLEDGE (recebe knowledge de outro agente) ─
+                                // {"action":"import_knowledge","path":"selene_knowledge.json"}
+                                Some("import_knowledge") => {
+                                    let path = json["path"].as_str()
+                                        .unwrap_or("selene_knowledge_export.json")
+                                        .to_string();
+                                    match tokio::fs::read_to_string(&path).await {
+                                        Ok(s) => match serde_json::from_str::<serde_json::Value>(&s) {
+                                            Ok(json_data) => {
+                                                let mut state = brain.lock().await;
+                                                let n = state.hippocampal_index.import_knowledge_json(&json_data);
+                                                drop(state);
+                                                log::warn!("[IMPORT] knowledge importado: {} engrams (como Restaurado) de {}", n, path);
+                                                let ack = serde_json::json!({
+                                                    "event": "import_done",
+                                                    "n_engrams_imported": n,
+                                                    "path": path,
+                                                }).to_string();
+                                                let _ = ws_tx.send(Message::text(ack)).await;
+                                            }
+                                            Err(e) => {
+                                                let err = serde_json::json!({
+                                                    "event": "import_error",
+                                                    "reason": format!("parse_failed: {e}"),
+                                                }).to_string();
+                                                let _ = ws_tx.send(Message::text(err)).await;
+                                            }
+                                        },
+                                        Err(e) => {
+                                            let err = serde_json::json!({
+                                                "event": "import_error",
+                                                "reason": format!("read_failed: {e}"),
+                                            }).to_string();
+                                            let _ = ws_tx.send(Message::text(err)).await;
+                                        }
+                                    }
+                                }
+
                                 // ── LIST_SNAPSHOTS: lista snapshots do grafo disponíveis ─────────
                                 Some("list_snapshots") => {
                                     let state = brain.lock().await;

@@ -36,7 +36,7 @@ const W_MAX: f32 = 5.0;
 const ETA: f32 = 0.05;
 
 /// CA3 — rede recurrent que armazena padrões via Hebbian e completa via attractor.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct CA3Attractor {
     /// Pesos sinápticos esparsos entre cells: (i, j) → w_ij.
     /// Armazena apenas (i < j) por simetria — sinaptizamos pares lookup-aware.
@@ -142,6 +142,49 @@ impl CA3Attractor {
             *w *= factor;
             *w > 0.01 // remove pesos muito pequenos
         });
+    }
+
+    // ─── V4.5: Persistência ─────────────────────────────────────────────────
+    // Formato binário compacto: [k_target: u64][n_stored: u64][n_weights: u64]
+    //                            [(i: u32, j: u32, w: f32)] × n_weights
+
+    /// Salva pesos CA3 em arquivo binário.
+    pub async fn salvar_async(&self, caminho: &str) -> std::io::Result<()> {
+        let mut buf = Vec::with_capacity(24 + self.weights.len() * 12);
+        buf.extend_from_slice(&(self.k_target as u64).to_le_bytes());
+        buf.extend_from_slice(&self.n_stored.to_le_bytes());
+        buf.extend_from_slice(&(self.weights.len() as u64).to_le_bytes());
+        for ((i, j), w) in &self.weights {
+            buf.extend_from_slice(&i.to_le_bytes());
+            buf.extend_from_slice(&j.to_le_bytes());
+            buf.extend_from_slice(&w.to_le_bytes());
+        }
+        let tmp = format!("{caminho}.tmp");
+        tokio::fs::write(&tmp, buf).await?;
+        tokio::fs::rename(&tmp, caminho).await?;
+        log::info!("[CA3] Pesos persistidos: {} sinapses → {}", self.weights.len(), caminho);
+        Ok(())
+    }
+
+    /// Restaura pesos CA3 de arquivo previamente salvo.
+    pub async fn carregar_async(&mut self, caminho: &str) -> std::io::Result<()> {
+        let bytes = tokio::fs::read(caminho).await?;
+        if bytes.len() < 24 { return Ok(()); }
+        self.k_target = u64::from_le_bytes(bytes[0..8].try_into().unwrap_or([0u8;8])) as usize;
+        self.n_stored = u64::from_le_bytes(bytes[8..16].try_into().unwrap_or([0u8;8]));
+        let n_weights = u64::from_le_bytes(bytes[16..24].try_into().unwrap_or([0u8;8])) as usize;
+        let mut pos = 24usize;
+        let mut restaurados = 0usize;
+        while pos + 12 <= bytes.len() && restaurados < n_weights {
+            let i = u32::from_le_bytes(bytes[pos..pos+4].try_into().unwrap_or([0u8;4]));
+            let j = u32::from_le_bytes(bytes[pos+4..pos+8].try_into().unwrap_or([0u8;4]));
+            let w = f32::from_le_bytes(bytes[pos+8..pos+12].try_into().unwrap_or([0u8;4]));
+            self.weights.insert((i, j), w);
+            pos += 12;
+            restaurados += 1;
+        }
+        log::info!("[CA3] Pesos restaurados: {} sinapses de {}", restaurados, caminho);
+        Ok(())
     }
 }
 

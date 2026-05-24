@@ -494,6 +494,8 @@ async fn async_main() {
     {
         let mut bs = brain_state.lock().await;
         bs.storage = Arc::clone(&storage_db);
+        // V4.5 — restaura HippocampalIndex (engrams + CA3) se persistência existir
+        bs.hippocampal_index.carregar_estado(&get_state_path("selene_hit")).await;
     }
     // Handle direto para o contador de spikes — sem precisar locker BrainState no loop.
     let neuronios_ativos_handle: Arc<std::sync::atomic::AtomicUsize> = {
@@ -2414,13 +2416,20 @@ async fn async_main() {
                 };
                 if let Ok(bs) = brain_state.try_lock() {
                     let onto = bs.ontogeny.clone();
-                    // Spawn async save to avoid blocking the 200Hz loop
-                    tokio::spawn(async move {
-                        onto.salvar_async(&get_state_path("selene_ontogeny.json")).await;
-                    });
+                    // V4.5: snapshot do HippocampalIndex aqui também (mesmo lock)
+                    let engrams_snap = bs.hippocampal_index.engrams.clone();
+                    let ca3_snap = bs.hippocampal_index.ca3.clone();
                     if progressou {
                         println!("🧒 [ONTOGENY] Progressão automática → {}", bs.ontogeny.stage);
                     }
+                    drop(bs);
+                    // Spawns async saves — não bloqueia o loop 200Hz
+                    let prefix_hit = get_state_path("selene_hit");
+                    tokio::spawn(async move {
+                        onto.salvar_async(&get_state_path("selene_ontogeny.json")).await;
+                        let _ = engrams_snap.salvar_async(&format!("{prefix_hit}_engrams.json")).await;
+                        let _ = ca3_snap.salvar_async(&format!("{prefix_hit}_ca3.bin")).await;
+                    });
                 }
             }
         }
