@@ -15,3 +15,6 @@ pub mod multimodal;
 pub mod active_context;
 pub mod voices;
 pub mod go_nogo;
+// V4.3 — memória episódica avançada
+pub mod successor;
+pub mod priority_replay;

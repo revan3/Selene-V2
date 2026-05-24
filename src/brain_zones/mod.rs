@@ -17,6 +17,11 @@ pub mod cingulate;
 pub mod orbitofrontal;
 pub mod language;
 pub mod amygdala;
+// V4.3 — memória episódica avançada (não substitui HippocampusV2; complementa)
+pub mod dentate_gyrus;
+pub mod ca3_attractor;
+pub mod memory_engrams;
+pub mod hippocampal_index;
 
 // Re-exportações
 pub use frontal::FrontalLobe;
@@ -31,6 +36,11 @@ pub use cingulate::AnteriorCingulate;
 pub use orbitofrontal::OrbitalFrontal;
 pub use language::LanguageAreas;
 pub use amygdala::Amygdala;
+// V4.3 re-exports
+pub use dentate_gyrus::{DentateGyrus, SparsePattern};
+pub use ca3_attractor::CA3Attractor;
+pub use memory_engrams::{EngramStore, Engram, EngramId};
+pub use hippocampal_index::{HippocampalIndex, HippocampalIndexConfig, HippocampalIndexStats};
 
 use serde::{Serialize, Deserialize};
 

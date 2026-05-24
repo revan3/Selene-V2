@@ -1,4 +1,4 @@
-# Selene Brain V4.2 — Hardware Real + BG-RL + Interocepção + Curriculo PT-BR
+# Selene Brain V4.3 — Memória Episódica Avançada (SR + Priority Replay + HIT + Engrams + DG/CA3)
 
 > **Simulação de cérebro artificial em Rust com neurônio V4 multicompartimental (5 compartimentos + metabolismo ATP + [K⁺]o dinâmico + acoplamento ephaptic), 17 tipos Izhikevich, pool neural 4096-bloco FP4–FP32, codificação localista, STDP 3-fatores, 14 regiões cerebrais, 11 neurotransmissores dinâmicos, processamento interno 100% em frequência/u32 (sem texto no núcleo neural), motor de hipóteses preditivo, watchdog + invariants do loop 200Hz, Union-Find (DSU) no `ChunkingEngine`, temperatura real via WMI, projeção nigrostriatal `BG←RPE` (rl.rs), interocepção modulando binding multimodal, e curriculo fonético PT-BR completo nas 11 fases.**
 
@@ -7,10 +7,11 @@
 ## Índice
 
 1. [Visão Geral](#visão-geral)
-2. [Estado Atual — V4.2](#estado-atual--v42)
-3. [V4.2 — Hardware Real + BG-RL + Interocepção + Curriculo PT-BR](#v42--hardware-real--bg-rl--interocepção--curriculo-pt-br)
-4. [V4.1 — Resiliência + DSU](#v41--resiliência--dsu)
-5. [V4 — Neurônio Híbrido Multicompartimental](#v4--neurônio-híbrido-multicompartimental)
+2. [Estado Atual — V4.3](#estado-atual--v43)
+3. [V4.3 — Memória Episódica Avançada](#v43--memória-episódica-avançada)
+4. [V4.2 — Hardware Real + BG-RL + Interocepção + Curriculo PT-BR](#v42--hardware-real--bg-rl--interocepção--curriculo-pt-br)
+5. [V4.1 — Resiliência + DSU](#v41--resiliência--dsu)
+6. [V4 — Neurônio Híbrido Multicompartimental](#v4--neurônio-híbrido-multicompartimental)
 4. [Migração Texto→Frequência (Sprints 1–4)](#migração-textofrequência-sprints-14)
 5. [V3.5 — Melhorias Biológicas](#v35--melhorias-biológicas)
 6. [Arquitetura do Sistema](#arquitetura-do-sistema)
@@ -54,7 +55,7 @@ Microfone  → FFT coclear → SpikePattern → u32 concept_ids → núcleo neur
 
 ---
 
-## Estado Atual — V4.2
+## Estado Atual — V4.3
 
 ### Testes
 
@@ -121,6 +122,121 @@ Sistema completamente validado:
 | **Interocepção modulando binding AV (insula gate)** | ✅ V4.2 |
 | **Curriculo PT-BR completo Fases 1-11 (33 sílabas novas)** | ✅ V4.2 |
 | Fase 3 (brain_zones V3, HNSW, ToM) | ⏳ pendente |
+
+---
+
+## V4.3 — Memória Episódica Avançada
+
+6 módulos novos integrando 5 linhas de pesquisa de memória que faltavam.
+Todos **complementam** o `HippocampusV2` existente — não substituem.
+
+### Successor Representation (`learning/successor.rs`)
+
+Implementa o "mapa preditivo" de Dayan 1993 / Stachenfeld 2017:
+`M(s, s')` = probabilidade descontada de visitar `s'` no futuro dado `s` agora.
+
+```rust
+let mut sr = SuccessorRepresentation::new();
+sr.update(s_prev, s_curr);                // TD-SR clássico
+let v = sr.value(s_atual, &rewards);      // V(s) = Σ M(s,s')·R(s')
+let nexts = sr.top_k_next(s_atual, 5);    // 5 destinos mais prováveis
+```
+
+TD-SR com diagonal explícita + bootstrap off-diagonal sobre janela
+deduplicada de 16 estados. Persistência binária assíncrona em
+`selene_successor.bin`. **8 testes ✓**.
+
+### Priority Replay (`learning/priority_replay.rs`)
+
+Substitui o critério "emotion > 0.5 → replay" do `rem_semantico`:
+
+```rust
+let mut buf = PriorityReplayBuffer::new();
+buf.push(s_atual, s_alvo, td_error, step, Some(&sr));  // EVB = need × |TD|
+let top = buf.pop_top_k(50);                            // durante N3/REM
+```
+
+`BinaryHeap<EvbItem>` ordena por EVB (max-heap). Usa SR opcionalmente para
+`need(s)` real; fallback `1.0`. **Mattar & Daw 2018** — quase
+state-of-the-art em RL. **7 testes ✓**.
+
+### Memory Engrams (`brain_zones/memory_engrams.rs`)
+
+Implementa Tonegawa 2012-2016: ensembles celulares específicos por memória,
+com **index reverso** `cell → engrams` para reativação O(1):
+
+```rust
+let id = engrams.encode(active_cells, step, emocao);
+let recall = engrams.reativar(&cue, step);  // winner-take-all por overlap
+let salient = engrams.top_salient(10, step);
+let candidatos = engrams.candidatos_consolidacao(threshold);
+```
+
+LRU pruning + persistência JSON com rename atômico. **7 testes ✓**.
+
+### Dentate Gyrus + CA3 Attractor
+
+**Pattern separation** (DG) e **pattern completion** (CA3) — dichotomy
+clássica do hipocampo:
+
+```rust
+let dg = DentateGyrus::new(2048, 32, 0.04, seed);  // sparsity 4%
+let pat = dg.encode(&neocortical_input);            // SparsePattern (top-k WTA)
+
+let mut ca3 = CA3Attractor::new(dg.k_target());
+ca3.store(&pat);                                     // Hebbian outer product
+let recall = ca3.complete(&partial_cue);             // attractor → padrão estável
+```
+
+DG com receptive fields determinísticos por seed (reproduzível entre
+sessões). CA3 Hopfield-like com decay homeostático. **15 testes ✓**.
+
+### Hippocampal Index (`brain_zones/hippocampal_index.rs`)
+
+Orquestra DG + Engrams + CA3 segundo **Teyler & DiScenna 1986** —
+hipocampo armazena INDEX, não conteúdo:
+
+```rust
+let mut hit = HippocampalIndex::new(HippocampalIndexConfig::default());
+
+// Encoding: input neocortical → DG → CA3 store + Engram persist
+let id = hit.encode_episode(&input, member_cells, step, emocao);
+
+// Recall via cue parcial (Uuid)
+let recall = hit.recall_by_cells(&cue_cells, step);
+
+// Recall via pattern denso parcial/ruidoso
+let pattern = hit.pattern_complete(&partial_input);
+
+// Tick periódico (sono N3) — decay CA3 + lista candidatos a consolidação
+let candidatos = hit.tick_consolidacao(decay_rate, n_reactivations_threshold);
+```
+
+**5 testes ✓**.
+
+### Validação completa
+
+- `cargo test --lib successor:: priority_replay:: dentate_gyrus:: ca3_attractor:: memory_engrams:: hippocampal_index::` → **44/44** ✓
+- `cargo test --test stress_v41` → **12/12** ✓ (sem regressão V4.1)
+- `system_test` → **22/22** ✓ (sem regressão funcional)
+
+### Por que "complementar e não substitutivo"
+
+`HippocampusV2` (V3.5) continua fazendo LTP de pesos sinápticos no nível
+neuronal. Os novos módulos V4.3 adicionam uma **camada superior** de
+organização episódica:
+
+```
+NEOCORTEX (spike_vocab, embeddings, audio_frames, visual_features)
+       ↕                                                  ↕
+HippocampusV2 (LTP CA1/CA3 neural)        HippocampalIndex (HIT episódico)
+                                              ↳ DG sparse encoder
+                                              ↳ CA3 attractor
+                                              ↳ EngramStore (índices)
+```
+
+Selene pode ativar/desativar V4.3 sem quebrar V3.5 — integração no
+`main.rs` é opcional via hooks dedicados.
 
 ---
 

@@ -10,14 +10,28 @@ Você está trabalhando no projeto **Selene Brain 2.0** — uma IA com cérebro 
 
 ---
 
-## Estado atual — V4.2 (2026-05-23)
+## Estado atual — V4.3 (2026-05-23)
 
 Versões mais recentes:
+- **V4.3** — Memória episódica avançada: SR (mapa preditivo de Stachenfeld),
+  Priority Replay (EVB de Mattar & Daw), Hippocampal Indexing (HIT),
+  Memory Engrams (Tonegawa), DG sparse encoder + CA3 attractor (separation/completion)
 - **V4.2** — Hardware real (WMI), BG↔RL nigrostriatal, interocepção em multimodal, curriculo PT-BR fases 8-11
 - **V4.1** — Resiliência (watchdog/invariants) + DSU em chunking/swap
 - **V4.0** — Neurônio Híbrido Multicompartimental (5 comp. + ATP + Nernst + ephaptic)
 - Histórico: V3.5 (BDNF/BCM/Adenosina-D2/Oxitocina-BLA/WM+Cowan/Baddeley/Prospectiva),
   V3.4 (Multi-Self), V3.2 (Pool localista)
+
+### Melhorias V4.3 (2026-05-23)
+
+| Feature | Arquivo | Base científica |
+|---------|---------|----------------|
+| **Successor Representation** (TD-SR sparse) | `learning/successor.rs` | Dayan 1993, Stachenfeld 2017 |
+| **Priority Replay** (EVB BinaryHeap) | `learning/priority_replay.rs` | Mattar & Daw 2018 |
+| **Memory Engrams** (cell ensembles + idx reverso) | `brain_zones/memory_engrams.rs` | Tonegawa 2012-2016 |
+| **Dentate Gyrus** (sparse encoder top-k WTA) | `brain_zones/dentate_gyrus.rs` | Marr 1971 (pattern separation) |
+| **CA3 Attractor** (Hopfield Hebbian) | `brain_zones/ca3_attractor.rs` | Hopfield 1982, Rolls 2008 |
+| **Hippocampal Index** (HIT orquestrador) | `brain_zones/hippocampal_index.rs` | Teyler & DiScenna 1986, Rudy 2024 |
 
 ### Melhorias V4.2 (2026-05-23)
 
