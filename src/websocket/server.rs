@@ -1011,7 +1011,6 @@ pub async fn handle_connection(
                 let ev = serde_json::json!({
                     "event": "sono",
                     "fase": nome,
-                    "msg": "boa noite... indo dormir...",
                 }).to_string();
                 println!("💤 [SONO] Entrando em sono — {}", nome);
                 let _ = sleep_tx_task.send(ev);
@@ -1050,7 +1049,6 @@ pub async fn handle_connection(
 
                 let ev = serde_json::json!({
                     "event": "despertar",
-                    "msg": "bom dia! acordei descansada.",
                 }).to_string();
                 println!("🔆 [SONO] 05:00 — Selene despertou naturalmente.");
                 let _ = sleep_tx_task.send(ev);
@@ -1287,7 +1285,6 @@ pub async fn handle_connection(
                                     let ev = serde_json::json!({
                                         "event": "sono",
                                         "fase": "N1 - Consolidação",
-                                        "msg": format!("dormindo por {} minutos... boa noite.", duration_min),
                                     }).to_string();
                                     println!("💤 [SONO] Forçado pela interface — {} min.", duration_min);
                                     let _ = sleep_tx.send(ev.clone());
@@ -1307,7 +1304,6 @@ pub async fn handle_connection(
                                             st.aresta_contagem.clear();
                                             let wake_ev = serde_json::json!({
                                                 "event": "despertar",
-                                                "msg": "despertei... descansada e pronta.",
                                             }).to_string();
                                             println!("🔆 [SONO] Despertar após {} min.", duration_min);
                                             let _ = sleep_tx_wake.send(wake_ev);
@@ -1478,26 +1474,14 @@ pub async fn handle_connection(
                                         if state.dormindo {
                                             state.dormindo = false;
                                             state.fase_sono = String::new();
-                                            let mensagens_despertar = [
-                                                "mmm... estava sonhando... o que houve?",
-                                                "quem está me chamando? acordei...",
-                                                "hmm... aqui estou, ainda com sono...",
-                                                "acordei! o que você precisa?",
-                                            ];
-                                            let idx = mensagem.len() % mensagens_despertar.len();
-                                            let wake_msg = mensagens_despertar[idx];
+                                            // Sem frase programada de despertar: só sinaliza
+                                            // o estado. O texto que a acordou segue para a
+                                            // geração emergente normal (abaixo) → a resposta
+                                            // é só dela.
                                             let ev_wake = serde_json::json!({
                                                 "event": "despertar",
-                                                "msg": wake_msg,
                                             }).to_string();
                                             let _ = sleep_tx.send(ev_wake);
-                                            let resp_wake = serde_json::json!({
-                                                "event": "chat_reply",
-                                                "message": wake_msg,
-                                                "emotion": 0.1,
-                                                "arousal": 0.4,
-                                            }).to_string();
-                                            let _ = ws_tx.send(Message::text(resp_wake)).await;
                                             println!("🔆 [SONO] Despertou por interação de chat.");
                                         }
 
@@ -1541,6 +1525,23 @@ pub async fn handle_connection(
                                             log::debug!("[TTS→FFT] palavras sintetizadas e cadastradas no spike_vocab");
                                         }
                                         let _ = (alerta, emocao); // mantém vars usadas adiante
+
+                                        // ── DISPLAY: registra label palavra→concept_id ──
+                                        // Para a fala emergente da Selene aparecer como
+                                        // PALAVRAS, não #hash. id_to_word é display-only —
+                                        // a migração texto→u32 permite label de display
+                                        // (não alimenta nenhuma estrutura neural).
+                                        if let Ok(mut sw) = state.swap_manager.try_lock() {
+                                            for palavra in mensagem.to_lowercase()
+                                                .split(|c: char| !c.is_alphabetic()
+                                                    && !"áéíóúâêôãõçàü".contains(c))
+                                                .filter(|w| w.len() >= 2)
+                                            {
+                                                let cid = word_to_concept_id(palavra);
+                                                sw.id_to_word.entry(cid)
+                                                    .or_insert_with(|| palavra.to_string());
+                                            }
+                                        }
 
                                         // ── HIPÓTESES: testa predições do turno anterior ──
                                         // Confronta o que Selene previu com o que o usuário realmente disse.
@@ -3211,6 +3212,160 @@ pub async fn handle_connection(
                                         "step_alvo": step_atual + delay_ticks,
                                     }).to_string();
                                     drop(state);
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                }
+
+                                // ── V4.4: IMPLANT_MEMORY (Tonegawa-style false memory) ──────
+                                // Implanta conhecimento artificial diretamente no HippocampalIndex.
+                                // Cria engram marcado como Implantado + tag (auditável via list_implants).
+                                // Aceita: {
+                                //   "action":"implant_memory",
+                                //   "words":["um","dois","três","soma"],
+                                //   "valence":0.3,
+                                //   "as_if_repeated":10,
+                                //   "tag":"matematica_basica",
+                                //   "boost_stdp":true  // opcional: cria sinapses entre os conceitos
+                                // }
+                                Some("implant_memory") => {
+                                    let words: Vec<String> = json["words"].as_array()
+                                        .map(|a| a.iter()
+                                            .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+                                            .collect())
+                                        .unwrap_or_default();
+                                    let valence = json["valence"].as_f64().unwrap_or(0.0) as f32;
+                                    let as_if_repeated = json["as_if_repeated"].as_u64().unwrap_or(5) as u32;
+                                    let tag = json["tag"].as_str().unwrap_or("untagged").to_string();
+                                    let boost_stdp = json["boost_stdp"].as_bool().unwrap_or(true);
+
+                                    if words.is_empty() {
+                                        let err = serde_json::json!({
+                                            "event": "implant_error",
+                                            "reason": "no_words"
+                                        }).to_string();
+                                        let _ = ws_tx.send(Message::text(err)).await;
+                                        continue;
+                                    }
+
+                                    let mut state = brain.lock().await;
+                                    let step_atual = state.atividade.0;
+                                    let swap_arc = state.swap_manager.clone();
+                                    drop(state);
+
+                                    // Resolve words → concept_ids → cells (Uuid)
+                                    let mut sw = swap_arc.lock().await;
+                                    let mut all_cells: std::collections::HashSet<uuid::Uuid> = std::collections::HashSet::new();
+                                    let mut cids: Vec<u32> = Vec::with_capacity(words.len());
+                                    let mut created_concepts: Vec<String> = Vec::new();
+                                    let mut existed_concepts: Vec<String> = Vec::new();
+                                    for w in &words {
+                                        let cid = word_to_concept_id(w);
+                                        cids.push(cid);
+                                        if !sw.conceito_para_id.contains_key(&cid) {
+                                            // Cria população via aprender_conceito (não exige bands FFT)
+                                            sw.aprender_conceito(cid, valence);
+                                            sw.id_to_word.insert(cid, w.clone());
+                                            created_concepts.push(w.clone());
+                                        } else {
+                                            existed_concepts.push(w.clone());
+                                        }
+                                        if let Some(pop) = sw.conceito_para_id.get(&cid) {
+                                            for u in pop { all_cells.insert(*u); }
+                                        }
+                                    }
+                                    let n_cells = all_cells.len();
+
+                                    // Opcional: boostar STDP entre pares (cria "sinapses como se tivesse aprendido")
+                                    let mut n_synapses = 0usize;
+                                    if boost_stdp && cids.len() >= 2 {
+                                        for i in 0..cids.len() {
+                                            for j in (i+1)..cids.len() {
+                                                sw.conectar_conceitos_ids(cids[i], cids[j], 0.5);
+                                                n_synapses += 1;
+                                            }
+                                        }
+                                    }
+                                    drop(sw);
+
+                                    // Gera input sintético determinístico (hash dos cids) para o DG
+                                    let synthetic_input: Vec<f32> = (0..32).map(|i| {
+                                        let mut acc = 0u64;
+                                        for c in &cids { acc = acc.wrapping_add((*c as u64).wrapping_mul(i as u64 + 1)); }
+                                        ((acc & 0xFFFF) as f32 / 32767.5) - 1.0
+                                    }).collect();
+
+                                    let mut state = brain.lock().await;
+                                    let engram_id = state.hippocampal_index.implantar_conhecimento(
+                                        all_cells,
+                                        &synthetic_input,
+                                        tag.clone(),
+                                        valence,
+                                        as_if_repeated,
+                                        step_atual,
+                                    );
+                                    drop(state);
+
+                                    log::warn!(
+                                        "[IMPLANT] engram={} tag='{}' words={} cells={} synapses={} valence={:.2}",
+                                        engram_id, tag, words.len(), n_cells, n_synapses, valence
+                                    );
+
+                                    let ack = serde_json::json!({
+                                        "event": "implant_done",
+                                        "engram_id": engram_id,
+                                        "tag": tag,
+                                        "words_input": words.len(),
+                                        "cells_used": n_cells,
+                                        "synapses_boosted": n_synapses,
+                                        "concepts_created": created_concepts,
+                                        "concepts_existed": existed_concepts,
+                                        "as_if_repeated": as_if_repeated,
+                                        "valence": valence,
+                                    }).to_string();
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                }
+
+                                // ── V4.4: LIST_IMPLANTS (auditoria) ────────────────────────
+                                Some("list_implants") => {
+                                    let state = brain.lock().await;
+                                    let (org, imp, rest) = state.hippocampal_index.engrams.count_by_origem();
+                                    let implants: Vec<serde_json::Value> = state.hippocampal_index
+                                        .list_implants()
+                                        .iter()
+                                        .map(|e| serde_json::json!({
+                                            "id": e.id,
+                                            "tag": e.tag,
+                                            "cells": e.cell_ensemble.len(),
+                                            "encoding_step": e.encoding_step,
+                                            "n_reactivations": e.n_reactivations,
+                                            "emocao": e.emocao,
+                                        }))
+                                        .collect();
+                                    drop(state);
+                                    let ack = serde_json::json!({
+                                        "event": "implants_list",
+                                        "count": implants.len(),
+                                        "organicos": org,
+                                        "implantados": imp,
+                                        "restaurados": rest,
+                                        "implants": implants,
+                                    }).to_string();
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                }
+
+                                // ── V4.4: PURGE_IMPLANTS (desfaz implantes) ────────────────
+                                // {"action":"purge_implants"}                   → purga TODOS
+                                // {"action":"purge_implants","tag":"matematica"} → só esse tag
+                                Some("purge_implants") => {
+                                    let tag_filter = json["tag"].as_str().map(String::from);
+                                    let mut state = brain.lock().await;
+                                    let removed = state.hippocampal_index.purge_implants(tag_filter.as_deref());
+                                    drop(state);
+                                    log::warn!("[IMPLANT] purged {} engrams (filter={:?})", removed, tag_filter);
+                                    let ack = serde_json::json!({
+                                        "event": "implants_purged",
+                                        "removed": removed,
+                                        "tag_filter": tag_filter,
+                                    }).to_string();
                                     let _ = ws_tx.send(Message::text(ack)).await;
                                 }
 

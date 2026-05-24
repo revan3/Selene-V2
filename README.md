@@ -1,4 +1,4 @@
-# Selene Brain V4.3 — Memória Episódica Avançada (SR + Priority Replay + HIT + Engrams + DG/CA3)
+# Selene Brain V4.4 — Implante Tonegawa (False Memory) sobre V4.3 Memória Episódica
 
 > **Simulação de cérebro artificial em Rust com neurônio V4 multicompartimental (5 compartimentos + metabolismo ATP + [K⁺]o dinâmico + acoplamento ephaptic), 17 tipos Izhikevich, pool neural 4096-bloco FP4–FP32, codificação localista, STDP 3-fatores, 14 regiões cerebrais, 11 neurotransmissores dinâmicos, processamento interno 100% em frequência/u32 (sem texto no núcleo neural), motor de hipóteses preditivo, watchdog + invariants do loop 200Hz, Union-Find (DSU) no `ChunkingEngine`, temperatura real via WMI, projeção nigrostriatal `BG←RPE` (rl.rs), interocepção modulando binding multimodal, e curriculo fonético PT-BR completo nas 11 fases.**
 
@@ -7,11 +7,12 @@
 ## Índice
 
 1. [Visão Geral](#visão-geral)
-2. [Estado Atual — V4.3](#estado-atual--v43)
-3. [V4.3 — Memória Episódica Avançada](#v43--memória-episódica-avançada)
-4. [V4.2 — Hardware Real + BG-RL + Interocepção + Curriculo PT-BR](#v42--hardware-real--bg-rl--interocepção--curriculo-pt-br)
-5. [V4.1 — Resiliência + DSU](#v41--resiliência--dsu)
-6. [V4 — Neurônio Híbrido Multicompartimental](#v4--neurônio-híbrido-multicompartimental)
+2. [Estado Atual — V4.4](#estado-atual--v44)
+3. [V4.4 — Implante Tonegawa (False Memory)](#v44--implante-tonegawa-false-memory)
+4. [V4.3 — Memória Episódica Avançada](#v43--memória-episódica-avançada)
+5. [V4.2 — Hardware Real + BG-RL + Interocepção + Curriculo PT-BR](#v42--hardware-real--bg-rl--interocepção--curriculo-pt-br)
+6. [V4.1 — Resiliência + DSU](#v41--resiliência--dsu)
+7. [V4 — Neurônio Híbrido Multicompartimental](#v4--neurônio-híbrido-multicompartimental)
 4. [Migração Texto→Frequência (Sprints 1–4)](#migração-textofrequência-sprints-14)
 5. [V3.5 — Melhorias Biológicas](#v35--melhorias-biológicas)
 6. [Arquitetura do Sistema](#arquitetura-do-sistema)
@@ -55,7 +56,7 @@ Microfone  → FFT coclear → SpikePattern → u32 concept_ids → núcleo neur
 
 ---
 
-## Estado Atual — V4.3
+## Estado Atual — V4.4
 
 ### Testes
 
@@ -122,6 +123,109 @@ Sistema completamente validado:
 | **Interocepção modulando binding AV (insula gate)** | ✅ V4.2 |
 | **Curriculo PT-BR completo Fases 1-11 (33 sílabas novas)** | ✅ V4.2 |
 | Fase 3 (brain_zones V3, HNSW, ToM) | ⏳ pendente |
+
+---
+
+## V4.4 — Implante Tonegawa (False Memory)
+
+Aplica a técnica de **engram tagging** de Tonegawa 2013 — onde optogenética foi
+usada para implantar memórias falsas em ratos — para implantar **conhecimento
+artificial** na Selene. Bootstrap de domínios inteiros em segundos vs horas/dias
+de treino organico.
+
+### Salvaguardas (Opção B: com auditoria)
+
+Cada engram criado por implante recebe:
+- `origem: EngramOrigem::Implantado` (vs `Organico` ou `Restaurado`)
+- `tag: String` (ex: "matematica_basica") para purge seletivo
+- Log `warn` automático: `[IMPLANT] engram=42 tag='math' cells=80 synapses=10 valence=0.30`
+
+Operações de auditoria:
+- `EngramStore::list_implants()` — lista todos os engrams `Implantado`
+- `EngramStore::purge_implants(Some("tag"))` — remove só os de um tag
+- `EngramStore::count_by_origem() -> (Organico, Implantado, Restaurado)` — telemetria
+
+### Handlers WebSocket
+
+| Action | Função |
+|--------|--------|
+| `implant_memory` | Implanta uma "memória" (grupo de palavras + valência) |
+| `list_implants` | Audita todos os implantes existentes |
+| `purge_implants` | Remove implantes (opcionalmente filtrado por tag) |
+
+Exemplo de payload `implant_memory`:
+```json
+{
+  "action": "implant_memory",
+  "words": ["gravidade", "peso", "queda", "atração"],
+  "valence": 0.25,
+  "as_if_repeated": 10,
+  "tag": "fisica_basica",
+  "boost_stdp": true
+}
+```
+
+Resposta:
+```json
+{
+  "event": "implant_done",
+  "engram_id": 42,
+  "tag": "fisica_basica",
+  "cells_used": 80,
+  "synapses_boosted": 6,
+  "concepts_created": ["gravidade", "atração"],
+  "concepts_existed": ["peso", "queda"],
+  "as_if_repeated": 10
+}
+```
+
+### Script Python — `implantar_conhecimento.py`
+
+Cliente CLI com **9 domínios pré-prontos** (130+ memórias):
+
+| Domínio | Memórias | Valência | Conceitos exemplo |
+|---------|----------|----------|-------------------|
+| `matematica` | 14 | +0.30 | números, soma, geometria, álgebra, lógica |
+| `semantica` | 16 | +0.10 | sinônimos, antônimos, hierarquias, tempo |
+| `oratoria` | 11 | +0.20 | conectivos, marcadores discursivos, cortesia |
+| `fisica` | 14 | +0.25 | mecânica, ondas, eletromagnetismo, quântica |
+| `quimica` | 13 | +0.20 | elementos, moléculas, ligações, reações |
+| `biologia` | 15 | +0.30 | célula, sistemas, evolução, ecologia |
+| `programacao` | 19 | +0.40 | variáveis, controle, estruturas, paradigmas |
+| `informatica` | 14 | +0.25 | hardware, software, internet, segurança |
+| `jogos` | 17 | +0.50 | regras, mecânicas, estratégia, social |
+
+Uso:
+```bash
+# Implantar TODOS os domínios (~10k cells, ~500 sinapses)
+python implantar_conhecimento.py --tudo
+
+# Implantar só domínios específicos
+python implantar_conhecimento.py --dominios matematica programacao
+
+# Auditar implantes (sem modificar)
+python implantar_conhecimento.py --auditar
+
+# Purgar implantes de um domínio (mantém orgânicos + outros implantes)
+python implantar_conhecimento.py --purgar fisica
+python implantar_conhecimento.py --purgar TODOS  # CUIDADO
+
+# Listar domínios disponíveis (não conecta)
+python implantar_conhecimento.py --listar
+```
+
+### Conflito com Ontogenia
+
+Implantes **pulam** os estágios Neonatal→Discurso. Isso é intencional —
+permite bootstrap. Para experimentos "puristas" (Selene desenvolve
+naturalmente), basta não usar `implant_memory`. Implantes existentes ficam
+visíveis via `list_implants` e podem ser purgados.
+
+### Validação
+
+- Lib tests V4.4: **23/23** ✓ (5 novos em `memory_engrams` + 4 em `hippocampal_index` + 14 anteriores)
+- `cargo test --test stress_v41`: **12/12** ✓ (sem regressão V4.1)
+- `system_test`: **22/22** ✓ (sem regressão funcional)
 
 ---
 

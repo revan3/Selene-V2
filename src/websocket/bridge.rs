@@ -17,6 +17,8 @@ use crate::brain_zones::occipital::OccipitalLobe;
 use crate::learning::hypothesis::HypothesisEngine;
 use crate::learning::pattern_engine::PatternEngine;
 use crate::learning::ontogeny::OntogenyState;
+// V4.3/V4.4 — memória episódica avançada (HIT) + implantes
+use crate::brain_zones::hippocampal_index::{HippocampalIndex, HippocampalIndexConfig};
 use crate::learning::multimodal::ConvergenciaMultimodal;
 use crate::learning::active_context::ActiveContext;
 use crate::learning::go_nogo::GoNoGoFilter;
@@ -388,6 +390,12 @@ pub struct BrainState {
     /// Estado de ontogenia — controla o estágio de desenvolvimento cognitivo atual.
     /// Neonatal: escuta pura. PreVerbal: reações. PalavraUnica/Frase: saída limitada. Discurso: livre.
     pub ontogeny: OntogenyState,
+
+    /// V4.3 — Hippocampal Index (HIT): camada superior de memória episódica.
+    /// Orquestra DG (separation) + Engrams + CA3 (completion). NÃO substitui
+    /// HippocampusV2 — complementa. V4.4: usado pelo handler `implant_memory`
+    /// para implantar conhecimento artificial estilo Tonegawa 2013.
+    pub hippocampal_index: HippocampalIndex,
 
     /// Fila FIFO de lotes de tokens para Wernicke — injetados pelos handlers WS
     /// (chat/passive_hear) e consumidos um lote por tick pelo loop neural via
@@ -790,6 +798,8 @@ impl BrainState {
             trigrama_cache: HashMap::new(),
             pattern_engine: PatternEngine::novo(),
             ontogeny: OntogenyState::carregar("selene_ontogeny.json"),
+            // V4.3/V4.4 — HIT inicializado com config default (2048 granular, 4% sparsity)
+            hippocampal_index: HippocampalIndex::new(HippocampalIndexConfig::default()),
             convergencia_multimodal: ConvergenciaMultimodal::novo(),
             audio_frames: HashMap::new(),
             audio_output: crate::synthesis::cpal_output::AudioOutput::try_new()

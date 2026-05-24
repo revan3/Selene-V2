@@ -29,7 +29,7 @@ use uuid::Uuid;
 
 use crate::brain_zones::dentate_gyrus::{DentateGyrus, SparsePattern};
 use crate::brain_zones::ca3_attractor::CA3Attractor;
-use crate::brain_zones::memory_engrams::{EngramStore, EngramId};
+use crate::brain_zones::memory_engrams::{EngramStore, EngramId, EngramOrigem};
 
 /// Configuração default para o HippocampalIndex.
 pub struct HippocampalIndexConfig {
@@ -126,6 +126,65 @@ impl HippocampalIndex {
         let candidatos = self.engrams.candidatos_consolidacao(n_reactivations_threshold);
         log::debug!("[HIT] tick_consolidacao: {} engrams candidatos", candidatos.len());
         candidatos
+    }
+
+    /// V4.4 — IMPLANTAR CONHECIMENTO ARTIFICIAL (estilo Tonegawa 2013 false memory)
+    ///
+    /// Cria engram + armazena no CA3 + marca como `EngramOrigem::Implantado` com
+    /// `n_reactivations` pré-populado (parece "consolidado"). Não passa pelo
+    /// pipeline sensorial — é um atalho de bootstrap.
+    ///
+    /// # Parâmetros
+    /// - `member_cells`: Uuids dos neurônios membros (usar populações de `conceito_para_id`)
+    /// - `synthetic_input`: vetor 32-d para encoding via DG (usar embedding ou ruído determinístico)
+    /// - `tag`: identificador legível ("matematica_basica", etc) — usado por list/purge
+    /// - `valencia`: emoção associada [-1.0, 1.0]
+    /// - `as_if_repeated`: simula N reativações prévias (10+ faz parecer consolidado)
+    /// - `step_atual`: tick do loop neural (timestamp)
+    ///
+    /// # Salvaguardas
+    /// - Engram fica marcado como `Implantado` (auditável via `list_implants`)
+    /// - Log explícito em nível `warn` (transparente)
+    /// - Retornável: `purge_implants(Some(tag))` desfaz
+    pub fn implantar_conhecimento(
+        &mut self,
+        member_cells: HashSet<Uuid>,
+        synthetic_input: &[f32],
+        tag: String,
+        valencia: f32,
+        as_if_repeated: u32,
+        step_atual: u64,
+    ) -> EngramId {
+        log::warn!(
+            "[IMPLANT] criando engram sintético tag='{}' cells={} valencia={:.2} repeats={}",
+            tag, member_cells.len(), valencia, as_if_repeated
+        );
+
+        // 1. Pattern separation via DG (mesmo caminho do encode organico)
+        let sparse_pattern = self.dg.encode(synthetic_input);
+
+        // 2. CA3 armazena (Hebbian outer product) — agora a memória existe no attractor
+        self.ca3.store(&sparse_pattern);
+
+        // 3. Engram persiste marcado como Implantado, com n_reactivations elevado
+        self.engrams.encode_com_origem(
+            member_cells,
+            step_atual,
+            valencia.clamp(-1.0, 1.0),
+            EngramOrigem::Implantado,
+            tag,
+            as_if_repeated,
+        )
+    }
+
+    /// V4.4 — Lista engrams implantados (delegado para EngramStore).
+    pub fn list_implants(&self) -> Vec<&crate::brain_zones::memory_engrams::Engram> {
+        self.engrams.list_implants()
+    }
+
+    /// V4.4 — Purga engrams implantados (delegado para EngramStore).
+    pub fn purge_implants(&mut self, tag_filter: Option<&str>) -> usize {
+        self.engrams.purge_implants(tag_filter)
     }
 
     /// Telemetria.
@@ -234,5 +293,78 @@ mod tests {
 
         let candidatos = hit.tick_consolidacao(0.0, 10);
         assert!(candidatos.contains(&id_a));
+    }
+
+    // ─── V4.4: implantar_conhecimento + salvaguardas ────────────────────
+
+    #[test]
+    fn implantar_marca_engram_como_implantado() {
+        use crate::brain_zones::memory_engrams::EngramOrigem;
+        let mut hit = HippocampalIndex::new(HippocampalIndexConfig::default());
+        let input: Vec<f32> = (0..32).map(|i| (i as f32) / 32.0).collect();
+        let id = hit.implantar_conhecimento(
+            cells(&[100, 200, 300]),
+            &input,
+            "matematica_basica".to_string(),
+            0.3,
+            10,
+            500,
+        );
+        let e = hit.engrams.get(id).unwrap();
+        assert_eq!(e.origem, EngramOrigem::Implantado);
+        assert_eq!(e.tag, "matematica_basica");
+        assert_eq!(e.n_reactivations, 10);
+    }
+
+    #[test]
+    fn implantar_recall_funciona_imediatamente() {
+        // Implante deve ser reativável logo após criação (sem precisar de N3/treino)
+        let mut hit = HippocampalIndex::new(HippocampalIndexConfig::default());
+        let input: Vec<f32> = (0..32).map(|i| (i as f32) / 32.0).collect();
+        let id = hit.implantar_conhecimento(
+            cells(&[1, 2, 3, 4]),
+            &input,
+            "fisica_forca".to_string(),
+            0.4,
+            5,
+            100,
+        );
+        let recall = hit.recall_by_cells(&cells(&[1, 2]), 200);
+        assert_eq!(recall, Some(id),
+            "implante deve ser reativável imediatamente via partial cue");
+    }
+
+    #[test]
+    fn list_implants_separa_de_organicos() {
+        let mut hit = HippocampalIndex::new(HippocampalIndexConfig::default());
+        let input: Vec<f32> = (0..32).map(|i| (i as f32) / 32.0).collect();
+        // 1 organico, 2 implantes
+        hit.encode_episode(&input, cells(&[1, 2]), 100, 0.5);
+        let id_imp1 = hit.implantar_conhecimento(
+            cells(&[10, 20]), &input, "math".to_string(), 0.3, 5, 200);
+        let id_imp2 = hit.implantar_conhecimento(
+            cells(&[30, 40]), &input, "fisica".to_string(), 0.4, 5, 200);
+        let implants = hit.list_implants();
+        assert_eq!(implants.len(), 2);
+        let ids: Vec<_> = implants.iter().map(|e| e.id).collect();
+        assert!(ids.contains(&id_imp1));
+        assert!(ids.contains(&id_imp2));
+    }
+
+    #[test]
+    fn purge_implants_por_tag_isola_dominio() {
+        let mut hit = HippocampalIndex::new(HippocampalIndexConfig::default());
+        let input: Vec<f32> = (0..32).map(|i| (i as f32) / 32.0).collect();
+        hit.encode_episode(&input, cells(&[1, 2]), 100, 0.5); // organico
+        let id_fisica = hit.implantar_conhecimento(
+            cells(&[10, 20]), &input, "fisica".to_string(), 0.3, 5, 200);
+        hit.implantar_conhecimento(
+            cells(&[30, 40]), &input, "math".to_string(), 0.4, 5, 200);
+        // Purga só "math"
+        let n = hit.purge_implants(Some("math"));
+        assert_eq!(n, 1);
+        // Organico + implante de fisica restam
+        assert_eq!(hit.engrams.len(), 2);
+        assert!(hit.engrams.get(id_fisica).is_some());
     }
 }

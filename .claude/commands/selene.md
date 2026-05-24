@@ -10,9 +10,14 @@ Você está trabalhando no projeto **Selene Brain 2.0** — uma IA com cérebro 
 
 ---
 
-## Estado atual — V4.3 (2026-05-23)
+## Estado atual — V4.4 (2026-05-24)
 
 Versões mais recentes:
+- **V4.4** — Implante Tonegawa (false memory style): `EngramOrigem` (Organico/
+  Implantado/Restaurado), `implantar_conhecimento()`, 3 handlers WS
+  (implant_memory/list_implants/purge_implants), script Python com 9 domínios
+  pré-prontos (matemática, semântica, oratória, física, química, biologia,
+  programação, informática, jogos)
 - **V4.3** — Memória episódica avançada: SR (mapa preditivo de Stachenfeld),
   Priority Replay (EVB de Mattar & Daw), Hippocampal Indexing (HIT),
   Memory Engrams (Tonegawa), DG sparse encoder + CA3 attractor (separation/completion)
@@ -21,6 +26,17 @@ Versões mais recentes:
 - **V4.0** — Neurônio Híbrido Multicompartimental (5 comp. + ATP + Nernst + ephaptic)
 - Histórico: V3.5 (BDNF/BCM/Adenosina-D2/Oxitocina-BLA/WM+Cowan/Baddeley/Prospectiva),
   V3.4 (Multi-Self), V3.2 (Pool localista)
+
+### Melhorias V4.4 (2026-05-24)
+
+| Feature | Arquivo | Base científica |
+|---------|---------|----------------|
+| `EngramOrigem` enum (Organico/Implantado/Restaurado) | `brain_zones/memory_engrams.rs` | — |
+| `implantar_conhecimento()` + log warn | `brain_zones/hippocampal_index.rs` | Tonegawa 2013 (false memory) |
+| Handler WS `implant_memory` (resolve words→cells, boost STDP) | `websocket/server.rs` | — |
+| Handlers WS `list_implants` / `purge_implants` (salvaguardas) | `websocket/server.rs` | — |
+| `BrainState.hippocampal_index` | `websocket/bridge.rs` | Teyler & DiScenna 1986 |
+| Script Python `implantar_conhecimento.py` (9 domínios, 130+ memórias) | (raiz do projeto) | — |
 
 ### Melhorias V4.3 (2026-05-23)
 

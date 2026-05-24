@@ -35,6 +35,26 @@ const CAP_ENGRAMS: usize = 50_000;
 /// Identificador interno de engram.
 pub type EngramId = u64;
 
+/// V4.4 — Origem do engram. Salvaguarda contra perda de proveniência.
+///
+/// Distingue memórias formadas por experiência real ("organica") de memórias
+/// criadas via API direta de implante (estilo Tonegawa 2013, falsa memória em
+/// ratos). Permite introspecção e auditoria.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EngramOrigem {
+    /// Engram emergiu naturalmente do pipeline sensorial (chat, áudio, visão).
+    Organico,
+    /// Engram criado via `implantar_conhecimento()` — atalho de bootstrap.
+    /// Análogo biológico: optogenetic engram tagging (Tonegawa 2013).
+    Implantado,
+    /// Engram restaurado de checkpoint após corrupção/wipe.
+    Restaurado,
+}
+
+impl Default for EngramOrigem {
+    fn default() -> Self { EngramOrigem::Organico }
+}
+
 /// Engram episódico — um ensemble específico de neurônios + metadados.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Engram {
@@ -49,6 +69,14 @@ pub struct Engram {
     pub n_reactivations: u32,
     /// Última reativação (step) — usado para decay.
     pub last_reactivation_step: u64,
+    /// V4.4 — Origem do engram (Organico/Implantado/Restaurado).
+    /// `#[serde(default)]` mantém compatibilidade com engrams pré-V4.4.
+    #[serde(default)]
+    pub origem: EngramOrigem,
+    /// V4.4 — Tag legível para implantes (ex: "matematica_basica", "fisica_ondas").
+    /// Útil para `list_implants` e `purge_implants`. Vazio para Organico.
+    #[serde(default)]
+    pub tag: String,
 }
 
 impl Engram {
@@ -85,13 +113,30 @@ impl EngramStore {
         }
     }
 
-    /// Codifica novo engram para um conjunto de neurônios ativos.
-    /// Retorna o ID gerado.
+    /// Codifica novo engram orgânico (origem = Organico). API histórica.
     pub fn encode(
         &mut self,
         active_cells: HashSet<Uuid>,
         encoding_step: u64,
         emocao: f32,
+    ) -> EngramId {
+        self.encode_com_origem(active_cells, encoding_step, emocao,
+            EngramOrigem::Organico, String::new(), 0)
+    }
+
+    /// V4.4 — Codifica engram com origem explícita e n_reactivations inicial.
+    ///
+    /// Para implantes (Tonegawa-style), use `EngramOrigem::Implantado` +
+    /// `n_reactivations_inicial > 0` para fazer o engram parecer já consolidado.
+    /// `tag` deve identificar o domínio do implante (ex: "matematica_basica").
+    pub fn encode_com_origem(
+        &mut self,
+        active_cells: HashSet<Uuid>,
+        encoding_step: u64,
+        emocao: f32,
+        origem: EngramOrigem,
+        tag: String,
+        n_reactivations_inicial: u32,
     ) -> EngramId {
         let id = self.next_id;
         self.next_id += 1;
@@ -106,8 +151,10 @@ impl EngramStore {
             cell_ensemble: active_cells,
             encoding_step,
             emocao,
-            n_reactivations: 0,
-            last_reactivation_step: 0,
+            n_reactivations: n_reactivations_inicial,
+            last_reactivation_step: if n_reactivations_inicial > 0 { encoding_step } else { 0 },
+            origem,
+            tag,
         };
         self.engrams.insert(id, engram);
 
@@ -117,6 +164,46 @@ impl EngramStore {
         }
 
         id
+    }
+
+    /// V4.4 — Lista todos os engrams implantados (salvaguarda de auditoria).
+    pub fn list_implants(&self) -> Vec<&Engram> {
+        self.engrams.values()
+            .filter(|e| e.origem == EngramOrigem::Implantado)
+            .collect()
+    }
+
+    /// V4.4 — Remove todos os engrams implantados, opcionalmente filtrando por tag.
+    /// Retorna número removido. Usa `purge_implants(None)` para limpar TODOS.
+    pub fn purge_implants(&mut self, tag_filter: Option<&str>) -> usize {
+        let ids_remover: Vec<EngramId> = self.engrams.values()
+            .filter(|e| e.origem == EngramOrigem::Implantado)
+            .filter(|e| match tag_filter {
+                None => true,
+                Some(t) => e.tag == t,
+            })
+            .map(|e| e.id)
+            .collect();
+        let n = ids_remover.len();
+        for id in ids_remover {
+            self.remove(id);
+        }
+        log::warn!("[ENGRAM] purge_implants: {} engrams implantados removidos (filter={:?})",
+            n, tag_filter);
+        n
+    }
+
+    /// V4.4 — Conta engrams por origem (telemetria).
+    pub fn count_by_origem(&self) -> (usize, usize, usize) {
+        let mut org = 0; let mut imp = 0; let mut rest = 0;
+        for e in self.engrams.values() {
+            match e.origem {
+                EngramOrigem::Organico   => org += 1,
+                EngramOrigem::Implantado => imp += 1,
+                EngramOrigem::Restaurado => rest += 1,
+            }
+        }
+        (org, imp, rest)
     }
 
     /// Reativação por cue parcial — encontra engram com maior overlap.
@@ -355,5 +442,85 @@ mod tests {
         let candidatos = s.candidatos_consolidacao(10);
         assert!(candidatos.contains(&id_a));
         assert_eq!(candidatos.len(), 1);
+    }
+
+    // ─── V4.4: testes de salvaguardas (Origem + tag + auditoria) ────────────
+
+    #[test]
+    fn engram_organico_por_default() {
+        let mut s = EngramStore::new();
+        let id = s.encode(cells(&[1, 2, 3]), 100, 0.5);
+        let e = s.get(id).unwrap();
+        assert_eq!(e.origem, EngramOrigem::Organico);
+        assert_eq!(e.tag, "");
+    }
+
+    #[test]
+    fn encode_com_origem_implantado_marca_corretamente() {
+        let mut s = EngramStore::new();
+        let id = s.encode_com_origem(
+            cells(&[10, 20]), 100, 0.3,
+            EngramOrigem::Implantado, "matematica_basica".to_string(), 15,
+        );
+        let e = s.get(id).unwrap();
+        assert_eq!(e.origem, EngramOrigem::Implantado);
+        assert_eq!(e.tag, "matematica_basica");
+        // n_reactivations inicial faz parecer consolidado
+        assert_eq!(e.n_reactivations, 15);
+        assert_eq!(e.last_reactivation_step, 100);
+    }
+
+    #[test]
+    fn list_implants_retorna_apenas_implantados() {
+        let mut s = EngramStore::new();
+        s.encode(cells(&[1, 2]), 100, 0.5); // organico
+        let id_imp = s.encode_com_origem(
+            cells(&[3, 4]), 100, 0.3,
+            EngramOrigem::Implantado, "fisica".to_string(), 10,
+        );
+        let implants = s.list_implants();
+        assert_eq!(implants.len(), 1);
+        assert_eq!(implants[0].id, id_imp);
+    }
+
+    #[test]
+    fn purge_implants_por_tag_remove_so_o_tag_correto() {
+        let mut s = EngramStore::new();
+        s.encode_com_origem(cells(&[1, 2]), 100, 0.3,
+            EngramOrigem::Implantado, "matematica".to_string(), 10);
+        s.encode_com_origem(cells(&[3, 4]), 100, 0.3,
+            EngramOrigem::Implantado, "fisica".to_string(), 10);
+        let n = s.purge_implants(Some("matematica"));
+        assert_eq!(n, 1);
+        assert_eq!(s.len(), 1); // só o de fisica restou
+    }
+
+    #[test]
+    fn purge_implants_sem_filter_remove_todos_implantados() {
+        let mut s = EngramStore::new();
+        s.encode(cells(&[1, 2]), 100, 0.5); // organico — fica
+        s.encode_com_origem(cells(&[3, 4]), 100, 0.3,
+            EngramOrigem::Implantado, "fisica".to_string(), 10);
+        s.encode_com_origem(cells(&[5, 6]), 100, 0.3,
+            EngramOrigem::Implantado, "matematica".to_string(), 10);
+        let n = s.purge_implants(None);
+        assert_eq!(n, 2);
+        assert_eq!(s.len(), 1); // só o organico restou
+        assert_eq!(s.iter().next().unwrap().origem, EngramOrigem::Organico);
+    }
+
+    #[test]
+    fn count_by_origem_telemetria() {
+        let mut s = EngramStore::new();
+        s.encode(cells(&[1, 2]), 100, 0.5);
+        s.encode(cells(&[3, 4]), 100, 0.5);
+        s.encode_com_origem(cells(&[5, 6]), 100, 0.3,
+            EngramOrigem::Implantado, "tag1".to_string(), 5);
+        s.encode_com_origem(cells(&[7, 8]), 100, 0.3,
+            EngramOrigem::Restaurado, String::new(), 0);
+        let (org, imp, rest) = s.count_by_origem();
+        assert_eq!(org, 2);
+        assert_eq!(imp, 1);
+        assert_eq!(rest, 1);
     }
 }

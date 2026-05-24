@@ -39,7 +39,7 @@ pub use amygdala::Amygdala;
 // V4.3 re-exports
 pub use dentate_gyrus::{DentateGyrus, SparsePattern};
 pub use ca3_attractor::CA3Attractor;
-pub use memory_engrams::{EngramStore, Engram, EngramId};
+pub use memory_engrams::{EngramStore, Engram, EngramId, EngramOrigem};
 pub use hippocampal_index::{HippocampalIndex, HippocampalIndexConfig, HippocampalIndexStats};
 
 use serde::{Serialize, Deserialize};
