@@ -126,6 +126,27 @@ pub enum TipoNeuronal {
     /// Quando inibido (pausa), libera o gate dopaminérgico do STDP 3-fatores
     /// → consolidação sináptica por coincidência DA + elig_trace.
     ChIN,
+
+    // ── V4.6: novos tipos biofísicos ──────────────────────────────────────────
+    /// Grid Cell — neurônio de grade do córtex entorrinal (Hafting et al. 2005).
+    /// Estabilidade de frequência → cria mapas hexagonais por interferência espacial.
+    /// Alta g_nap (oscilação subliminar de membrana persistente) + g_m moderado.
+    GridCell,
+    /// Mirror Cell — subtipo piramidal pré-motor (Rizzolatti & Craighero 2004).
+    /// Aprendizado vicariante: liga caminhos sensoriais a comandos motores via
+    /// coincidência STDP de 3 fatores. Excitatório, similar a RS com STDP forte.
+    MirrorCell,
+    /// Medium Spiny Neuron — célula inibidora GABAérgica do corpo estriado.
+    /// Forte adaptação pelo canal M (g_m alto) evita loops infinitos de feedback.
+    /// Receptores D1/D2 sensíveis à dopamina (modulação via mod_dopa de DA_N).
+    MSN,
+
+    // ── V4.6: célula-tronco / hibridização autônoma ───────────────────────────
+    /// Neurônio híbrido — fenótipo definido em runtime por um `DnaNeuronal`.
+    /// Variante UNIT (preserva `Copy`); o genoma viaja no campo
+    /// `NeuronioHibrido::dna`. Os parâmetros biofísicos efetivos são lidos do DNA
+    /// pelos getters `*_efetivo()` do neurônio, não deste enum.
+    Hybrid,
 }
 
 impl TipoNeuronal {
@@ -160,6 +181,15 @@ impl TipoNeuronal {
             TipoNeuronal::LC_N=> (0.02,  0.20, -55.0,  6.0),
             // ChIN: tônico com adaptação suave — a baixo, c intermediário
             TipoNeuronal::ChIN=> (0.05,  0.20, -60.0,  5.0),
+            // V4.6
+            // GridCell: ressonador estável (a maior → oscilação rítmica robusta)
+            TipoNeuronal::GridCell   => (0.05,  0.26, -60.0,  4.0),
+            // MirrorCell: piramidal pré-motor — idêntico a RS
+            TipoNeuronal::MirrorCell => (0.02,  0.20, -65.0,  8.0),
+            // MSN: down-state profundo, dispara difícil, forte after-spike reset
+            TipoNeuronal::MSN        => (0.01,  0.20, -55.0,  8.0),
+            // Hybrid: default tipo-RS; valores reais vêm do DNA via getters do neurônio
+            TipoNeuronal::Hybrid     => (0.02,  0.20, -65.0,  8.0),
         }
     }
 
@@ -170,6 +200,7 @@ impl TipoNeuronal {
             TipoNeuronal::TC  => 25.0,
             TipoNeuronal::FS  => 25.0,
             TipoNeuronal::LC_N=> 25.0,  // burst fácil
+            TipoNeuronal::MSN => 35.0,  // limiar alto: down-state, difícil disparar
             _                 => 30.0,
         }
     }
@@ -180,7 +211,8 @@ impl TipoNeuronal {
         matches!(self,
             TipoNeuronal::FS  | TipoNeuronal::LT |
             TipoNeuronal::PV  | TipoNeuronal::SST | TipoNeuronal::VIP |
-            TipoNeuronal::NGF)  // NGF: GABA volumétrico (inibição divisiva)
+            TipoNeuronal::NGF |  // NGF: GABA volumétrico (inibição divisiva)
+            TipoNeuronal::MSN)  // MSN: GABAérgico do corpo estriado
     }
 
     /// Verdadeiro para tipos que usam o modelo Hodgkin-Huxley.
@@ -214,6 +246,11 @@ impl TipoNeuronal {
             TipoNeuronal::NGF => 40.0,   // GABA rápido mas Ca²⁺ moderado
             TipoNeuronal::LC_N=> 80.0,   // NA burst — Ca²⁺ médio
             TipoNeuronal::ChIN=> 60.0,   // tônico — Ca²⁺ basal
+            // V4.6
+            TipoNeuronal::GridCell   => 70.0,  // ressonador — Ca²⁺ rítmico
+            TipoNeuronal::MirrorCell => 80.0,  // igual a RS
+            TipoNeuronal::MSN        => 100.0, // adaptação lenta forte
+            TipoNeuronal::Hybrid     => 80.0,  // default; sobreposto pelo DNA
         }
     }
 
@@ -242,6 +279,11 @@ impl TipoNeuronal {
             TipoNeuronal::NGF => 0.05,   // baixa taxa — inibe em rajadas
             TipoNeuronal::LC_N=> 0.04,   // burst esporádico
             TipoNeuronal::ChIN=> 0.10,   // tônico ~5 Hz
+            // V4.6
+            TipoNeuronal::GridCell   => 0.12,  // disparo rítmico moderado
+            TipoNeuronal::MirrorCell => 0.10,  // igual a RS
+            TipoNeuronal::MSN        => 0.06,  // esparso — gate de ação
+            TipoNeuronal::Hybrid     => 0.10,  // default; sobreposto pelo DNA
         }
     }
 
@@ -259,6 +301,43 @@ impl TipoNeuronal {
                 g_h: 0.0,
             }),
             _ => None,
+        }
+    }
+
+    /// Item 2 — Faixa de frequência de disparo plausível in vivo (min, max em Hz).
+    ///
+    /// O cérebro NÃO opera todo na frequência máxima: a maioria dos piramidais
+    /// dispara 1–20 Hz, interneurônios FS/PV chegam a 200 Hz, pacemakers ~1–8 Hz.
+    /// O clock de SIMULAÇÃO permanece 200 Hz (5 ms) por estabilidade numérica da
+    /// integração; estas faixas são a banda biológica esperada que o teste A/B
+    /// usa para validar que as taxas EMERGENTES são realistas.
+    /// Hz de disparo ≠ Hz de integração.
+    pub fn faixa_hz(&self) -> (f32, f32) {
+        match self {
+            TipoNeuronal::RS  => (1.0, 20.0),
+            TipoNeuronal::IB  => (5.0, 40.0),
+            TipoNeuronal::CH  => (20.0, 80.0),   // chattering — bursts rápidos
+            TipoNeuronal::FS  => (20.0, 200.0),  // fast-spiking — sem adaptação
+            TipoNeuronal::LT  => (5.0, 40.0),
+            TipoNeuronal::TC  => (4.0, 100.0),   // burst (sono) ↔ tônico (vigília)
+            TipoNeuronal::RZ  => (10.0, 100.0),
+            TipoNeuronal::PS  => (1.0, 15.0),
+            TipoNeuronal::PB  => (1.0, 15.0),
+            TipoNeuronal::AC  => (1.0, 10.0),
+            TipoNeuronal::BI  => (1.0, 30.0),
+            TipoNeuronal::DAP => (5.0, 40.0),
+            TipoNeuronal::IIS => (1.0, 20.0),
+            TipoNeuronal::PV  => (30.0, 200.0),  // parvalbumin — alta precisão
+            TipoNeuronal::SST => (5.0, 40.0),
+            TipoNeuronal::VIP => (5.0, 50.0),
+            TipoNeuronal::DA_N=> (1.0, 8.0),     // pacemaker dopaminérgico lento
+            TipoNeuronal::NGF => (1.0, 30.0),
+            TipoNeuronal::LC_N=> (1.0, 20.0),
+            TipoNeuronal::ChIN=> (2.0, 10.0),    // tônico ~5 Hz
+            TipoNeuronal::GridCell   => (5.0, 40.0),
+            TipoNeuronal::MirrorCell => (1.0, 25.0),
+            TipoNeuronal::MSN        => (0.1, 20.0), // down-state → disparo esparso
+            TipoNeuronal::Hybrid     => (1.0, 200.0),// fenótipo livre
         }
     }
 }
@@ -347,8 +426,10 @@ pub enum PrecisionType { FP32, FP16, INT8, INT4 }
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Número de ticks sem corrente/spike para um neurônio tornar-se Dormant.
-/// 100.000 ticks @ 200Hz ≈ 8.3 minutos de inatividade absoluta.
-pub const INACTIVITY_THRESHOLD: u64 = 100_000;
+/// 20.000 ticks @ 200Hz ≈ 100s de inatividade absoluta.
+/// Reduzido de 100.000 (V3.6) para conter OOM de runtime: neurônios ociosos
+/// paginam para NVMe muito mais cedo (restauráveis via restaurar_do_nvme).
+pub const INACTIVITY_THRESHOLD: u64 = 20_000;
 
 /// Estado do ciclo de vida de um NeuronioHibrido.
 /// Active  → processando correntes ou disparando recentemente.
@@ -642,6 +723,18 @@ const KO_CLEARANCE:         f32 = 0.02;  // clearance glial (ms⁻¹)
 const MET_KI:               f32 = 140.0; // [K⁺]i fixo (mM)
 const MET_RT_F:             f32 = 26.7;  // RT/F a 37°C (mV)
 
+// ── V4.6 Item 2: throughput 200 Hz ────────────────────────────────────────────
+/// Subsampling metabólico: a física de voltagem corre a cada tick (5ms @ 200Hz),
+/// mas ATP / bomba Na/K / [K⁺]o são lentos (τ ~ dezenas–centenas de ms) e só
+/// precisam recalcular a cada N ticks, com dt multiplicado por N. Erro desprezável.
+const METAB_SUBSAMPLE: u64 = 10;
+
+/// Default serde do campo `otimizar` (true = otimização 200 Hz ligada em produção).
+/// Função dedicada porque o default de `bool` no serde é `false` — sem isto, estado
+/// V4.5 carregado teria a otimização desligada. Per-neurônio (não global) → o teste
+/// A/B liga/desliga por camada sem race condition entre testes paralelos.
+fn otimizar_padrao() -> bool { true }
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SEÇÃO 5b — NTC: NEURAL TEXTURE COMPRESSION
 //
@@ -716,6 +809,11 @@ impl TipoNeuronalV3 for TipoNeuronal {
             TipoNeuronal::NGF => 0.4,   // baixo — inibição é primária
             TipoNeuronal::LC_N=> 1.8,   // burst requer boa excitabilidade
             TipoNeuronal::ChIN=> 1.0,   // tônico moderado
+            // V4.6
+            TipoNeuronal::GridCell   => 1.2, // I_NaP alto → oscilação de membrana
+            TipoNeuronal::MirrorCell => 1.5, // igual a RS
+            TipoNeuronal::MSN        => 0.5, // baixo — down-state
+            TipoNeuronal::Hybrid     => 1.5, // default; sobreposto pelo DNA
         }
     }
 
@@ -742,6 +840,11 @@ impl TipoNeuronalV3 for TipoNeuronal {
             TipoNeuronal::NGF => 3.5,   // adaptação moderada — Late-Spiking
             TipoNeuronal::LC_N=> 1.0,   // LC precisa disparar facilmente
             TipoNeuronal::ChIN=> 2.0,   // adaptação suave para manter tônico
+            // V4.6
+            TipoNeuronal::GridCell   => 2.5, // g_m moderado (sugerido)
+            TipoNeuronal::MirrorCell => 2.5, // adaptação tipo RS-pré-motor
+            TipoNeuronal::MSN        => 8.0, // FORTE adaptação M → evita loops
+            TipoNeuronal::Hybrid     => 3.0, // default; sobreposto pelo DNA
         }
     }
 
@@ -769,6 +872,11 @@ impl TipoNeuronalV3 for TipoNeuronal {
             TipoNeuronal::NGF => 30.0,
             TipoNeuronal::LC_N=> 5.0,
             TipoNeuronal::ChIN=> 6.0,
+            // V4.6
+            TipoNeuronal::GridCell   => 6.0, // g_a sugerido
+            TipoNeuronal::MirrorCell => 7.0, // similar a RS
+            TipoNeuronal::MSN        => 6.0, // I_A relevante no down-state
+            TipoNeuronal::Hybrid     => 8.0, // default; sobreposto pelo DNA
         }
     }
 
@@ -805,8 +913,196 @@ impl TipoNeuronalV3 for TipoNeuronal {
             TipoNeuronal::NGF => 1.5,
             TipoNeuronal::LC_N=> 3.0,  // NA release precisa de AHP rápido pós-burst
             TipoNeuronal::ChIN=> 2.0,
+            // V4.6
+            TipoNeuronal::GridCell   => 2.0, // g_bk sugerido
+            TipoNeuronal::MirrorCell => 2.0, // similar a RS
+            TipoNeuronal::MSN        => 1.5, // AHP moderado
+            TipoNeuronal::Hybrid     => 2.0, // default; sobreposto pelo DNA
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEÇÃO 6b — DNA NEURONAL (V4.6) — genoma digital para hibridização autônoma
+//
+// Unifica TODAS as variáveis biofísicas de um neurônio numa assinatura numérica
+// serializável. É a unidade de hereditariedade da neuroevolução:
+//   • `TipoNeuronal::extrair_dna()` lê qualquer tipo puro → DNA.
+//   • `gerar_especie_hibrida()` cruza dois DNAs + mutação → DNA inédito.
+//   • Neurônios `Hybrid` lêem os genes do DNA via getters `*_efetivo()`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Genoma digital de um neurônio — todos os parâmetros biofísicos num só struct.
+/// Serializável → permite persistir, clonar e registrar espécies evoluídas.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DnaNeuronal {
+    // Izhikevich
+    pub a: f32,
+    pub b: f32,
+    pub c: f32,
+    pub d: f32,
+    pub threshold: f32,
+    // Condutâncias dos canais iônicos
+    pub g_nap: f32,
+    pub g_m:   f32,
+    pub g_a:   f32,
+    pub g_t:   f32,
+    pub g_bk:  f32,
+    // Constantes de tempo / homeostase
+    pub tau_ca_ms:  f32,
+    pub bcm_theta:  f32,
+    // Flags fenotípicas
+    pub e_inibitorico: bool,
+    pub usa_hh:        bool,
+
+    // ── V4.6 (genoma expandido): genes ESTRUTURAIS ────────────────────────────
+    // Permitem fenótipos QUALITATIVAMENTE novos, não só pontos novos no espaço
+    // paramétrico: dinâmica HH, dendritos e plasticidade de curto prazo evoluíveis.
+    /// Dendritos multicompartimentais (AIS+soma+tronco+tufo apical). Antes só RS/IB.
+    #[serde(default)]
+    pub tem_compartimentos: bool,
+    /// Plasticidade de curto prazo (Tsodyks-Markram): depressão/facilitação/mista.
+    #[serde(default)]
+    pub tipo_stp: TipoSTP,
+    /// Condutâncias Hodgkin-Huxley — usadas quando `usa_hh`. Permite spikes com
+    /// forma realista, sag I_h, etc. (antes HH era exclusivo de TC/RZ puros).
+    #[serde(default = "dna_g_na_padrao")] pub g_na: f32,
+    #[serde(default = "dna_g_k_padrao")]  pub g_k:  f32,
+    #[serde(default = "dna_g_l_padrao")]  pub g_l:  f32,
+    #[serde(default)]                     pub g_h:  f32,
+}
+
+// Defaults serde dos genes HH (estado pré-expansão carrega com HH "neutro").
+fn dna_g_na_padrao() -> f32 { 120.0 }
+fn dna_g_k_padrao()  -> f32 { 36.0 }
+fn dna_g_l_padrao()  -> f32 { 0.3 }
+
+impl DnaNeuronal {
+    /// Aplica limites biofísicos plausíveis a cada gene (evita espécies impossíveis
+    /// que desestabilizariam a rede após mutação). Chamado após crossover/mutação.
+    pub fn clampar(&mut self) {
+        self.a         = self.a.clamp(0.002, 1.0);
+        self.b         = self.b.clamp(-1.0, 1.0);
+        self.c         = self.c.clamp(-70.0, -40.0);
+        self.d         = self.d.clamp(-25.0, 12.0);
+        self.threshold = self.threshold.clamp(20.0, 40.0);
+        self.g_nap     = self.g_nap.clamp(0.0, 4.0);
+        self.g_m       = self.g_m.clamp(0.0, 10.0);
+        self.g_a       = self.g_a.clamp(0.0, 35.0);
+        self.g_t       = self.g_t.clamp(0.0, 12.0);
+        self.g_bk      = self.g_bk.clamp(0.0, 6.0);
+        self.tau_ca_ms = self.tau_ca_ms.clamp(10.0, 200.0);
+        self.bcm_theta = self.bcm_theta.clamp(0.001, 0.5);
+        // Genes HH (só relevantes se usa_hh, mas mantém limites sãos sempre).
+        self.g_na = self.g_na.clamp(50.0, 250.0);
+        self.g_k  = self.g_k.clamp(10.0, 80.0);
+        self.g_l  = self.g_l.clamp(0.05, 1.0);
+        self.g_h  = self.g_h.clamp(0.0, 3.0);
+    }
+}
+
+impl TipoNeuronal {
+    /// Exporta a assinatura numérica exata de QUALQUER tipo puro como `DnaNeuronal`.
+    /// Para `Hybrid` (sem genes próprios no enum) devolve o default tipo-RS.
+    pub fn extrair_dna(&self) -> DnaNeuronal {
+        let (a, b, c, d) = self.parametros();
+        DnaNeuronal {
+            a, b, c, d,
+            threshold:     self.threshold_padrao(),
+            g_nap:         self.g_nap(),
+            g_m:           self.g_m(),
+            g_a:           self.g_a(),
+            g_t:           self.g_t(),
+            g_bk:          self.g_bk(),
+            tau_ca_ms:     self.tau_ca_ms(),
+            bcm_theta:     self.bcm_theta(),
+            e_inibitorico: self.e_inibitorico(),
+            usa_hh:        self.usa_hh(),
+            // Genes estruturais extraídos do tipo puro.
+            tem_compartimentos: matches!(self, TipoNeuronal::RS | TipoNeuronal::IB),
+            tipo_stp:           SinapseSTP::para_tipo(*self).tipo,
+            g_na: self.parametros_hh().map(|p| p.g_na).unwrap_or(120.0),
+            g_k:  self.parametros_hh().map(|p| p.g_k ).unwrap_or(36.0),
+            g_l:  self.parametros_hh().map(|p| p.g_l ).unwrap_or(0.3),
+            g_h:  self.parametros_hh().map(|p| p.g_h ).unwrap_or(0.0),
+        }
+    }
+}
+
+/// Gera uma espécie híbrida inédita a partir de dois pais.
+///
+/// Crossover por gene (mistura probabilística pai_a/pai_b) + mutação adaptativa
+/// com ruído gaussiano controlado nos genes críticos (`g_m`, `g_nap`).
+///
+/// `taxa_mutacao` ∈ [0.0, 1.0] escala a amplitude do ruído (recomendado 0.10–0.15).
+///
+/// NOTA (design Copy-preserving): devolve o **genoma** (`DnaNeuronal`) — a "espécie".
+/// Para instanciar um indivíduo, use `NeuronioHibrido::novo_hibrido(id, dna, prec)`.
+/// Não devolve `TipoNeuronal` porque a variante `Hybrid` é unit (preserva `Copy`)
+/// e o genoma precisa viajar à parte, no campo `dna` do neurônio.
+pub fn gerar_especie_hibrida(
+    pai_a: &TipoNeuronal,
+    pai_b: &TipoNeuronal,
+    taxa_mutacao: f32,
+) -> DnaNeuronal {
+    use rand::Rng;
+    let da = pai_a.extrair_dna();
+    let db = pai_b.extrair_dna();
+    let mut rng = rand::thread_rng();
+
+    // Crossover: mistura por gene. p ∈ [0,1] → herda fração de cada pai.
+    let mix = |x: f32, y: f32, rng: &mut rand::rngs::ThreadRng| -> f32 {
+        let p: f32 = rng.gen_range(0.0..1.0);
+        x * p + y * (1.0 - p)
+    };
+    // Mutação: ruído relativo gaussiano-aproximado (soma de uniformes) ± taxa.
+    let mutar = |valor: f32, escala: f32, rng: &mut rand::rngs::ThreadRng| -> f32 {
+        // (u1+u2+u3)/3 ∈ [-1,1] aproxima gaussiana centrada (teorema central do limite).
+        let r: f32 = (rng.gen_range(-1.0..1.0)
+                    + rng.gen_range(-1.0..1.0)
+                    + rng.gen_range(-1.0..1.0)) / 3.0;
+        valor * (1.0 + r * escala)
+    };
+
+    let m = taxa_mutacao.clamp(0.0, 0.5);
+    let mut filho = DnaNeuronal {
+        a:         mix(da.a, db.a, &mut rng),
+        b:         mix(da.b, db.b, &mut rng),
+        c:         mix(da.c, db.c, &mut rng),
+        d:         mix(da.d, db.d, &mut rng),
+        threshold: mix(da.threshold, db.threshold, &mut rng),
+        // Genes CRÍTICOS recebem mutação ativa (exploração de fenótipos novos):
+        g_nap:     mutar(mix(da.g_nap, db.g_nap, &mut rng), m, &mut rng),
+        g_m:       mutar(mix(da.g_m,   db.g_m,   &mut rng), m, &mut rng),
+        // Genes estruturais: só crossover (mutação fraca para estabilidade):
+        g_a:       mutar(mix(da.g_a,  db.g_a,  &mut rng), m * 0.3, &mut rng),
+        g_t:       mix(da.g_t,  db.g_t,  &mut rng),
+        g_bk:      mutar(mix(da.g_bk, db.g_bk, &mut rng), m * 0.3, &mut rng),
+        tau_ca_ms: mix(da.tau_ca_ms, db.tau_ca_ms, &mut rng),
+        bcm_theta: mix(da.bcm_theta, db.bcm_theta, &mut rng),
+        // Fenótipo herdado do pai dominante no crossover de g_m (regra simples):
+        e_inibitorico: if da.g_m >= db.g_m { da.e_inibitorico } else { db.e_inibitorico },
+        // ── Genes estruturais: herança Mendeliana + mutação rara (exploração) ──
+        // usa_hh / tem_compartimentos / tipo_stp herdam de um pai ao acaso;
+        // com prob = taxa_mutacao, a flag estrutural inverte → fenótipo inédito
+        // (ex.: um híbrido HH com dendritos que nenhum pai tinha).
+        usa_hh: {
+            let base = if rng.gen_bool(0.5) { da.usa_hh } else { db.usa_hh };
+            if rng.gen::<f32>() < m { !base } else { base }
+        },
+        tem_compartimentos: {
+            let base = if rng.gen_bool(0.5) { da.tem_compartimentos } else { db.tem_compartimentos };
+            if rng.gen::<f32>() < m { !base } else { base }
+        },
+        tipo_stp: if rng.gen_bool(0.5) { da.tipo_stp } else { db.tipo_stp },
+        // Condutâncias HH: crossover (mutação leve em g_na — molda a forma do spike).
+        g_na: mutar(mix(da.g_na, db.g_na, &mut rng), m * 0.3, &mut rng),
+        g_k:  mix(da.g_k, db.g_k, &mut rng),
+        g_l:  mix(da.g_l, db.g_l, &mut rng),
+        g_h:  mutar(mix(da.g_h, db.g_h, &mut rng), m * 0.3, &mut rng),
+    };
+    filho.clampar();
+    filho
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -865,8 +1161,9 @@ impl HhV3 {
 // SEÇÃO 8 — SHORT-TERM PLASTICITY (Tsodyks-Markram 1997)
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub enum TipoSTP {
+    #[default]
     Depression,
     Facilitation,
     Mixed,
@@ -956,6 +1253,43 @@ impl SinapseSTP {
             TipoNeuronal::ChIN => Self {
                 x: 1.0, u_stp: 0.25, u0: 0.25, tau_rec: 400.0, tau_fac: 100.0,
                 tipo: TipoSTP::Mixed,
+            },
+            // V4.6
+            // GridCell: depressão suave — mantém ritmo estável
+            TipoNeuronal::GridCell => Self {
+                x: 1.0, u_stp: 0.30, u0: 0.30, tau_rec: 500.0, tau_fac: 0.0,
+                tipo: TipoSTP::Depression,
+            },
+            // MirrorCell: igual a RS (piramidal depressiva)
+            TipoNeuronal::MirrorCell => Self {
+                x: 1.0, u_stp: 0.45, u0: 0.45, tau_rec: 800.0, tau_fac: 0.0,
+                tipo: TipoSTP::Depression,
+            },
+            // MSN: facilitante — integra drive cortical convergente
+            TipoNeuronal::MSN => Self {
+                x: 1.0, u_stp: 0.15, u0: 0.15, tau_rec: 300.0, tau_fac: 400.0,
+                tipo: TipoSTP::Facilitation,
+            },
+            // Hybrid: default depressivo tipo-RS (STP não é gene do DNA)
+            TipoNeuronal::Hybrid => Self {
+                x: 1.0, u_stp: 0.45, u0: 0.45, tau_rec: 800.0, tau_fac: 0.0,
+                tipo: TipoSTP::Depression,
+            },
+        }
+    }
+
+    /// V4.6 — Constrói a STP a partir do gene `TipoSTP` (para neurônios Hybrid).
+    /// Parâmetros canônicos por classe (Tsodyks-Markram 1997).
+    pub fn from_tipo_stp(tipo: TipoSTP) -> Self {
+        match tipo {
+            TipoSTP::Depression => Self {
+                x: 1.0, u_stp: 0.45, u0: 0.45, tau_rec: 800.0, tau_fac: 0.0, tipo,
+            },
+            TipoSTP::Facilitation => Self {
+                x: 1.0, u_stp: 0.15, u0: 0.15, tau_rec: 300.0, tau_fac: 500.0, tipo,
+            },
+            TipoSTP::Mixed => Self {
+                x: 1.0, u_stp: 0.30, u0: 0.30, tau_rec: 500.0, tau_fac: 200.0, tipo,
             },
         }
     }
@@ -1115,6 +1449,23 @@ pub struct NeuronioHibrido {
     /// Brain state corrente — modula condutância de acoplamento apical.
     #[serde(default)]
     pub brain_state:    EstadoBrainState,
+
+    // ── V4.6: genoma híbrido / célula-tronco ──────────────────────────────────
+    /// Genoma digital. `Some` apenas quando `tipo == Hybrid` (fenótipo em runtime).
+    /// `Option<Box<_>>` usa niche optimization: `None` = ponteiro nulo, 0 bytes em heap.
+    /// Os getters `*_efetivo()` lêem daqui quando presente; senão usam `self.tipo`.
+    #[serde(default)]
+    pub dna: Option<Box<DnaNeuronal>>,
+
+    /// Contador de subsampling metabólico (V4.6 item 2). Avança a cada tick;
+    /// o metabolismo só recalcula a cada `METAB_SUBSAMPLE` ticks (dt multiplicado).
+    #[serde(default)]
+    pub metab_tick: u64,
+
+    /// Item 2 — otimização 200 Hz ativa neste neurônio (event-driven + subsampler).
+    /// `true` em produção. O teste A/B desliga por camada para medir a referência.
+    #[serde(default = "otimizar_padrao")]
+    pub otimizar: bool,
 }
 
 impl NeuronioHibrido {
@@ -1154,7 +1505,139 @@ impl NeuronioHibrido {
             },
             metabolismo:  Box::new(EstadoMetabolico::novo()),
             brain_state:  EstadoBrainState::Vigilia,
+            dna:          None,
+            metab_tick:   0,
+            otimizar:     true,
         }
+    }
+
+    /// Constrói um neurônio `Hybrid` cujo fenótipo é definido pelo `dna`.
+    /// Usado pela neuroevolução / célula-tronco para instanciar espécies inéditas.
+    pub fn novo_hibrido(id: u32, dna: DnaNeuronal, precisao: PrecisionType) -> Self {
+        let mut n = Self::new(id, TipoNeuronal::Hybrid, precisao);
+        // Inicializa estado dependente dos genes a partir do DNA.
+        n.threshold = dna.threshold;
+        n.theta_m   = dna.bcm_theta;
+
+        // ── Genes ESTRUTURAIS (genoma expandido V4.6) ─────────────────────────
+        // Dinâmica HH evoluível: troca o modelo Izhikevich puro por HH se o gene pedir.
+        if dna.usa_hh {
+            n.modelo = ModeloDinamico::IzhikevichHH(Box::new(EstadoHH::repouso()));
+        }
+        // Dendritos multicompartimentais evoluíveis.
+        if dna.tem_compartimentos && n.compartimentos.is_none() {
+            n.compartimentos = Some(Box::new(EstadoCompartimentos::novo()));
+        }
+        // Plasticidade de curto prazo evoluível.
+        n.extras.stp = SinapseSTP::from_tipo_stp(dna.tipo_stp);
+
+        n.dna = Some(Box::new(dna));
+        n
+    }
+
+    /// Parâmetros HH efetivos: do DNA (Hybrid) ou do tipo puro. Para tipos sem HH
+    /// devolve um conjunto HH genérico (só usado se o modelo for IzhikevichHH).
+    #[inline]
+    pub fn parametros_hh_efetivo(&self) -> ParametrosHH {
+        if let Some(d) = &self.dna {
+            ParametrosHH {
+                g_na: d.g_na, g_k: d.g_k, g_l: d.g_l,
+                e_na: E_NA, e_k: E_K, e_l: -54.4, c_m: 1.0, g_h: d.g_h,
+            }
+        } else {
+            self.tipo.parametros_hh().unwrap_or(ParametrosHH {
+                g_na: 120.0, g_k: 36.0, g_l: 0.3,
+                e_na: E_NA, e_k: E_K, e_l: -54.4, c_m: 1.0, g_h: 0.0,
+            })
+        }
+    }
+
+    // ── V4.6: getters de genes efetivos (DNA tem prioridade sobre o tipo) ──────
+    /// Parâmetros Izhikevich efetivos: do DNA se `Hybrid`, senão do tipo puro.
+    #[inline]
+    pub fn parametros_efetivos(&self) -> (f32, f32, f32, f32) {
+        match &self.dna {
+            Some(d) => (d.a, d.b, d.c, d.d),
+            None    => self.tipo.parametros(),
+        }
+    }
+    #[inline]
+    pub fn threshold_padrao_efetivo(&self) -> f32 {
+        match &self.dna { Some(d) => d.threshold, None => self.tipo.threshold_padrao() }
+    }
+    #[inline]
+    pub fn tau_ca_efetivo(&self) -> f32 {
+        match &self.dna { Some(d) => d.tau_ca_ms, None => self.tipo.tau_ca_ms() }
+    }
+    #[inline]
+    pub fn g_nap_efetivo(&self) -> f32 {
+        match &self.dna { Some(d) => d.g_nap, None => self.tipo.g_nap() }
+    }
+    #[inline]
+    pub fn g_m_efetivo(&self) -> f32 {
+        match &self.dna { Some(d) => d.g_m, None => self.tipo.g_m() }
+    }
+    #[inline]
+    pub fn g_a_efetivo(&self) -> f32 {
+        match &self.dna { Some(d) => d.g_a, None => self.tipo.g_a() }
+    }
+    #[inline]
+    pub fn g_t_efetivo(&self) -> f32 {
+        match &self.dna { Some(d) => d.g_t, None => self.tipo.g_t() }
+    }
+    #[inline]
+    pub fn g_bk_efetivo(&self) -> f32 {
+        match &self.dna { Some(d) => d.g_bk, None => self.tipo.g_bk() }
+    }
+    /// GABAérgico efetivo: do DNA se `Hybrid`, senão do tipo puro.
+    #[inline]
+    pub fn e_inibitorico_efetivo(&self) -> bool {
+        match &self.dna { Some(d) => d.e_inibitorico, None => self.tipo.e_inibitorico() }
+    }
+
+    /// Item 2 — Event-driven: `true` quando o neurônio está tão silencioso que as
+    /// equações pesadas (canais iônicos HH/I_M/I_A/I_BK/I_T + compartimentos
+    /// dendríticos) podem ser puladas neste tick SEM alterar a dinâmica observável.
+    ///
+    /// O core Izhikevich (barato) e TODOS os decaimentos continuam a correr — só
+    /// se omite o cálculo de correntes de canais, que perto do repouso é ~0.
+    ///
+    /// Pacemakers e tipos autônomos (DA_N, ChIN, LC_N, TC, IIS, BI, GridCell)
+    /// NUNCA pulam — geram atividade própria sem input. Híbridos também não pulam
+    /// (fenótipo desconhecido → conservador).
+    #[inline]
+    fn quiescente(&self, input_efetivo: f32) -> bool {
+        let autonomo = matches!(self.tipo,
+            TipoNeuronal::DA_N | TipoNeuronal::ChIN | TipoNeuronal::LC_N |
+            TipoNeuronal::TC   | TipoNeuronal::IIS  | TipoNeuronal::BI   |
+            TipoNeuronal::GridCell);
+        if !self.otimizar || autonomo || self.dna.is_some() {
+            return false;
+        }
+        input_efetivo.abs()           < 0.05
+            && self.refr_count            == 0
+            && self.ca_intra              < 0.05
+            && self.extras.ca_nmda        < 0.02
+            && self.extras.elig_trace     < 0.02
+            && self.extras.burst_remaining_ms <= 0.0
+            && self.v                     < self.threshold - 15.0
+            && self.activity_avg          < 0.005
+    }
+
+    /// Item 1 — Zera buffers transitórios de plasticidade/canais (limpeza pós-sono).
+    /// Devolve o neurônio a baseline SEM destruir o que foi aprendido:
+    /// `peso`, `threshold`, `activity_avg` e `theta_m` permanecem intactos.
+    /// Alvo: neurônios que entram em `Dormant` ao encerrar o ciclo de sono.
+    pub fn liberar_buffers_temporarios(&mut self) {
+        self.extras.ca_nmda            = 0.0;
+        self.extras.elig_trace         = 0.0;
+        self.extras.q_bk               = 0.0;
+        self.extras.burst_remaining_ms = 0.0;
+        self.extras.dan_hyperpol_ms    = 0.0;
+        self.trace_pre                 = 0.0;
+        self.trace_pos                 = 0.0;
+        self.ca_intra                  = 0.0;
+        self.input_apical              = 0.0;
     }
 
     pub fn update(
@@ -1173,7 +1656,7 @@ impl NeuronioHibrido {
             let decay = (-dt_ms / TAU_STDP_MS).exp();
             self.trace_pre *= decay;
             self.trace_pos *= decay;
-            let tb = self.tipo.threshold_padrao();
+            let tb = self.threshold_padrao_efetivo();
             self.threshold = tb + (self.threshold - tb) * THRESHOLD_DECAY;
             self.extras.elig_trace *= (-dt_ms / TAU_ELIG_MS).exp();
             self.extras.ca_nmda   *= (-dt_ms / TAU_NMDA_CA_MS).exp();
@@ -1211,20 +1694,28 @@ impl NeuronioHibrido {
         self.extras.stp_efficacy = self.extras.stp.fator();
         let input_stp = input_q;
 
-        // ── 4. Correntes HH (TC e RZ) ────────────────────────────────────
+        // ── 4. Correntes HH (TC, RZ e híbridos com gene usa_hh) ──────────
+        // Pré-computa os parâmetros HH antes do borrow mutável de self.modelo
+        // (híbridos lêem do DNA; tipos puros, do tipo). Custo desprezável.
+        let params_hh = self.parametros_hh_efetivo();
+        let v_atual = self.v;
         let i_hh = if let ModeloDinamico::IzhikevichHH(ref mut estado) = self.modelo {
-            let params = self.tipo.parametros_hh()
-                .unwrap_or_else(|| unreachable!("TC/RZ garantem ParametrosHH"));
-            HhV3::integrar(estado, &params, self.v, dt_ms)
+            HhV3::integrar(estado, &params_hh, v_atual, dt_ms)
         } else {
             0.0
         };
 
+        // ── Item 2: Event-driven — neurônio silencioso pula a física pesada ──
+        // Canais iônicos e compartimentos perto do repouso contribuem ~0; pular
+        // poupa a maior parte do custo sem alterar a dinâmica observável.
+        // (quiescente() já respeita self.otimizar.)
+        let pular_pesado = self.quiescente(input_stp);
+
         // ── 5. Novos canais iônicos ──────────────────────────────────────
-        let i_extra = self.calcular_canais_extras(dt_ms);
+        let i_extra = if pular_pesado { 0.0 } else { self.calcular_canais_extras(dt_ms) };
 
         // ── 5b. Compartimentos dendríticos + AIS (RS/IB apenas) ───────────
-        let i_comp = if self.compartimentos.is_some() {
+        let i_comp = if !pular_pesado && self.compartimentos.is_some() {
             let api = self.input_apical;
             self.integrar_compartimentos(dt_ms, api)
         } else {
@@ -1233,7 +1724,25 @@ impl NeuronioHibrido {
 
         // ── 5c. Metabolismo: ATP + bomba Na/K + [K⁺]o dinâmico ────────────
         // CHAMADA 1: antes dos substeps — retorna i_pump para I_eff.
-        let i_pump = self.atualizar_metabolismo(false, dt_ms);
+        //
+        // Item 2 (subsampler): metabolismo é caro mas lento. SÓ subsampla quando o
+        // neurônio está OCIOSO (ATP perto do equilíbrio, sem interesse); durante
+        // atividade (ca_intra alto / burst) corre a CADA tick para não distorcer a
+        // depleção/recuperação de ATP. `metab_tick` acumula ticks desde a última
+        // execução → dt × ticks dá a integral EXATA, independente da cadência.
+        self.metab_tick = self.metab_tick.wrapping_add(1);
+        let metab_ativo = self.ca_intra > 0.3 || self.extras.burst_remaining_ms > 0.0;
+        let deve_rodar_metab = !self.otimizar
+            || metab_ativo
+            || self.metab_tick >= METAB_SUBSAMPLE;
+        let i_pump = if deve_rodar_metab {
+            let escala_dt = self.metab_tick as f32; // ticks acumulados desde a última
+            self.metab_tick = 0;
+            self.atualizar_metabolismo(false, dt_ms * escala_dt)
+        } else {
+            // Ocioso entre execuções: reutiliza a última corrente da bomba.
+            self.metabolismo.i_pump * HH_SCALE * 0.5
+        };
 
         // ── 5d. ATP penalty: ATP baixo → threshold sobe (modo economia) ───
         let atp_penalty = if self.metabolismo.atp < 0.8 {
@@ -1268,7 +1777,7 @@ impl NeuronioHibrido {
         // ── 7. Substeps Izhikevich (~1 ms cada) ──────────────────────────
         let n_sub  = (dt_ms.round() as usize).max(1);
         let dt_int = dt_ms / n_sub as f32;
-        let (a, b, c, d) = self.tipo.parametros();
+        let (a, b, c, d) = self.parametros_efetivos();
         let mut spiked = false;
 
         let neuro_thresh_offset = -(self.mod_dopa - 1.0) * 2.0
@@ -1322,7 +1831,7 @@ impl NeuronioHibrido {
         self.input_apical = 0.0; // one-shot: consumido a cada tick
 
         // ── 8. Ca²⁺ AHP (SK) + BK rápido pós-spike ──────────────────────
-        let ca_decay = (-dt_ms / self.tipo.tau_ca_ms()).exp();
+        let ca_decay = (-dt_ms / self.tau_ca_efetivo()).exp();
         self.ca_intra *= ca_decay;
         self.extras.q_bk *= (-dt_ms / TAU_BK_MS).exp();
         self.extras.q_bk = self.extras.q_bk.clamp(0.0, 1.0);
@@ -1427,7 +1936,7 @@ impl NeuronioHibrido {
         self.bdnf *= (-dt_ms / TAU_BDNF_MS).exp();
 
         // ── 13. Threshold retorna ao padrão ──────────────────────────────
-        let tb = self.tipo.threshold_padrao();
+        let tb = self.threshold_padrao_efetivo();
         self.threshold = tb + (self.threshold - tb) * THRESHOLD_DECAY;
 
         // ── 14. Atualiza estado STP para o próximo tick ───────────────────
@@ -1466,7 +1975,7 @@ impl NeuronioHibrido {
 
         // ── I_NaP: Na⁺ persistente ───────────────────────────────────────
         let m_nap_inf = 1.0 / (1.0 + (-(v + 52.0) / 5.0).clamp(-30.0, 30.0).exp());
-        let i_nap = self.tipo.g_nap() * m_nap_inf * (v - E_NA);
+        let i_nap = self.g_nap_efetivo() * m_nap_inf * (v - E_NA);
 
         // ── I_M: M-current (KCNQ) ────────────────────────────────────────
         let w_inf_m = 1.0 / (1.0 + (-(v + 35.0) / 10.0).clamp(-30.0, 30.0).exp());
@@ -1475,7 +1984,7 @@ impl NeuronioHibrido {
             let ey = (-(v + 35.0) / 20.0).clamp(-20.0, 20.0).exp();
             (400.0 / (3.3 * (ex + ey).max(1e-8))).clamp(5.0, 1000.0)
         };
-        let g_m_eff = self.tipo.g_m() * (1.0 - (self.extras.mod_ach - 1.0) * 0.35).clamp(0.1, 1.0);
+        let g_m_eff = self.g_m_efetivo() * (1.0 - (self.extras.mod_ach - 1.0) * 0.35).clamp(0.1, 1.0);
         let decay_w = (-dt_ms / tau_w).exp();
         self.extras.w_m = w_inf_m + (self.extras.w_m - w_inf_m) * decay_w;
         self.extras.w_m = self.extras.w_m.clamp(0.0, 1.0);
@@ -1500,13 +2009,13 @@ impl NeuronioHibrido {
         self.extras.b_ka = b_inf + (self.extras.b_ka - b_inf) * decay_b;
         self.extras.a_ka = self.extras.a_ka.clamp(0.0, 1.0);
         self.extras.b_ka = self.extras.b_ka.clamp(0.0, 1.0);
-        let i_a = self.tipo.g_a() * self.extras.a_ka.powi(3) * self.extras.b_ka * (v - e_k);
+        let i_a = self.g_a_efetivo() * self.extras.a_ka.powi(3) * self.extras.b_ka * (v - e_k);
 
         // ── I_BK: BK channels ────────────────────────────────────────────
-        let i_bk = self.tipo.g_bk() * self.extras.q_bk * (v - e_k);
+        let i_bk = self.g_bk_efetivo() * self.extras.q_bk * (v - e_k);
 
         // ── I_T: T-type Ca²⁺ (TC e LT) ──────────────────────────────────
-        let i_t = if self.tipo.g_t() > 0.0 {
+        let i_t = if self.g_t_efetivo() > 0.0 {
             let m_t_inf = 1.0 / (1.0 + (-(v + 57.0) / 6.2).clamp(-30.0, 30.0).exp());
             let tau_mt = {
                 let c1 = (-(v + 132.0) / 16.7).clamp(-20.0, 20.0).exp();
@@ -1536,7 +2045,7 @@ impl NeuronioHibrido {
             self.extras.h_t = h_t_inf + (self.extras.h_t - h_t_inf) * decay_ht;
             self.extras.m_t = self.extras.m_t.clamp(0.0, 1.0);
             self.extras.h_t = self.extras.h_t.clamp(0.0, 1.0);
-            self.tipo.g_t() * self.extras.m_t.powi(2) * self.extras.h_t * (v - E_CA)
+            self.g_t_efetivo() * self.extras.m_t.powi(2) * self.extras.h_t * (v - E_CA)
         } else { 0.0 };
 
         i_nap + i_m + i_a + i_bk + i_t
@@ -1765,7 +2274,7 @@ impl NeuronioHibrido {
             .round().clamp(0.0, 15.0) as usize;
         let dv_base = lut[vi][ui] as f32 * NTC_LUT_SCALE;
 
-        let (a, b, c, d) = self.tipo.parametros();
+        let (a, b, c, d) = self.parametros_efetivos();
         self.v = (self.v + dt_ms * (dv_base + input_q)).clamp(-100.0, 100.0);
         self.u += dt_ms * a * (b * self.v - self.u);
 
@@ -1780,7 +2289,7 @@ impl NeuronioHibrido {
         };
 
         // Ca²⁺ AHP (SK) simplificado
-        self.ca_intra *= (-dt_ms / self.tipo.tau_ca_ms()).exp();
+        self.ca_intra *= (-dt_ms / self.tau_ca_efetivo()).exp();
         if spiked { self.ca_intra = (self.ca_intra + CA_POR_SPIKE).min(CA_MAX); }
 
         // BCM homeostático
@@ -1801,7 +2310,7 @@ impl NeuronioHibrido {
         }
 
         // Threshold retorna ao padrão
-        let tb = self.tipo.threshold_padrao();
+        let tb = self.threshold_padrao_efetivo();
         self.threshold = tb + (self.threshold - tb) * THRESHOLD_DECAY;
 
         spiked
@@ -1825,7 +2334,7 @@ impl NeuronioHibrido {
         self.extras.stp_efficacy = self.extras.stp.fator();
         let i_eff = input_q;
 
-        let (a, b, c, d) = self.tipo.parametros();
+        let (a, b, c, d) = self.parametros_efetivos();
         let n_sub  = (dt_ms.round() as usize).max(1);
         let dt_int = dt_ms / n_sub as f32;
         let mut spiked = false;
@@ -1845,7 +2354,7 @@ impl NeuronioHibrido {
         }
 
         // Ca²⁺ AHP (SK) + BK rápido
-        self.ca_intra *= (-dt_ms / self.tipo.tau_ca_ms()).exp();
+        self.ca_intra *= (-dt_ms / self.tau_ca_efetivo()).exp();
         self.extras.q_bk *= (-dt_ms / TAU_BK_MS).exp();
         if spiked {
             self.ca_intra = (self.ca_intra + CA_POR_SPIKE).min(CA_MAX);
@@ -1884,7 +2393,7 @@ impl NeuronioHibrido {
         self.extras.ca_nmda *= (-dt_ms / TAU_NMDA_CA_MS).exp();
 
         // Threshold retorna ao padrão
-        let tb = self.tipo.threshold_padrao();
+        let tb = self.threshold_padrao_efetivo();
         self.threshold = tb + (self.threshold - tb) * THRESHOLD_DECAY;
 
         // STP tick
@@ -2014,6 +2523,44 @@ impl CamadaHibrida {
         }
     }
 
+    /// V4.6 Item 3b — Microcircuito cortical biologicamente COMPLETO.
+    ///
+    /// Acorda a maquinaria V3.1 que estava DORMENTE: as zonas só criavam RS+FS,
+    /// então SST gating, VIP disinibição, DA_N/RPE, gate ChIN e normalização NGF
+    /// (todos já implementados em `update()`/`init_lateral_inhibition`) nunca eram
+    /// exercitados. Este construtor cria os interneurônios que faltavam.
+    ///
+    /// Proporções ~neocórtex (Markram et al. 2015, "Reconstruction of Neocortical
+    /// Microcircuitry"): RS 70% · FS/PV 10% · SST 8% · VIP 4% · NGF 3% · DA_N 3% · ChIN 2%.
+    /// Chama `init_lateral_inhibition` internamente (PV/FS, SST→apical, VIP→SST/PV).
+    pub fn nova_cortical_rica(n_neurons: usize, nome: &str, escala: f32) -> Self {
+        // Base RS com a distribuição de precisão padrão; tipos reatribuídos abaixo.
+        let mut c = Self::new(n_neurons, nome, TipoNeuronal::RS, None, None, escala);
+
+        // Faixas de índice [lo, hi) → tipo. RS ocupa [0.0, 0.70) (não listado).
+        let faixas = [
+            (TipoNeuronal::FS,   0.70, 0.80),
+            (TipoNeuronal::SST,  0.80, 0.88),
+            (TipoNeuronal::VIP,  0.88, 0.92),
+            (TipoNeuronal::NGF,  0.92, 0.95),
+            (TipoNeuronal::DA_N, 0.95, 0.98),
+            (TipoNeuronal::ChIN, 0.98, 1.00),
+        ];
+        let n = c.neuronios.len().max(1);
+        for (i, neur) in c.neuronios.iter_mut().enumerate() {
+            let prog = i as f32 / n as f32;
+            for &(tipo, lo, hi) in &faixas {
+                if prog >= lo && prog < hi {
+                    // Reconstrói preservando id e precisão (distribuição mantida).
+                    *neur = NeuronioHibrido::new(neur.id, tipo, neur.precisao);
+                    break;
+                }
+            }
+        }
+        c.init_lateral_inhibition(6, 3.0);
+        c
+    }
+
     pub fn init_lateral_inhibition(&mut self, n_vizinhos: usize, peso_inhib: f32) {
         let n = self.neuronios.len();
         self.lateral_w = vec![Vec::new(); n];
@@ -2029,7 +2576,7 @@ impl CamadaHibrida {
             .filter(|(_, n)| n.tipo == TipoNeuronal::VIP)
             .map(|(i, _)| i).collect();
         let rs_idx: Vec<usize> = self.neuronios.iter().enumerate()
-            .filter(|(_, n)| !n.tipo.e_inibitorico())
+            .filter(|(_, n)| !n.e_inibitorico_efetivo())
             .map(|(i, _)| i).collect();
 
         if rs_idx.is_empty() { return; }
@@ -2051,7 +2598,7 @@ impl CamadaHibrida {
         }
         for &rs in &rs_idx {
             let prox = (rs + 1) % n;
-            if !self.neuronios[prox].tipo.e_inibitorico() {
+            if !self.neuronios[prox].e_inibitorico_efetivo() {
                 self.lateral_w[rs].push((prox, 0.8));
             }
         }
@@ -2150,7 +2697,7 @@ impl CamadaHibrida {
                     for &(to, strength) in targets {
                         if to < n {
                             let n_ = &mut self.neuronios[to];
-                            if !n_.tipo.e_inibitorico() {
+                            if !n_.e_inibitorico_efetivo() {
                                 // Fecha janela de plasticidade dendrítica
                                 n_.extras.ca_nmda    = (n_.extras.ca_nmda
                                     * (1.0 - SST_CA_GATE * strength)).max(0.0);
@@ -2286,6 +2833,74 @@ impl CamadaHibrida {
         }
     }
 
+    /// Item 1 — Limpeza agressiva de memória ao encerrar o ciclo de sono.
+    ///
+    /// 1. Zera buffers transitórios dos neurônios `Dormant`.
+    /// 2. `shrink_to_fit()` devolve a capacidade excedente dos `Vec` (neurônios,
+    ///    listas de adjacência laterais/SST, prev_spikes) ao alocador → ao SO.
+    ///
+    /// NÃO destrói pesos aprendidos nem topologia ativa. Idempotente e seguro
+    /// chamar a cada despertar.
+    ///
+    /// ⚠️ NOTA HONESTA: os `Vec` desta camada têm tamanho ~fixo após init; o ganho
+    /// aqui é marginal. A retenção de GB pós-sono observada NÃO nasce neste módulo
+    /// — investigar buffers de replay em `sleep_cycle.rs` e índices em
+    /// `storage/swap_manager.rs` (evicção NVMe subdimensionada).
+    pub fn compactar_memoria(&mut self) {
+        for n in &mut self.neuronios {
+            if n.status == NeuronalStatus::Dormant {
+                n.liberar_buffers_temporarios();
+            }
+        }
+        self.neuronios.shrink_to_fit();
+        self.prev_spikes.shrink_to_fit();
+        for v in &mut self.lateral_w { v.shrink_to_fit(); }
+        self.lateral_w.shrink_to_fit();
+        for v in &mut self.sst_w { v.shrink_to_fit(); }
+        self.sst_w.shrink_to_fit();
+    }
+
+    /// Item 1 — Propaga o `EstadoBrainState` a toda a camada e dispara a limpeza
+    /// na transição Sono→Vigília. Liga o `EstadoBrainState` (antes usado só em
+    /// testes) ao ciclo de sono real — chame a partir do gestor de sono ao mudar
+    /// de fase (ex.: ao sair de `NremProfundo`/`Rem` para `Vigilia`).
+    pub fn set_brain_state(&mut self, novo: EstadoBrainState) {
+        let anterior = self.neuronios.first()
+            .map(|n| n.brain_state)
+            .unwrap_or(EstadoBrainState::Vigilia);
+        let acordando = anterior != EstadoBrainState::Vigilia
+            && novo == EstadoBrainState::Vigilia;
+
+        for n in &mut self.neuronios {
+            n.brain_state = novo;
+        }
+        if acordando {
+            self.compactar_memoria();
+        }
+    }
+
+    /// Item 2 — Liga/desliga a otimização 200 Hz em todos os neurônios da camada.
+    /// Usado pelo teste A/B para medir a referência (sem otimização) vs produção.
+    pub fn set_otimizacao(&mut self, ativa: bool) {
+        for n in &mut self.neuronios {
+            n.otimizar = ativa;
+        }
+    }
+
+    /// V4.6 Item 6 — Implanta um neurônio na camada mantendo `prev_spikes` e as
+    /// listas de adjacência (`lateral_w`, `sst_w`) em sincronia de tamanho.
+    /// Usado pela neurogênese (célula-tronco) durante o sono. Devolve o índice.
+    /// O novo neurônio nasce SEM conexões laterais (linhas vazias) — não perturba
+    /// a topologia existente; será cabeado só se sobreviver à prova.
+    pub fn adicionar_neuronio(&mut self, neuronio: NeuronioHibrido) -> usize {
+        let idx = self.neuronios.len();
+        self.neuronios.push(neuronio);
+        self.prev_spikes.push(false);
+        if !self.lateral_w.is_empty() { self.lateral_w.push(Vec::new()); }
+        if !self.sst_w.is_empty()     { self.sst_w.push(Vec::new()); }
+        idx
+    }
+
     pub fn estatisticas(&self) -> CamadaStats {
         let mut s = CamadaStats::default();
         for n in &self.neuronios {
@@ -2317,6 +2932,10 @@ impl CamadaHibrida {
                 TipoNeuronal::NGF  => s.tipo_ngf  += 1,
                 TipoNeuronal::LC_N => s.tipo_lcn  += 1,
                 TipoNeuronal::ChIN => s.tipo_chin += 1,
+                TipoNeuronal::GridCell   => s.tipo_grid   += 1,
+                TipoNeuronal::MirrorCell => s.tipo_mirror += 1,
+                TipoNeuronal::MSN        => s.tipo_msn    += 1,
+                TipoNeuronal::Hybrid     => s.tipo_hybrid += 1,
             }
             if n.tipo.usa_hh() { s.hh += 1; }
             s.bytes_total += std::mem::size_of::<NeuronioHibrido>();
@@ -2385,6 +3004,11 @@ pub struct CamadaStats {
     pub tipo_ngf:    usize,
     pub tipo_lcn:    usize,
     pub tipo_chin:   usize,
+    // V4.6
+    pub tipo_grid:   usize,
+    pub tipo_mirror: usize,
+    pub tipo_msn:    usize,
+    pub tipo_hybrid: usize,
 }
 
 impl CamadaStats {
@@ -2656,5 +3280,193 @@ mod testes_v4 {
         assert!(eph_decaido.abs() < eph_ativo.abs() + 1e-3,
             "ephaptic_pool deve decair sem atividade: {eph_decaido} vs {eph_ativo}");
         assert!(eph_ativo.abs() <= 5.0, "ephaptic_pool clamp [-5,5]");
+    }
+
+    // ───────────────────────── V4.6 — Item 2: 200 Hz ─────────────────────────
+
+    /// Teste A/B: a otimização 200 Hz (event-driven + subsampler metabólico) NÃO
+    /// pode alterar significativamente a taxa de spikes emergente da rede.
+    #[test]
+    fn ab_otimizacao_200hz_preserva_taxa_de_spikes() {
+        fn medir(otim: bool) -> usize {
+            let mut c = CamadaHibrida::new(
+                64, "ab", TipoNeuronal::RS, Some((TipoNeuronal::FS, 0.2)), None, 1.0,
+            );
+            c.set_otimizacao(otim); // per-camada → sem estado global → sem race
+            let mut total = 0usize;
+            for t in 0..1000 {
+                // Input determinístico: ~1/3 dos neurônios excitados a cada tick.
+                let inputs: Vec<f32> = (0..64)
+                    .map(|i| if (i + t) % 3 == 0 { 18.0 } else { 0.0 })
+                    .collect();
+                total += c.update(&inputs, DT, t as f32).iter().filter(|&&s| s).count();
+            }
+            total
+        }
+        let com = medir(true);
+        let sem = medir(false);
+
+        assert!(sem > 0 && com > 0, "ambos os modos devem disparar (com={com}, sem={sem})");
+        let diff = (com as f32 - sem as f32).abs() / sem as f32;
+        assert!(diff < 0.10,
+            "otimização 200Hz deve preservar a taxa de spikes (±10%): \
+             com_otim={com}, sem_otim={sem}, diff={:.1}%", diff * 100.0);
+    }
+
+    /// Faixas biológicas: FS dispara mais que RS sob o mesmo drive (sanity check
+    /// de que a heterogeneidade de frequência é real, não todos no máximo).
+    #[test]
+    fn fs_dispara_mais_que_rs_mesmo_drive() {
+        let mut rs = NeuronioHibrido::new(0, TipoNeuronal::RS, PrecisionType::FP32);
+        let mut fs = NeuronioHibrido::new(1, TipoNeuronal::FS, PrecisionType::FP32);
+        let s_rs = rodar(&mut rs, 22.0, 0.0, 2000);
+        let s_fs = rodar(&mut fs, 22.0, 0.0, 2000);
+        assert!(s_fs > s_rs, "FS deve disparar mais que RS (fs={s_fs}, rs={s_rs})");
+    }
+
+    // ───────────────────── V4.6 — Item 4: DNA / Hybrid ───────────────────────
+
+    #[test]
+    fn dna_roundtrip_preserva_genes_do_tipo() {
+        for tipo in [TipoNeuronal::RS, TipoNeuronal::FS,
+                     TipoNeuronal::MSN, TipoNeuronal::GridCell] {
+            let dna = tipo.extrair_dna();
+            let (a, _, _, _) = tipo.parametros();
+            assert_eq!(dna.a, a, "{tipo:?}: gene a deve casar");
+            assert_eq!(dna.g_m, tipo.g_m(), "{tipo:?}: gene g_m deve casar");
+            assert_eq!(dna.e_inibitorico, tipo.e_inibitorico(),
+                "{tipo:?}: flag e_inibitorico deve casar");
+        }
+    }
+
+    #[test]
+    fn hibrido_le_genes_do_dna_nao_do_tipo() {
+        let mut dna = TipoNeuronal::RS.extrair_dna();
+        dna.g_m = 9.5;
+        dna.e_inibitorico = true;
+        let n = NeuronioHibrido::novo_hibrido(0, dna.clone(), PrecisionType::FP32);
+        assert_eq!(n.tipo, TipoNeuronal::Hybrid);
+        assert_eq!(n.g_m_efetivo(), 9.5, "hybrid deve ler g_m do DNA");
+        assert!(n.e_inibitorico_efetivo(), "hybrid deve herdar e_inibitorico do DNA");
+        assert_eq!(n.parametros_efetivos().0, dna.a, "hybrid deve ler a do DNA");
+    }
+
+    #[test]
+    fn especie_hibrida_fica_nos_limites_e_dispara() {
+        let dna = gerar_especie_hibrida(&TipoNeuronal::RS, &TipoNeuronal::FS, 0.12);
+        assert!(dna.g_m >= 0.0 && dna.g_m <= 10.0, "g_m clampado: {}", dna.g_m);
+        assert!(dna.a >= 0.002 && dna.a <= 1.0, "a clampado: {}", dna.a);
+        let mut n = NeuronioHibrido::novo_hibrido(0, dna, PrecisionType::FP32);
+        let spikes = rodar(&mut n, 25.0, 0.0, 2000);
+        assert!(spikes > 0, "espécie híbrida deve ser viável e disparar (got {spikes})");
+    }
+
+    // ─────────────────── V4.6 — Item 3: novos tipos puros ────────────────────
+
+    #[test]
+    fn novos_tipos_disparam_com_drive_forte() {
+        for tipo in [TipoNeuronal::GridCell, TipoNeuronal::MirrorCell, TipoNeuronal::MSN] {
+            let mut n = NeuronioHibrido::new(0, tipo, PrecisionType::FP32);
+            let spikes = rodar(&mut n, 45.0, 0.0, 3000);
+            assert!(spikes > 0, "{tipo:?} deve disparar com drive forte (got {spikes})");
+        }
+    }
+
+    // ──────────────────── V4.6 — Item 1: limpeza pós-sono ────────────────────
+
+    #[test]
+    fn set_brain_state_compacta_ao_acordar() {
+        let mut c = CamadaHibrida::new(32, "sono", TipoNeuronal::RS, None, None, 1.0);
+        c.set_brain_state(EstadoBrainState::NremProfundo);
+        assert!(c.neuronios.iter().all(|n| n.brain_state == EstadoBrainState::NremProfundo));
+
+        // Neurônio Dormant com buffer "sujo" deve ser limpo ao acordar.
+        c.neuronios[0].status = NeuronalStatus::Dormant;
+        c.neuronios[0].extras.elig_trace = 0.9;
+        c.set_brain_state(EstadoBrainState::Vigilia);
+
+        assert_eq!(c.neuronios[0].extras.elig_trace, 0.0,
+            "Dormant deve ter buffers temporários limpos ao acordar");
+        assert!(c.neuronios.iter().all(|n| n.brain_state == EstadoBrainState::Vigilia));
+    }
+
+    // ──────────── V4.6 — Item 3b: acordar maquinaria V3.1 dormente ────────────
+
+    #[test]
+    fn cortical_rica_cria_interneuronios_e_acorda_maquinaria() {
+        let c = CamadaHibrida::nova_cortical_rica(200, "rica", 1.0);
+        let tem = |t: TipoNeuronal| c.neuronios.iter().any(|n| n.tipo == t);
+        // Os tipos antes órfãos agora EXISTEM na rede.
+        for t in [TipoNeuronal::FS, TipoNeuronal::SST, TipoNeuronal::VIP,
+                  TipoNeuronal::NGF, TipoNeuronal::DA_N, TipoNeuronal::ChIN] {
+            assert!(tem(t), "microcircuito deve conter {t:?}");
+        }
+        // SST gating cabeado (init_lateral_inhibition preencheu sst_w).
+        assert!(c.sst_w.iter().any(|v| !v.is_empty()),
+            "SST→RS deve estar cabeado (gating de plasticidade ativo)");
+    }
+
+    #[test]
+    fn cortical_rica_dan_modula_dopamina_dos_rs() {
+        let mut c = CamadaHibrida::nova_cortical_rica(200, "rica_da", 1.0);
+        // Força RPE positivo nos DA_N (input estável os manteria em 1.0).
+        for n in &mut c.neuronios {
+            if n.tipo == TipoNeuronal::DA_N { n.mod_dopa = 1.5; }
+        }
+        let inputs = vec![20.0f32; 200];
+        // Um tick basta: Post-tick A propaga rpe(=média DA_N) → RS/IB/CH/DAP/VIP.
+        c.update(&inputs, DT, 0.0);
+        let rs_modulado = c.neuronios.iter()
+            .filter(|n| n.tipo == TipoNeuronal::RS)
+            .any(|n| (n.mod_dopa - 1.5).abs() < 0.2);
+        assert!(rs_modulado,
+            "broadcast DA_N→RS (Post-tick A) deve copiar o RPE dos DA_N para os RS \
+             — prova de que a maquinaria antes morta está viva");
+    }
+
+    // ───────────── V4.6 — Genoma EXPANDIDO: neurônios estruturalmente novos ─────
+
+    /// Cria um fenótipo que NENHUM dos 23 tipos puros é: inibidor com dinâmica
+    /// Hodgkin-Huxley + dendritos multicompartimentais + sinapse facilitante.
+    #[test]
+    fn genoma_expandido_cria_neuronio_estruturalmente_novo() {
+        let mut dna = TipoNeuronal::RS.extrair_dna();
+        dna.usa_hh             = true;             // dinâmica HH (RS puro é Izhikevich)
+        dna.tem_compartimentos = true;             // dendritos
+        dna.tipo_stp           = TipoSTP::Facilitation;
+        dna.e_inibitorico      = true;             // GABAérgico
+        dna.clampar();
+
+        let mut n = NeuronioHibrido::novo_hibrido(0, dna, PrecisionType::FP32);
+        // Estruturas qualitativamente novas presentes:
+        assert!(matches!(n.modelo, ModeloDinamico::IzhikevichHH(_)),
+            "deve adotar dinâmica Hodgkin-Huxley");
+        assert!(n.compartimentos.is_some(), "deve possuir dendritos multicompartimentais");
+        assert_eq!(n.extras.stp.tipo, TipoSTP::Facilitation, "STP facilitante");
+        assert!(n.e_inibitorico_efetivo(), "fenótipo inibitório");
+
+        // E continua VIÁVEL (dispara) — não é só uma combinação válida no papel.
+        let mut spikes = 0;
+        for t in 0..3000 {
+            if n.update(40.0, DT, t as f32, 1.0) { spikes += 1; }
+        }
+        assert!(spikes > 0,
+            "neurônio estruturalmente novo (HH+dendritos+facilitação) deve disparar (got {spikes})");
+    }
+
+    /// O crossover/mutação explora o espaço ESTRUTURAL (não só o paramétrico):
+    /// cruzando RS (Izhikevich, c/ dendritos) × TC (HH, s/ dendritos) emergem
+    /// combinações estruturais distintas.
+    #[test]
+    fn crossover_explora_genes_estruturais() {
+        use std::collections::HashSet;
+        let mut combos: HashSet<(bool, bool)> = HashSet::new();
+        for _ in 0..120 {
+            let d = gerar_especie_hibrida(&TipoNeuronal::RS, &TipoNeuronal::TC, 0.30);
+            combos.insert((d.usa_hh, d.tem_compartimentos));
+        }
+        assert!(combos.len() >= 2,
+            "deve explorar ≥2 combinações estruturais (usa_hh, tem_compartimentos); got {}",
+            combos.len());
     }
 }

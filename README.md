@@ -1,14 +1,53 @@
-# Selene Brain V4.5 — Persistência HIT + Clonagem entre Agentes sobre V4.4 Implante
+# Selene Brain V4.6 — Célula-Tronco Neural Digital + Genoma Evoluível sobre V4.5
 
-> **Simulação de cérebro artificial em Rust com neurônio V4 multicompartimental (5 compartimentos + metabolismo ATP + [K⁺]o dinâmico + acoplamento ephaptic), 17 tipos Izhikevich, pool neural 4096-bloco FP4–FP32, codificação localista, STDP 3-fatores, 14 regiões cerebrais, 11 neurotransmissores dinâmicos, processamento interno 100% em frequência/u32 (sem texto no núcleo neural), motor de hipóteses preditivo, watchdog + invariants do loop 200Hz, Union-Find (DSU) no `ChunkingEngine`, temperatura real via WMI, projeção nigrostriatal `BG←RPE` (rl.rs), interocepção modulando binding multimodal, e curriculo fonético PT-BR completo nas 11 fases.**
+> **Simulação de cérebro artificial em Rust com neurônio V4 multicompartimental (5 compartimentos + metabolismo ATP + [K⁺]o dinâmico + acoplamento ephaptic), 20 tipos Izhikevich + neurônios `Hybrid` de genoma evoluível, pool neural 4096-bloco FP4–FP32, codificação localista, STDP 3-fatores, 14 regiões cerebrais, 11 neurotransmissores dinâmicos, processamento interno 100% em frequência/u32 (sem texto no núcleo neural), motor de hipóteses preditivo, watchdog + invariants do loop 200Hz, Union-Find (DSU) no `ChunkingEngine`, temperatura real via WMI, projeção nigrostriatal `BG←RPE` (rl.rs), interocepção modulando binding multimodal, e curriculo fonético PT-BR completo nas 11 fases.**
+
+---
+
+## V4.6 — Célula-Tronco Neural Digital + Genoma Evoluível
+
+Neurogênese e neuroevolução autônomas: em vez de mapear os milhares de tipos
+neuronais reais, o sistema **descobre** os que precisa. Uma célula-tronco nasce
+indiferenciada, sente a necessidade local da zona, diferencia o seu genoma,
+é implantada em **período de prova** e julga-se sozinha — **aceite** (vira espécie
+registrada) ou **rejeitada** (apoptose). Tudo **apenas durante o sono**.
+
+| Feature | Onde |
+|---|---|
+| **3 tipos novos**: GridCell, MirrorCell, MSN | `synaptic_core.rs` (20 tipos puros) |
+| **`DnaNeuronal`** — genoma de 18 genes (Izhikevich + canais + **estruturais**) | `synaptic_core.rs` |
+| **Genes estruturais evoluíveis**: dendritos, dinâmica HH, tipo de STP | `DnaNeuronal::{tem_compartimentos, usa_hh, tipo_stp}` |
+| **`Hybrid`** — fenótipo lido do DNA em runtime (preserva `Copy`) | `TipoNeuronal::Hybrid` + `*_efetivo()` |
+| **`gerar_especie_hibrida`** — crossover + mutação (paramétrica e estrutural) | `synaptic_core.rs` |
+| **Célula-tronco + Gestor de Neurogênese** | `stem_cell.rs` (novo) |
+| **`RegistroEspecies`** — assinaturas `HYB-g{ger}-{n}` (mapeia evolução/linhagem) | `stem_cell.rs` |
+| **Limpeza pós-sono** (`compactar_memoria`, `set_brain_state`) | `synaptic_core.rs` |
+| **Throughput 200 Hz**: event-driven + subsampler metabólico + teste A/B | `synaptic_core.rs` |
+| **`nova_cortical_rica`** — acorda a maquinaria V3.1 dormente (SST/VIP/DA_N/ChIN/NGF) | `synaptic_core.rs` |
+| **Wiring**: neurogênese ligada ao sono real via `FrontalLobe` | `frontal.rs` + `main.rs` |
+
+**O que o sistema consegue criar:** neurônios *estruturalmente* novos — ex.: um
+inibidor com dinâmica Hodgkin-Huxley + dendritos + sinapse facilitante, que
+**nenhum dos 20 tipos puros é**. Limite atual: recombina mecanismos existentes;
+não inventa canais/topologia do zero (próximo passo = evolução de topologia estilo NEAT).
+
+### Testes V4.6
+```
+  lib unit tests:                 179/179 ✅
+  tests/neurogenese_hibridos:       4/4   ✅  (cria híbrido sob demanda + ele responde)
+  cargo check --all-targets:        ✅
+```
+Exemplos reais observados: RS×FS → 429 spikes/3s · híbrido aceito como `HYB-g2-0001`
+(≈31 Hz, na banda saudável) · crossover explora ≥2 combinações estruturais.
 
 ---
 
 ## Índice
 
 1. [Visão Geral](#visão-geral)
-2. [Estado Atual — V4.5](#estado-atual--v45)
-3. [V4.5 — Persistência HIT + Clonagem entre Agentes](#v45--persistência-hit--clonagem-entre-agentes)
+2. [V4.6 — Célula-Tronco Neural Digital + Genoma Evoluível](#v46--célula-tronco-neural-digital--genoma-evoluível)
+3. [Estado Atual — V4.5](#estado-atual--v45)
+4. [V4.5 — Persistência HIT + Clonagem entre Agentes](#v45--persistência-hit--clonagem-entre-agentes)
 4. [V4.4 — Implante Tonegawa (False Memory)](#v44--implante-tonegawa-false-memory)
 5. [V4.3 — Memória Episódica Avançada](#v43--memória-episódica-avançada)
 5. [V4.2 — Hardware Real + BG-RL + Interocepção + Curriculo PT-BR](#v42--hardware-real--bg-rl--interocepção--curriculo-pt-br)

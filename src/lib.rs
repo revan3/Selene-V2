@@ -5,6 +5,7 @@ use std::time::Instant;
 
 // Módulos existentes
 pub mod synaptic_core;
+pub mod stem_cell;
 pub mod brain_zones;
 pub mod sensors;
 pub mod storage;

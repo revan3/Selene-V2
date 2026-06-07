@@ -7,6 +7,7 @@
 
 // Declaração de módulos
 mod synaptic_core;
+mod stem_cell;
 mod brain_zones;
 mod sensors;
 mod storage;
@@ -597,6 +598,15 @@ async fn async_main() {
             ciclo_sono.dormir(&mut *memory_tier.lock().await, &config).await;
             // Extinção do medo durante sono (hipocampo + vmPFC consolida segurança)
             amygdala.extinção_durante_sono();
+            // V4.6 — Neurogênese autônoma: a célula-tronco avalia o frontal e
+            // implanta/julga neurônios Hybrid sob medida (só no sono, fora do loop 200Hz).
+            let (acc_n, rej_n, nasc_n) = frontal.neurogenese_no_sono();
+            if acc_n + rej_n + nasc_n > 0 {
+                println!(
+                    "    🧬 Neurogênese: {nasc_n} nascida(s), {acc_n} aceita(s), {rej_n} rejeitada(s) | espécies registradas: {}",
+                    frontal.gestor_neurogenese.registro.total()
+                );
+            }
             // Snapshot de fim de dia antes de continuar
             if let Ok(mut sw) = swap_manager.try_lock() {
                 sw.criar_snapshot(step as u64);

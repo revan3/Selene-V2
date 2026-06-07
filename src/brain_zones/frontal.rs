@@ -18,6 +18,7 @@
 #![allow(dead_code)]
 
 use crate::synaptic_core::{CamadaHibrida, PrecisionType, TipoNeuronal};
+use crate::stem_cell::GestorNeurogenese;
 use crate::encoding::spike_codec::SpikePattern;
 use rand::{Rng, thread_rng};
 use crate::config::Config;
@@ -108,6 +109,12 @@ pub struct FrontalLobe {
     /// Armazena até 4 episódios hipocampais de alta saliência (arousal > 0.4).
     /// Palavras aqui têm boost no walk semântico inicial (acesso preferencial).
     episodic_buffer: VecDeque<(String, SpikePattern, f32)>,
+
+    /// V4.6 — Neurogênese autônoma (célula-tronco). Avalia a necessidade da
+    /// executive_layer e implanta/julga neurônios Hybrid APENAS durante o sono.
+    /// Os novos neurônios entram na CAUDA (índice ≥ n_exec) → não tocam na WM
+    /// (decide() só lê os primeiros n_exec).
+    pub gestor_neurogenese: GestorNeurogenese,
 }
 
 impl FrontalLobe {
@@ -162,7 +169,19 @@ impl FrontalLobe {
             n_exec: n_executive,
             wm_chunk_count: 0,
             episodic_buffer: VecDeque::with_capacity(EPISODIC_BUFFER_CAP),
+            // Cap 4 células em prova simultâneas → orçamento populacional (protege RAM).
+            gestor_neurogenese: GestorNeurogenese::novo(4),
         }
+    }
+
+    /// V4.6 — Hook de neurogênese para ser chamado UMA vez por ciclo de sono
+    /// (a partir de main.rs, ao lado de `amygdala.extinção_durante_sono()`).
+    ///
+    /// Julga as células-tronco em prova do ciclo anterior e, se a executive_layer
+    /// estiver desequilibrada (runaway ou subutilizada), nasce/diferencia/implanta
+    /// um neurônio Hybrid sob medida. Devolve (aceitas, rejeitadas, nascidas).
+    pub fn neurogenese_no_sono(&mut self) -> (usize, usize, usize) {
+        self.gestor_neurogenese.tick_sono(&mut self.executive_layer)
     }
 
     pub fn decide(
