@@ -340,6 +340,32 @@ impl TipoNeuronal {
             TipoNeuronal::Hybrid     => (1.0, 200.0),// fenótipo livre
         }
     }
+
+    /// V4.6.1 — Fator de adaptação por spike (multiplica `THRESHOLD_DELTA`).
+    /// CORE-TUNING de fidelidade: a curva F-I mostrava piramidais a disparar
+    /// muito acima do biológico sob corrente forte. Piramidais reais têm forte
+    /// adaptação de frequência (I_M/AHP/acomodação de limiar) que limita a taxa
+    /// sustentada a ~20–40 Hz; FS/PV quase não adaptam (mantêm-se rápidos).
+    /// Este fator concentra a correção SEM mexer em threshold/responsividade
+    /// (o neurônio continua a responder ao input — só satura mais cedo).
+    #[inline]
+    pub fn fator_adaptacao(&self) -> f32 {
+        match self {
+            // Piramidais excitatórios — adaptação forte (puxa a taxa para a faixa)
+            TipoNeuronal::RS | TipoNeuronal::MirrorCell => 6.0,
+            TipoNeuronal::IB  => 4.5,
+            TipoNeuronal::CH  => 3.0,  // chattering: adapta menos que RS
+            TipoNeuronal::AC  => 7.0,  // accommodating: adaptação máxima por definição
+            TipoNeuronal::MSN => 4.0,  // forte canal-M
+            // Fast-spiking / interneurônios rápidos — quase sem adaptação
+            TipoNeuronal::FS | TipoNeuronal::PV => 0.25,
+            // Intermediários
+            TipoNeuronal::LT | TipoNeuronal::TC | TipoNeuronal::GridCell => 1.5,
+            TipoNeuronal::RZ => 1.2,
+            // Demais (moduladores, variantes, Hybrid) — padrão neutro
+            _ => 1.0,
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1784,7 +1810,20 @@ impl NeuronioHibrido {
                                   + self.mod_cort * 4.5
                                   - (self.mod_sero - 1.0) * 0.8
                                   - (self.extras.mod_ach - 1.0) * 1.5;
-        let g_ahp_scale = if self.tipo == TipoNeuronal::FS { 0.1 } else { 1.0 };
+        // V4.6.1 core-tuning: o AHP (Ca²⁺) é o limitador dominante da taxa
+        // sustentada. Escala por tipo → piramidais adaptam forte (~20–40 Hz),
+        // FS/PV quase nada (mantêm-se rápidos). Corrige o achado F-I.
+        let g_ahp_scale = match self.tipo {
+            TipoNeuronal::FS | TipoNeuronal::PV => 0.1,
+            TipoNeuronal::RS | TipoNeuronal::MirrorCell => 3.2,
+            TipoNeuronal::IB  => 3.6,
+            TipoNeuronal::CH  => 2.6,
+            TipoNeuronal::AC  => 3.5,
+            TipoNeuronal::LT | TipoNeuronal::TC | TipoNeuronal::RZ
+                | TipoNeuronal::GridCell => 1.8,
+            TipoNeuronal::MSN => 2.2,
+            _ => 1.0,
+        };
         let ahp_extra = G_AHP * self.ca_intra * g_ahp_scale;
         let threshold_efetivo = self.threshold
             + neuro_thresh_offset
@@ -1799,7 +1838,7 @@ impl NeuronioHibrido {
             if self.v >= threshold_efetivo {
                 self.v = c;
                 self.u += d;
-                self.threshold += THRESHOLD_DELTA;
+                self.threshold += THRESHOLD_DELTA * self.tipo.fator_adaptacao();
                 self.refr_count = (2.0 / dt_int).round() as u16;
                 spiked = true;
                 break;
@@ -2281,7 +2320,7 @@ impl NeuronioHibrido {
         let spiked = if self.v >= self.threshold {
             self.v = c;
             self.u += d;
-            self.threshold += THRESHOLD_DELTA;
+            self.threshold += THRESHOLD_DELTA * self.tipo.fator_adaptacao();
             self.refr_count = (2.0 / dt_ms.max(0.1)).round() as u16;
             true
         } else {
@@ -2346,7 +2385,7 @@ impl NeuronioHibrido {
             if self.v >= self.threshold {
                 self.v = c;
                 self.u += d;
-                self.threshold += THRESHOLD_DELTA;
+                self.threshold += THRESHOLD_DELTA * self.tipo.fator_adaptacao();
                 self.refr_count = (2.0 / dt_int).round() as u16;
                 spiked = true;
                 break;
