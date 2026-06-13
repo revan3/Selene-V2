@@ -1108,7 +1108,8 @@ pub async fn handle_connection(
                         let sero = state.neurotransmissores.1;
                         let emocao_bias = state.emocao_bias;
                         // Habituação: sistema habituado busca pensamentos mais remotos/novos
-                        let n_passos = ((state.n_passos_walk as f32 + state.habituation_nivel * 2.0) as usize).clamp(4, 12);
+                        // clamp até 18: deixa o extended/adaptive thinking (conflito ACC) passar.
+                        let n_passos = ((state.n_passos_walk as f32 + state.habituation_nivel * 2.0) as usize).clamp(4, 18);
                         state.reply_count = state.reply_count.wrapping_add(1);
                         let diversity_seed = step ^ state.reply_count.wrapping_mul(2654435761);
                         let mut caminho_esp: Vec<String> = Vec::new();

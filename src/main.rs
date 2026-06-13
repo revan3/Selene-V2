@@ -1842,7 +1842,7 @@ async fn async_main() {
         //   theta/alpha (repouso alerta): 9 passos — respostas contemplativas
         //   beta (foco ativo): 10 passos — respostas precisas
         //   gamma (aprendizado intenso): 13 passos — respostas ricas e expansivas
-        let n_passos_walk: usize = if neuro.dopamine > 1.1 && atividade_recente > 0.04 {
+        let n_passos_base: usize = if neuro.dopamine > 1.1 && atividade_recente > 0.04 {
             13  // gamma
         } else if neuro.dopamine > 0.75 && atividade_recente > 0.01 {
             10  // beta
@@ -1853,6 +1853,14 @@ async fn async_main() {
         } else {
             6   // delta
         };
+        // V4.6.1 — EXTENDED / ADAPTIVE THINKING: o conflito da ACC (sinal interno
+        // de "isto é difícil/ambíguo") recruta deliberação EXTRA antes de responder
+        // — análogo ao extended thinking (mais processamento em problemas difíceis).
+        // Biológico: ACC → PFC, "need for cognitive control" (Botvinick et al. 2001).
+        let dificuldade = cingulate.conflict_signal.abs()
+            + (cingulate.social_pain.abs() * 0.5);
+        let boost_deliberacao = (dificuldade * 6.0).round() as usize;
+        let n_passos_walk: usize = (n_passos_base + boost_deliberacao).clamp(4, 20);
 
         // G. Núcleos da Base
         basal_ganglia.update_habits(&vision_full, &action, emotion);
