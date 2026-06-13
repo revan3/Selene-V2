@@ -8,6 +8,7 @@
 // Declaração de módulos
 mod synaptic_core;
 mod stem_cell;
+mod hardware_profile;
 mod brain_zones;
 mod sensors;
 mod storage;
@@ -253,6 +254,12 @@ fn main() {
 
 // ================== FUNÇÃO PRINCIPAL ASSÍNCRONA ==================
 async fn async_main() {
+    // V4.6.1 — Perfil de hardware (SELENE_HW=avell|ideapad ou auto-detecção).
+    // Configura o pool Rayon e anuncia o perfil ativo antes de qualquer trabalho.
+    let hw = hardware_profile::HardwareConfig::detectar();
+    hw.aplicar();
+    println!("{}", hw.banner());
+
     let config = Config::new(ModoOperacao::Boost200);
     let dt = config.dt_simulacao;
     // Escala neurônios com RAM disponível: mín 1024, máx 8192 (>8k aumenta latência)
@@ -311,12 +318,12 @@ async fn async_main() {
     };
 
     // --- 4. SETUP DO SWAP MANAGER ---
-    // V3.6 — Cria diretório do pool NVMe (F:/selene_pool_swap/)
-    if let Err(e) = std::fs::create_dir_all(storage::swap_manager::SWAP_POOL_PATH) {
-        log::warn!("[NVMe] Não foi possível criar pool de swap em '{}': {}",
-            storage::swap_manager::SWAP_POOL_PATH, e);
+    // V3.6 — Cria diretório do pool NVMe. V4.6.1: caminho portável (env SELENE_SWAP_POOL).
+    let swap_pool = storage::swap_manager::swap_pool_path();
+    if let Err(e) = std::fs::create_dir_all(&swap_pool) {
+        log::warn!("[NVMe] Não foi possível criar pool de swap em '{}': {}", swap_pool, e);
     } else {
-        println!("💽 Pool NVMe pronto: {}", storage::swap_manager::SWAP_POOL_PATH);
+        println!("💽 Pool NVMe pronto: {}", swap_pool);
     }
 
     println!("🧬 Inicializando Swap Manager com neurogênese...");
@@ -1518,7 +1525,7 @@ async fn async_main() {
                     }
                     (lote, path)
                 } else {
-                    (vec![], std::path::PathBuf::from(storage::swap_manager::SWAP_POOL_PATH))
+                    (vec![], std::path::PathBuf::from(storage::swap_manager::swap_pool_path()))
                 };
                 if !lote_nvme.is_empty() {
                     let sm = Arc::clone(&swap_manager);

@@ -108,3 +108,18 @@ lto = false
 debug = false
 codegen-units = 16
 strip = "symbols"
+
+# Perfil AVELL STORM 450 (Ryzen 7 8745HS Zen4, 8c/16t, RTX 4050).
+# Build agressivo — só para máquinas com RAM/CPU suficientes (NÃO usar no IdeaPad,
+# faz OOM no rustc ao compilar main.rs). Loop 200Hz mais rápido.
+# Uso (PowerShell):
+#   $env:RUSTFLAGS="-C target-cpu=znver4"; cargo build --profile release-avell --bin selene_brain
+#   binário em target/release-avell/selene_brain
+# Em runtime, ativar o perfil de hardware: $env:SELENE_HW="avell"
+[profile.release-avell]
+inherits = "release"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = false
+strip = "symbols"

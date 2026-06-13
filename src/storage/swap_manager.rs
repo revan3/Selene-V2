@@ -120,7 +120,26 @@ const SINAPSES_CAP: usize = 500_000;
 // ── V3.6: Ciclo de vida neural ────────────────────────────────────────────────
 /// Diretório no NVMe onde neurônios dormentes são serializados.
 /// Cada neurônio gera um arquivo `{uuid}.bin` (bincode).
-pub const SWAP_POOL_PATH: &str = "F:/selene_pool_swap/";
+/// Caminho-base padrão do pool NVMe. NÃO usar diretamente — chame `swap_pool_path()`,
+/// que respeita a env `SELENE_SWAP_POOL` e cai para um caminho relativo portável.
+pub const SWAP_POOL_PATH_DEFAULT: &str = "./selene_pool_swap/";
+
+/// Diretório onde neurônios dormentes são paginados (bincode).
+/// Resolução: env `SELENE_SWAP_POOL` → senão `SELENE_STATE_DIR/selene_pool_swap`
+/// → senão `./selene_pool_swap/`. Portável entre máquinas (IdeaPad F:/ vs Avell).
+/// Para manter o NVMe dedicado: `SELENE_SWAP_POOL=F:/selene_pool_swap/`.
+pub fn swap_pool_path() -> String {
+    if let Ok(p) = std::env::var("SELENE_SWAP_POOL") {
+        if !p.is_empty() { return p; }
+    }
+    if let Ok(dir) = std::env::var("SELENE_STATE_DIR") {
+        if !dir.is_empty() {
+            let sep = if dir.ends_with('/') || dir.ends_with('\\') { "" } else { "/" };
+            return format!("{dir}{sep}selene_pool_swap/");
+        }
+    }
+    SWAP_POOL_PATH_DEFAULT.to_string()
+}
 /// Quanto o activity_timer cresce por chamada a tick_atividade_neuronal().
 /// Chamada a cada 1000 ticks do loop 200Hz → timer sobe 1000/call.
 const TICK_BATCH_SIZE: u64 = 1000;
@@ -315,7 +334,7 @@ impl SwapManager {
             grafo_dirty: true,
             reconsolidacao: RegistroReconsolidacao::novo(),
             nvme_index: std::collections::HashSet::new(),
-            swap_path: std::path::PathBuf::from(SWAP_POOL_PATH),
+            swap_path: std::path::PathBuf::from(swap_pool_path()),
         }
     }
     
