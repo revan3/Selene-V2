@@ -9,6 +9,7 @@
 mod synaptic_core;
 mod stem_cell;
 mod hardware_profile;
+mod motor_cortex;
 mod brain_zones;
 mod sensors;
 mod storage;

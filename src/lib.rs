@@ -7,6 +7,7 @@ use std::time::Instant;
 pub mod synaptic_core;
 pub mod stem_cell;
 pub mod hardware_profile;
+pub mod motor_cortex;
 pub mod brain_zones;
 pub mod sensors;
 pub mod storage;

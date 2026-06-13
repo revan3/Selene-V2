@@ -2762,6 +2762,47 @@ pub async fn handle_connection(
                                     log::info!("[INGEST] {} trechos enfileirados para leitura sequencial", n_chunks);
                                 }
 
+                                // ── ENV_STEP: loop sensório-motor (Conceito A) ────────────────────────────
+                                // Daemon (selene_agent.py) envia observação+recompensa; a Selene
+                                // aprende e responde com a próxima ação (tecla). Fecha o ciclo
+                                // percepção→ação→recompensa→aprendizagem.
+                                // Payload: {"action":"env_step","reward":f,"grid":[f..],"done":bool}
+                                Some("env_step") => {
+                                    let reward = json["reward"].as_f64().unwrap_or(0.0) as f32;
+                                    let done = json["done"].as_bool().unwrap_or(false);
+                                    let grid: Vec<f32> = json["grid"].as_array()
+                                        .map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect())
+                                        .unwrap_or_default();
+
+                                    // Hash de estado (observação quantizada) — bootstrap até a
+                                    // seleção emergir do gânglio basal sobre o frame do occipital.
+                                    let estado = {
+                                        let mut h = 1469598103934665603u64;
+                                        for v in &grid {
+                                            let q = ((v.clamp(0.0, 1.0)) * 8.0).round() as u64;
+                                            h = (h ^ q).wrapping_mul(1099511628211);
+                                        }
+                                        h
+                                    };
+
+                                    let tecla = {
+                                        let mut state = brain.lock().await;
+                                        // 1. Aprende com a recompensa do passo anterior (ator Q-learning).
+                                        state.motor_cortex.aprender(estado, reward);
+                                        // 2. Injeta a recompensa no sistema dopaminérgico (crítico/STDP).
+                                        state.recompensa_pendente += reward;
+                                        if done { state.motor_cortex.fim_episodio(); }
+                                        // 3. Seleciona a próxima ação.
+                                        state.motor_cortex.selecionar(estado).tecla()
+                                    };
+
+                                    let resp = serde_json::json!({
+                                        "type": "motor_action",
+                                        "key": tecla,
+                                    }).to_string();
+                                    let _ = ws_tx.send(Message::text(resp)).await;
+                                }
+
                                 // ── INGEST_CLEAR: cancela a leitura em curso ──────────────────────────────
                                 Some("ingest_clear") => {
                                     let restantes = {

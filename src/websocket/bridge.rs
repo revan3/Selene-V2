@@ -411,6 +411,10 @@ pub struct BrainState {
     /// Cota de segurança alta (anti-OOM de payload malicioso), não de fluxo normal.
     pub fila_ingestao: std::collections::VecDeque<Vec<u32>>,
 
+    /// V4.6.1 — Córtex motor (Conceito A): ator que escolhe ações discretas para
+    /// agir num computador (jogos/navegador) via o daemon `selene_agent.py`.
+    pub motor_cortex: crate::motor_cortex::MotorCortex,
+
     /// Integração multimodal audiovisual — predição cruzada visual↔audio.
     /// Usado para amplificar sinal congruente e detectar incongruência (surpresa).
     pub convergencia_multimodal: ConvergenciaMultimodal,
@@ -819,6 +823,7 @@ impl BrainState {
             neural_pool: NeuralPool::new(4096),
             pending_wernicke_tokens: std::collections::VecDeque::new(),
             fila_ingestao: std::collections::VecDeque::new(),
+            motor_cortex: crate::motor_cortex::MotorCortex::new(),
             ultimo_passive_tokens_hash: 0,
             ultimo_passive_hear_ts: std::time::Instant::now()
                 - std::time::Duration::from_secs(10),
