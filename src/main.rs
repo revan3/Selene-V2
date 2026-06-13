@@ -1411,8 +1411,16 @@ async fn async_main() {
                         neuro.endocannabinoid, neuro.d1_signal, neuro.d2_signal,
                     ];
                     bs.viz_loop_hz = (1.0 / dt).min(1000.0);
+                    // Estado cerebral (heurístico: adenosina = pressão de sono).
+                    bs.viz_brain_state = if neuro.adenosine > 0.7 { "NremProfundo" }
+                        else if neuro.adenosine > 0.5 { "Rem" }
+                        else { "Vigilia" }.to_string();
                     bs.viz_events.clear();
                     if burst_da { bs.viz_events.push("bg_rpe".to_string()); }
+                    // Spindle de consolidação: estado calmo (5-HT alto, NE baixo).
+                    if neuro.serotonin > 0.6 && neuro.noradrenaline < 0.25 {
+                        bs.viz_events.push("spindle".to_string());
+                    }
                 }
                 // Wernicke: consome 1 lote por tick. V4.6.1 — a fila de INGESTÃO
                 // (leitura/audiobook) tem PRIORIDADE e é processada em ordem, sem

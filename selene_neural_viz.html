@@ -305,6 +305,14 @@ function dopamineBurst(){
   pathways.filter(p => p.from==='amigdala'||p.from==='limbico').forEach(p => { for(let i=0;i<3;i++) spawnPulse(p); });
 }
 
+// ── Spindle de consolidação (sono/calma): replay hipocampo↔frontal ──────
+function spindleBurst(){
+  log('SPINDLE', 'consolidação hipocampo↔frontal');
+  pathways.filter(p => (p.from==='hipocampo'&&p.to==='frontal') || (p.from==='frontal'&&p.to==='hipocampo'))
+    .forEach(p => { for(let i=0;i<4;i++) spawnPulse(p); });
+  regionData.hipocampo.excite += 3; regionData.frontal.excite += 2;
+}
+
 // fundo
 { const n=380, p=new Float32Array(n*3); for(let i=0;i<n*3;i++) p[i]=(Math.random()*2-1)*24;
   const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(p,3));
@@ -410,7 +418,10 @@ function handleTick(m){
     if(typeof d.spikes==='number') fire(r,d.spikes);
   }
   if(m.neurochem) for(const k in nm) if(typeof m.neurochem[k]==='number') nm[k]=m.neurochem[k];
-  if(Array.isArray(m.events)) m.events.forEach(e=>{ if(e==='bg_rpe'||e==='dopamine_burst'||e==='rpe_burst') dopamineBurst(); });
+  if(Array.isArray(m.events)) m.events.forEach(e=>{
+    if(e==='bg_rpe'||e==='dopamine_burst'||e==='rpe_burst') dopamineBurst();
+    else if(e==='spindle') spindleBurst();
+  });
 }
 
 // ── Spikes ─────────────────────────────────────────────────────────────
