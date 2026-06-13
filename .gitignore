@@ -63,3 +63,23 @@ memoria_categorias.json
 
 # ── Arquivo .old (legado movido para triagem) ─────────────
 Selene_Brain_2.0/selene_kernel/.old/
+
+# ── V4.6.1 — Limpeza: artefactos gerados + estado de aprendizagem ─────────
+# Build do app Android (gerado pelo Gradle — nunca versionar)
+selene_android/app/build/
+selene_android/**/build/
+selene_android/.gradle/
+# Estado de aprendizagem da Selene (gerado/atualizado em runtime)
+selene_autobiografia.json
+selene_hypotheses.json
+selene_linguagem.json
+selene_ontogeny.json
+selene_swap_state.json
+selene_lexicon.json
+# Artefactos de pesquisa/triagem mantidos só localmente
+files/
+files.zip
+*.zip
+test_audio_*.json
+# Settings locais do Claude Code
+.claude/settings.local.json
