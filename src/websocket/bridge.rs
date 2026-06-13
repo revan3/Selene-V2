@@ -70,6 +70,43 @@ pub struct NeuralStatus {
     pub atividade: AtividadeStatus,
     pub swap: SwapStatus,
     pub ondas: OndasCerebrais,
+
+    // ── V4.6.1 — Telemetria para a visualização 3D (/neural) ────────────────
+    /// Tag de evento ("neural_status") — a viz filtra por isto.
+    pub event: String,
+    /// Passo do loop (espelho de atividade.step no topo, como a viz espera).
+    pub step: u64,
+    /// Frequência real do loop (Hz).
+    pub loop_hz: f32,
+    /// Estado cerebral textual ("Vigilia"/"NremProfundo"/"Rem").
+    pub brain_state: String,
+    /// Taxa de disparo + spikes por zona cerebral (id → {rate, spikes}).
+    pub regions: std::collections::HashMap<String, RegiaoRate>,
+    /// 11 neuromoduladores reais (chaves que a viz lê).
+    pub neurochem: Neuro11Status,
+    /// Eventos discretos do tick (ex.: "bg_rpe" → onda dopaminérgica na viz).
+    pub events: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct RegiaoRate {
+    pub rate: f32,
+    pub spikes: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct Neuro11Status {
+    pub dopamina: f32,
+    pub serotonina: f32,
+    pub noradrenalina: f32,
+    pub cortisol: f32,
+    pub acetilcolina: f32,
+    pub oxitocina: f32,
+    pub histamina: f32,
+    pub adenosina: f32,
+    pub endocanabinoide: f32,
+    pub d1: f32,
+    pub d2: f32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -414,6 +451,17 @@ pub struct BrainState {
     /// V4.6.1 — Córtex motor (Conceito A): ator que escolhe ações discretas para
     /// agir num computador (jogos/navegador) via o daemon `selene_agent.py`.
     pub motor_cortex: crate::motor_cortex::MotorCortex,
+
+    // ── V4.6.1 — Telemetria para a viz 3D (preenchida pelo main.rs por tick) ──
+    /// Taxa (Hz) + spikes por zona cerebral. id → (rate, spikes).
+    pub viz_regions: HashMap<String, (f32, u32)>,
+    /// 11 neuromoduladores reais (na ordem da Neuro11Status).
+    pub viz_neuro11: [f32; 11],
+    /// Frequência real do loop e estado cerebral.
+    pub viz_loop_hz: f32,
+    pub viz_brain_state: String,
+    /// Eventos discretos pendentes para a viz (drenados a cada telemetria).
+    pub viz_events: Vec<String>,
 
     /// Integração multimodal audiovisual — predição cruzada visual↔audio.
     /// Usado para amplificar sinal congruente e detectar incongruência (surpresa).
@@ -824,6 +872,11 @@ impl BrainState {
             pending_wernicke_tokens: std::collections::VecDeque::new(),
             fila_ingestao: std::collections::VecDeque::new(),
             motor_cortex: crate::motor_cortex::MotorCortex::new(),
+            viz_regions: HashMap::new(),
+            viz_neuro11: [0.0; 11],
+            viz_loop_hz: 0.0,
+            viz_brain_state: "Vigilia".to_string(),
+            viz_events: Vec::new(),
             ultimo_passive_tokens_hash: 0,
             ultimo_passive_hear_ts: std::time::Instant::now()
                 - std::time::Duration::from_secs(10),
@@ -1344,5 +1397,23 @@ pub async fn collect_neural_status(state: &BrainState) -> NeuralStatus {
         ondas: OndasCerebrais {
             delta, theta, alpha, beta, gamma, dominante,
         },
+
+        // ── V4.6.1 — Telemetria para a viz 3D (/neural) ─────────────────────
+        event: "neural_status".to_string(),
+        step: state.atividade.0,
+        loop_hz: state.viz_loop_hz,
+        brain_state: state.viz_brain_state.clone(),
+        regions: state.viz_regions.iter()
+            .map(|(k, &(rate, spikes))| (k.clone(), RegiaoRate { rate, spikes }))
+            .collect(),
+        neurochem: {
+            let v = &state.viz_neuro11;
+            Neuro11Status {
+                dopamina: v[0], serotonina: v[1], noradrenalina: v[2], cortisol: v[3],
+                acetilcolina: v[4], oxitocina: v[5], histamina: v[6], adenosina: v[7],
+                endocanabinoide: v[8], d1: v[9], d2: v[10],
+            }
+        },
+        events: state.viz_events.clone(),
     }
 }

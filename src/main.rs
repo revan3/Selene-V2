@@ -1363,6 +1363,57 @@ async fn async_main() {
                 bs.oxytocin_level  = neuro.oxytocin;
                 bs.amygdala_fear   = amygdala.fear_signal;
                 bs.amygdala_extinction = amygdala.extinction_trace;
+
+                // ── V4.6.1 — Telemetria para a viz 3D (/neural), ~a cada 100 ticks ──
+                // Fora do caminho crítico (a viz lê a 500ms). Taxa por zona + 11
+                // neuromoduladores reais → a página deixa de simular e mostra a Selene.
+                if step % 100 == 0 {
+                    let zona = |rates: &[f32]| -> (f32, u32) {
+                        let n = rates.len().max(1) as f32;
+                        let media = rates.iter().sum::<f32>() / n;
+                        let ativos = rates.iter().filter(|&&r| r > 0.5).count() as u32;
+                        ((media * 40.0).clamp(0.0, 120.0), ativos) // proxy → Hz
+                    };
+                    let esc = |v: f32| {
+                        let c = v.clamp(0.0, 1.0);
+                        (c * 30.0, (c * 12.0) as u32)
+                    };
+                    // Lê escalares para locais ANTES do borrow mutável de bs.viz_regions.
+                    let z_ling = esc(bs.wernicke_comprehension);
+                    let z_amig = esc(amygdala.fear_signal);
+                    let z_acc  = esc(cingulate.conflict_signal.abs());
+                    let z_ofc  = esc(ofc.value_bias.abs());
+                    let z_cere = esc(neuro.noradrenaline * 0.4);
+                    let z_esp  = esc(neuro.oxytocin * 0.5);          // proxy social
+                    let z_depth= esc(neuro.acetylcholine * 0.5);     // proxy metacog.
+                    let z_cc   = esc(neuro.dopamine.min(1.0) * 0.6);  // proxy inter-lobo
+                    let burst_da = neuro.dopamine > 1.2;
+
+                    let r = &mut bs.viz_regions;
+                    r.insert("occipital".into(),    zona(&prev_v1_rates));
+                    r.insert("temporal".into(),     zona(&prev_temporal_rates));
+                    r.insert("parietal".into(),     zona(&prev_parietal_rates));
+                    r.insert("frontal".into(),      zona(&prev_frontal_rates));
+                    r.insert("limbico".into(),      zona(&prev_limbic_rates));
+                    r.insert("hipocampo".into(),    zona(&prev_hippo_rates));
+                    r.insert("linguagem".into(),    z_ling);
+                    r.insert("amigdala".into(),     z_amig);
+                    r.insert("acc".into(),          z_acc);
+                    r.insert("ofc".into(),          z_ofc);
+                    r.insert("cerebelo".into(),     z_cere);
+                    r.insert("espelho".into(),      z_esp);
+                    r.insert("depthstack".into(),   z_depth);
+                    r.insert("corpo_caloso".into(), z_cc);
+
+                    bs.viz_neuro11 = [
+                        neuro.dopamine, neuro.serotonin, neuro.noradrenaline, neuro.cortisol,
+                        neuro.acetylcholine, neuro.oxytocin, neuro.histamine, neuro.adenosine,
+                        neuro.endocannabinoid, neuro.d1_signal, neuro.d2_signal,
+                    ];
+                    bs.viz_loop_hz = (1.0 / dt).min(1000.0);
+                    bs.viz_events.clear();
+                    if burst_da { bs.viz_events.push("bg_rpe".to_string()); }
+                }
                 // Wernicke: consome 1 lote por tick. V4.6.1 — a fila de INGESTÃO
                 // (leitura/audiobook) tem PRIORIDADE e é processada em ordem, sem
                 // descarte; só quando vazia volta ao microfone ambiente (pending_*).
