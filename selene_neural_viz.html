@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>SELENE V4.5 — Telemetria Neural</title>
+<style>
+  :root {
+    --bg: #060a12;
+    --panel: rgba(10, 16, 28, 0.84);
+    --line: rgba(110, 150, 195, 0.16);
+    --text: #cdd9ec;
+    --dim: #5e738c;
+    --live: #5dffb0;
+    --sim: #ffcf63;
+    --c0: #4fd8ff; --c1: #6be0a0; --c2: #ffd166; --c3: #ff8f5e; --c4: #c77dff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg); }
+  body {
+    font-family: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, monospace;
+    color: var(--text); font-size: 11px; -webkit-font-smoothing: antialiased;
+  }
+  canvas { display: block; touch-action: none; }
+  .hud { position: fixed; pointer-events: none; z-index: 10; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    padding: 9px 11px; backdrop-filter: blur(9px); pointer-events: auto;
+  }
+
+  #header { top: 12px; left: 12px; right: 12px; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+  #title h1 { font-size: 13px; font-weight: 600; letter-spacing: 0.16em; color: #eaf2fc; }
+  #title .sub { font-size: 8.5px; letter-spacing: 0.08em; color: var(--dim); margin-top: 3px; max-width: 340px; line-height: 1.4; }
+  #status-wrap { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+  #mode { font-size: 9px; letter-spacing: 0.14em; padding: 4px 9px; border-radius: 4px; border: 1px solid var(--sim); color: var(--sim); white-space: nowrap; }
+  #mode.live { border-color: var(--live); color: var(--live); }
+  #mode::before { content: '●'; margin-right: 5px; animation: blink 1.6s infinite; }
+  #clock { font-size: 9px; color: var(--dim); letter-spacing: 0.1em; }
+  @keyframes blink { 50% { opacity: 0.25; } }
+
+  #regions { bottom: 12px; left: 12px; width: 248px; max-height: 46vh; overflow-y: auto; }
+  #regions::-webkit-scrollbar { width: 0; }
+  .reg-head { font-size: 8.5px; letter-spacing: 0.12em; color: var(--dim); margin-bottom: 6px; }
+  .region-row { display: flex; align-items: center; gap: 7px; padding: 1.5px 0; }
+  .region-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .region-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 10px; }
+  .region-hz { color: var(--dim); font-variant-numeric: tabular-nums; min-width: 46px; text-align: right; font-size: 10px; }
+
+  #neuromod { bottom: 12px; right: 12px; width: 172px; max-height: 56vh; overflow-y: auto; }
+  #neuromod::-webkit-scrollbar { width: 0; }
+  .nm-title { font-size: 8.5px; letter-spacing: 0.12em; color: var(--dim); margin-bottom: 7px; }
+  .nm-row { display: flex; align-items: center; gap: 7px; margin: 4px 0; }
+  .nm-label { width: 30px; font-size: 9.5px; }
+  .nm-track { flex: 1; height: 3px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden; }
+  .nm-fill { height: 100%; border-radius: 2px; transition: width 0.2s ease; }
+  .nm-val { width: 30px; text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; font-size: 9.5px; }
+  .nm-div { height: 1px; background: var(--line); margin: 7px 0 5px; }
+
+  #raster { top: 92px; right: 12px; width: 250px; }
+  #raster .rt { font-size: 8.5px; letter-spacing: 0.12em; color: var(--dim); margin-bottom: 6px; display: flex; justify-content: space-between; }
+  #raster canvas { width: 100%; height: 130px; border-radius: 3px; background: rgba(0,0,0,0.3); }
+
+  #connect { top: 92px; left: 12px; width: 250px; }
+  #connect summary { cursor: pointer; font-size: 8.5px; letter-spacing: 0.1em; color: var(--dim); list-style: none; }
+  #connect summary::before { content: '▸ '; }
+  #connect[open] summary::before { content: '▾ '; }
+  #connect input { width: 100%; margin-top: 8px; padding: 6px 8px; font: inherit; font-size: 10px; background: rgba(0,0,0,0.35); border: 1px solid var(--line); border-radius: 4px; color: var(--text); outline: none; }
+  #connect input:focus { border-color: rgba(120,180,255,0.45); }
+  #connect button { width: 100%; margin-top: 6px; padding: 6px; font: inherit; font-size: 10px; letter-spacing: 0.08em; background: rgba(80,140,220,0.12); border: 1px solid rgba(120,180,255,0.3); border-radius: 4px; color: #aecdf2; cursor: pointer; }
+  #connect button:hover { background: rgba(80,140,220,0.22); }
+  #connect .proto { margin-top: 8px; font-size: 8px; line-height: 1.5; color: var(--dim); white-space: pre; overflow-x: auto; }
+
+  #legend { top: 50%; left: 12px; transform: translateY(-50%); width: 128px; }
+  #legend .lt { font-size: 8.5px; letter-spacing: 0.1em; color: var(--dim); margin-bottom: 6px; }
+  .leg-row { display: flex; align-items: center; gap: 7px; margin: 3px 0; font-size: 9px; }
+  .leg-dot { width: 8px; height: 8px; border-radius: 2px; }
+
+  #hint { bottom: 12px; left: 50%; transform: translateX(-50%); font-size: 9px; color: var(--dim); letter-spacing: 0.08em; opacity: 0.6; }
+  @media (max-width: 720px) {
+    #raster, #legend, #hint { display: none; }
+    #regions { width: 184px; max-height: 38vh; }
+    #neuromod { width: 150px; }
+    #title .sub { max-width: 200px; }
+  }
+  @media (prefers-reduced-motion: reduce) { #mode::before { animation: none; } }
+</style>
+</head>
+<body>
+<div class="hud" id="header">
+  <div class="panel" id="title">
+    <h1>SELENE V4.5</h1>
+    <div class="sub">TELEMETRIA NEURAL · 14 REGIÕES · 20 TIPOS + HYBRID · CADA PARTÍCULA = 1 NEURÔNIO (COR POR TIPO) · LOOP 200Hz</div>
+  </div>
+  <div id="status-wrap">
+    <div class="panel" id="mode">SIMULAÇÃO</div>
+    <div class="panel" id="clock" style="padding:4px 9px">step 0 · 0.0 Hz</div>
+  </div>
+</div>
+
+<details class="hud panel" id="connect">
+  <summary>CONECTAR AO BACKEND (WEBSOCKET)</summary>
+  <input id="ws-url" type="text" value="ws://127.0.0.1:3030/selene" spellcheck="false">
+  <button id="ws-btn">CONECTAR</button>
+  <div class="proto">Evento de telemetria (por tick):
+{
+ "event": "neural_status",
+ "step": 142000,
+ "loop_hz": 198.5,
+ "brain_state": "Vigilia",
+ "regions": {
+  "frontal": {"rate":12.1,"spikes":34},
+  "hipocampo": {"rate":7.4,"spikes":12},
+  ...
+ },
+ "neurochem": {
+  "dopamina":0.6,"serotonina":0.5,
+  "noradrenalina":0.3,"cortisol":0.2,
+  "acetilcolina":0.4,"oxitocina":0.5,
+  "histamina":0.4,"adenosina":0.3,
+  "endocanabinoide":0.3,"d1":0.5,"d2":0.4
+ },
+ "events": ["bg_rpe", "spindle"]
+}
+
+Agregador dedicado (hot path 200Hz):
+só conta spikes/região + 11 escalares.</div>
+</details>
+
+<div class="hud panel" id="legend">
+  <div class="lt">HIERARQUIA CORTICAL</div>
+  <div class="leg-row"><span class="leg-dot" style="background:var(--c0)"></span>C0 · Sensorial</div>
+  <div class="leg-row"><span class="leg-dot" style="background:var(--c1)"></span>C1 · Perceptual</div>
+  <div class="leg-row"><span class="leg-dot" style="background:var(--c2)"></span>C2 · Lexical</div>
+  <div class="leg-row"><span class="leg-dot" style="background:var(--c3)"></span>C3 · Contextual</div>
+  <div class="leg-row"><span class="leg-dot" style="background:var(--c4)"></span>C4 · Abstrato</div>
+</div>
+
+<div class="hud panel" id="regions"><div class="reg-head">REGIÕES · TAXA DE DISPARO</div></div>
+
+<div class="hud panel" id="neuromod"><div class="nm-title">NEUROQUÍMICA · 11 MOLÉCULAS</div></div>
+
+<div class="hud panel" id="raster">
+  <div class="rt"><span>RASTER · DESDOBRAMENTO TEMPORAL</span><span id="raster-win">2s</span></div>
+  <canvas id="raster-canvas"></canvas>
+</div>
+
+<div class="hud" id="hint">arraste · pinça para zoom · [T] cor por tipo ↔ hierarquia · raster = eixo do tempo</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+'use strict';
+
+// ── 14 regiões reais da Selene V4.5 ────────────────────────────────────
+// level = hierarquia cortical dominante C0..C4 (cor); pos = layout anatômico
+const REGIONS = [
+  { id:'occipital',  name:'Occipital (V1→V2)',   level:0, pos:[ 0.0,  0.1, -2.4], r:0.60, n:240, baseRate:12, types:'RS·RZ·LT' },
+  { id:'temporal',   name:'Temporal (audit/sem)', level:1, pos:[-2.1,  0.0,  0.4], r:0.58, n:220, baseRate:11, types:'RS·CH·FS' },
+  { id:'parietal',   name:'Parietal (atenção)',   level:1, pos:[ 0.3,  1.0, -0.9], r:0.56, n:200, baseRate:10, types:'RS·CH' },
+  { id:'linguagem',  name:'Linguagem (Bro/Wer)',  level:2, pos:[-1.7,  0.5,  1.4], r:0.50, n:180, baseRate:9,  types:'RS·CH·FS' },
+  { id:'hipocampo',  name:'Hipocampo (CA1/CA3)',  level:2, pos:[ 1.5, -0.5, -0.7], r:0.50, n:180, baseRate:7,  types:'RS·CH·LT' },
+  { id:'cerebelo',   name:'Cerebelo (erro temp)', level:1, pos:[ 0.2, -1.5, -1.7], r:0.52, n:190, baseRate:9,  types:'RS·FS·LT' },
+  { id:'limbico',    name:'Límbico (valência)',   level:2, pos:[-0.9, -0.7, -0.3], r:0.44, n:150, baseRate:6,  types:'RS·FS·IB' },
+  { id:'amigdala',   name:'Amígdala (BLA/CeA)',   level:2, pos:[-1.3, -0.9,  0.2], r:0.36, n:120, baseRate:5,  types:'BLA·CeA' },
+  { id:'acc',        name:'ACC (conflito/dor)',   level:3, pos:[-0.4,  1.3,  1.1], r:0.42, n:150, baseRate:8,  types:'IB·RS' },
+  { id:'ofc',        name:'OFC (valor/reversal)', level:3, pos:[ 0.5,  1.1,  1.7], r:0.44, n:160, baseRate:8,  types:'RS·IB' },
+  { id:'espelho',    name:'Esp. Espelho (empat.)',level:3, pos:[ 1.9,  0.4,  0.7], r:0.42, n:150, baseRate:7,  types:'RS·IB' },
+  { id:'frontal',    name:'Frontal (WM/plano)',   level:4, pos:[ 0.2,  1.5,  2.2], r:0.66, n:260, baseRate:9,  types:'RS·IB·FS' },
+  { id:'depthstack', name:'DepthStack (metacog.)',level:4, pos:[ 0.0,  2.1,  0.9], r:0.40, n:130, baseRate:6,  types:'—' },
+  { id:'corpo_caloso',name:'Corpo Caloso (inter)',level:2, pos:[ 0.0,  0.2,  0.0], r:0.34, n:110, baseRate:8,  types:'RS·CH' },
+];
+const C = ['#4fd8ff','#6be0a0','#ffd166','#ff8f5e','#c77dff'];
+
+// ── V4.6: cor por TIPO de neurônio (20 tipos + Hybrid) ──────────────────
+// "Ver o cérebro composto só por neurônios em suas posições, separados por cor."
+const TYPE_COLORS = {
+  RS:'#5dd0ff', IB:'#ff8f5e', CH:'#ffd166', FS:'#ff5e7e', LT:'#7fffd4',
+  TC:'#9a7dff', RZ:'#62e0c0', PS:'#a0d8ff', PB:'#ffb07a', AC:'#c0c0d0',
+  BI:'#ffe08a', DAP:'#ff9ad0', IIS:'#80a0ff', PV:'#ff4f6f', SST:'#ffb84f',
+  VIP:'#b86bff', DA_N:'#ff9a4f', NGF:'#6be0a0', LC_N:'#7f9cff', ChIN:'#d0a0ff',
+  GridCell:'#4fffe0', MirrorCell:'#ffd0e0', MSN:'#ff7a4f', Hybrid:'#ffffff',
+  // fallbacks p/ rótulos anatômicos do layout (não-tipos)
+  BLA:'#ff5e7e', CeA:'#ff8f5e', '—':'#8a95a8',
+};
+// Densidade de partículas (×base). Mais neurônios = mais "tecido cerebral".
+const DENSITY = 2.0;
+// Modo de cor: 'tipo' (por tipo neuronal) ou 'nivel' (hierarquia cortical C0–C4).
+let colorMode = 'tipo';
+function corDoNeuronio(reg, tipoCode){
+  if(colorMode==='nivel') return new THREE.Color(C[reg.level]);
+  return new THREE.Color(TYPE_COLORS[tipoCode] || C[reg.level]);
+}
+
+// Vias: sensorial → perceptual → lexical/contextual → frontal/ação; + límbico→BG→DA
+const PATHWAYS = [
+  ['occipital','parietal'], ['temporal','linguagem'], ['temporal','hipocampo'],
+  ['occipital','temporal'], ['parietal','frontal'], ['linguagem','frontal'],
+  ['hipocampo','frontal'], ['frontal','hipocampo'],
+  ['limbico','amigdala'], ['amigdala','acc'], ['limbico','ofc'],
+  ['ofc','frontal'], ['acc','frontal'], ['cerebelo','frontal'],
+  ['frontal','depthstack'], ['espelho','frontal'],
+  ['corpo_caloso','frontal'], ['corpo_caloso','temporal'],
+  ['hipocampo','corpo_caloso'],
+];
+// Projeção nigrostriatal: BG←RPE (rl.rs) → broadcast dopaminérgico
+const DA_TARGETS = ['frontal','hipocampo','ofc','acc'];
+
+// ── Cena ───────────────────────────────────────────────────────────────
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x060a12, 0.05);
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 100);
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setClearColor(0x060a12);
+document.body.appendChild(renderer.domElement);
+const brain = new THREE.Group();
+scene.add(brain);
+
+// ── Neurônios ──────────────────────────────────────────────────────────
+const regionData = {};
+const counts = REGIONS.map(r => Math.max(1, Math.round(r.n * DENSITY)));
+let total = counts.reduce((a,b)=>a+b,0);
+const positions = new Float32Array(total*3);
+const colors = new Float32Array(total*3);
+const baseCol = new Float32Array(total*3);   // cor "cheia" por neurônio (por tipo)
+const intensity = new Float32Array(total);
+const neuronTipo = new Array(total);         // código de tipo de cada neurônio
+let off = 0;
+REGIONS.forEach((reg, ri) => {
+  const nn = counts[ri];
+  const tipos = String(reg.types).split('·').map(s=>s.trim()).filter(Boolean);
+  const start = off;
+  for (let i=0;i<nn;i++){
+    let x,y,z,d; do { x=Math.random()*2-1; y=Math.random()*2-1; z=Math.random()*2-1; d=x*x+y*y+z*z; } while(d>1);
+    const k = off*3;
+    positions[k]=reg.pos[0]+x*reg.r; positions[k+1]=reg.pos[1]+y*reg.r*0.85; positions[k+2]=reg.pos[2]+z*reg.r;
+    const tc = tipos.length ? tipos[(Math.random()*tipos.length)|0] : 'RS';
+    neuronTipo[off] = tc;
+    const cc = corDoNeuronio(reg, tc);
+    baseCol[k]=cc.r; baseCol[k+1]=cc.g; baseCol[k+2]=cc.b;
+    colors[k]=cc.r*0.13; colors[k+1]=cc.g*0.13; colors[k+2]=cc.b*0.13;
+    off++;
+  }
+  regionData[reg.id] = { ...reg, n:nn, start, end:off, col:new THREE.Color(C[reg.level]), rate:reg.baseRate, targetRate:reg.baseRate, excite:0, accum:0, measuredHz:reg.baseRate, spikeCounter:0 };
+});
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.BufferAttribute(positions,3));
+geo.setAttribute('color', new THREE.BufferAttribute(colors,3));
+// Partículas pequenas (≈ "1mm") e atenuadas pela distância → sensação de tecido.
+brain.add(new THREE.Points(geo, new THREE.PointsMaterial({ size:0.028, vertexColors:true, transparent:true, blending:THREE.AdditiveBlending, depthWrite:false, sizeAttenuation:true })));
+
+// Recolore todos os neurônios (toggle tipo↔nível) de forma estável (mesmo tipo/pos).
+function aplicarCores(){
+  for(const r of Object.values(regionData)){
+    for(let i=r.start;i<r.end;i++){
+      const cc = corDoNeuronio(r, neuronTipo[i]); const k=i*3;
+      baseCol[k]=cc.r; baseCol[k+1]=cc.g; baseCol[k+2]=cc.b;
+      const v=intensity[i];
+      colors[k]=cc.r*0.13+(cc.r*0.7+0.9)*v; colors[k+1]=cc.g*0.13+(cc.g*0.7+0.9)*v; colors[k+2]=cc.b*0.13+(cc.b*0.7+0.9)*v;
+    }
+  }
+  geo.getAttribute('color').needsUpdate=true;
+}
+
+// Cascas
+REGIONS.forEach(reg => {
+  const m = new THREE.MeshBasicMaterial({ color:C[reg.level], wireframe:true, transparent:true, opacity:0.05, blending:THREE.AdditiveBlending, depthWrite:false });
+  const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(reg.r*1.08,1), m);
+  mesh.position.set(...reg.pos); mesh.scale.y = 0.85; brain.add(mesh);
+  regionData[reg.id].shell = m;
+});
+
+// ── Vias + pulsos ──────────────────────────────────────────────────────
+const pathways = PATHWAYS.map(([a,b]) => {
+  const A = new THREE.Vector3(...regionData[a].pos), B = new THREE.Vector3(...regionData[b].pos);
+  const mid = A.clone().add(B).multiplyScalar(0.5);
+  mid.add(mid.clone().normalize().multiplyScalar(0.55)); mid.y += 0.3;
+  const curve = new THREE.QuadraticBezierCurve3(A, mid, B);
+  const g = new THREE.BufferGeometry().setFromPoints(curve.getPoints(26));
+  const m = new THREE.LineBasicMaterial({ color:regionData[a].col, transparent:true, opacity:0.09, blending:THREE.AdditiveBlending, depthWrite:false });
+  brain.add(new THREE.Line(g,m));
+  return { from:a, to:b, curve, m };
+});
+const MAXP = 110;
+const pPos = new Float32Array(MAXP*3), pCol = new Float32Array(MAXP*3);
+const pulses = [];
+const pGeo = new THREE.BufferGeometry();
+pGeo.setAttribute('position', new THREE.BufferAttribute(pPos,3));
+pGeo.setAttribute('color', new THREE.BufferAttribute(pCol,3));
+brain.add(new THREE.Points(pGeo, new THREE.PointsMaterial({ size:0.12, vertexColors:true, transparent:true, blending:THREE.AdditiveBlending, depthWrite:false })));
+function spawnPulse(p){ if(pulses.length<MAXP) pulses.push({ p, t:0, speed:0.5+Math.random()*0.4 }); }
+
+// ── Onda dopaminérgica (BG←RPE nigrostriatal) ──────────────────────────
+const daMat = new THREE.MeshBasicMaterial({ color:0xff9a4f, transparent:true, opacity:0, blending:THREE.AdditiveBlending, depthWrite:false, side:THREE.BackSide });
+const daWave = new THREE.Mesh(new THREE.SphereGeometry(1,20,16), daMat);
+daWave.position.set(...regionData.limbico.pos); daWave.visible=false; brain.add(daWave);
+let daT = -1;
+function dopamineBurst(){
+  daT=0; daWave.visible=true;
+  nm.dopamina = Math.min(2, nm.dopamina + 0.5);
+  nm.d1 = Math.min(1, nm.d1 + 0.3);
+  nm.oxitocina = Math.min(1, nm.oxitocina + 0.2); // RPE>0.2 → oxitocina↑
+  log('BG←RPE', 'burst nigrostriatal · D1↑ PFC · oxitocina↑');
+  DA_TARGETS.forEach(id => regionData[id].excite += 5);
+  pathways.filter(p => p.from==='amigdala'||p.from==='limbico').forEach(p => { for(let i=0;i<3;i++) spawnPulse(p); });
+}
+
+// fundo
+{ const n=380, p=new Float32Array(n*3); for(let i=0;i<n*3;i++) p[i]=(Math.random()*2-1)*24;
+  const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(p,3));
+  scene.add(new THREE.Points(g, new THREE.PointsMaterial({ color:0x1b2740, size:0.03, transparent:true, opacity:0.6, depthWrite:false }))); }
+
+// ── 11 neurotransmissores ──────────────────────────────────────────────
+const nm = { dopamina:0.5, serotonina:0.5, noradrenalina:0.3, cortisol:0.2, acetilcolina:0.4, oxitocina:0.5, histamina:0.4, adenosina:0.25, endocanabinoide:0.3, d1:0.45, d2:0.4 };
+const NM_META = [
+  ['dopamina','DA','#ff9a4f'], ['serotonina','5HT','#6bffb8'], ['noradrenalina','NE','#7f9cff'],
+  ['cortisol','COR','#ff6b8a'], ['acetilcolina','ACh','#b86bff'], ['oxitocina','OXT','#5dffd0'],
+  ['histamina','HIS','#ffd166'], ['adenosina','ADE','#8a95a8'], ['endocanabinoide','eCB','#9affc0'],
+  null, ['d1','D1','#ffb07a'], ['d2','D2','#a0b4ff'],
+];
+
+// ── HUD ────────────────────────────────────────────────────────────────
+const regionsPanel = document.getElementById('regions');
+const regionUI = {};
+REGIONS.slice().sort((a,b)=>a.level-b.level).forEach(reg => {
+  const hex = C[reg.level];
+  const row = document.createElement('div'); row.className='region-row';
+  row.innerHTML = `<div class="region-dot" style="background:${hex};box-shadow:0 0 5px ${hex}"></div><div class="region-name">${reg.name}</div><div class="region-hz">0.0</div>`;
+  regionsPanel.appendChild(row);
+  regionUI[reg.id] = row.querySelector('.region-hz');
+});
+const nmPanel = document.getElementById('neuromod');
+const nmUI = {};
+NM_META.forEach(meta => {
+  if(!meta){ const d=document.createElement('div'); d.className='nm-div'; nmPanel.appendChild(d); return; }
+  const [key,label,hex]=meta;
+  const row=document.createElement('div'); row.className='nm-row';
+  row.innerHTML=`<div class="nm-label">${label}</div><div class="nm-track"><div class="nm-fill" style="background:${hex}"></div></div><div class="nm-val">0</div>`;
+  nmPanel.appendChild(row);
+  nmUI[key]={ fill:row.querySelector('.nm-fill'), val:row.querySelector('.nm-val') };
+});
+function log(tag,msg){ /* eventos vão para o console; HUD fica limpo */ }
+
+// ── Legenda de TIPOS neuronais + toggle de modo de cor (tecla T) ────────
+(function(){
+  const presentes = [...new Set(neuronTipo)].filter(t => TYPE_COLORS[t] && t!=='—');
+  const leg = document.getElementById('legend');
+  const div = document.createElement('div'); div.className='nm-div'; leg.appendChild(div);
+  const ht = document.createElement('div'); ht.className='lt'; ht.id='legend-tipos';
+  ht.textContent='TIPOS NEURONAIS · [T]'; leg.appendChild(ht);
+  presentes.forEach(t => {
+    const row=document.createElement('div'); row.className='leg-row';
+    row.innerHTML=`<span class="leg-dot" style="background:${TYPE_COLORS[t]}"></span>${t}`;
+    leg.appendChild(row);
+  });
+})();
+addEventListener('keydown', e=>{
+  if(e.key==='t'||e.key==='T'){
+    colorMode = (colorMode==='tipo') ? 'nivel' : 'tipo';
+    aplicarCores();
+    const ht=document.getElementById('legend-tipos');
+    if(ht) ht.textContent=(colorMode==='tipo'?'TIPOS NEURONAIS':'HIERARQUIA C0–C4')+' · [T]';
+  }
+});
+
+// ── Raster plot (eixo temporal = equivalente ao unroll) ────────────────
+const rc = document.getElementById('raster-canvas');
+const rctx = rc.getContext('2d');
+function sizeRaster(){ rc.width = rc.clientWidth*devicePixelRatio; rc.height = 130*devicePixelRatio; }
+sizeRaster();
+const RASTER_ROWS = REGIONS.length;
+const rasterEvents = []; // {x:0..1 (age), row, color}
+
+// ── Câmera ─────────────────────────────────────────────────────────────
+let camTheta=0.7, camPhi=1.1, camDist=9.5;
+let drag=false, lx=0, ly=0, pinch=0;
+const el = renderer.domElement;
+function updCam(){
+  camPhi=Math.max(0.15,Math.min(Math.PI-0.15,camPhi)); camDist=Math.max(4.5,Math.min(20,camDist));
+  camera.position.set(camDist*Math.sin(camPhi)*Math.cos(camTheta), camDist*Math.cos(camPhi), camDist*Math.sin(camPhi)*Math.sin(camTheta));
+  camera.lookAt(0,0.3,0);
+}
+el.addEventListener('pointerdown',e=>{drag=true;lx=e.clientX;ly=e.clientY;});
+addEventListener('pointerup',()=>drag=false);
+addEventListener('pointermove',e=>{ if(!drag)return; camTheta+=(e.clientX-lx)*0.006; camPhi-=(e.clientY-ly)*0.006; lx=e.clientX; ly=e.clientY; });
+el.addEventListener('wheel',e=>{ camDist+=e.deltaY*0.005; e.preventDefault(); },{passive:false});
+el.addEventListener('touchstart',e=>{ if(e.touches.length===2) pinch=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY); },{passive:true});
+el.addEventListener('touchmove',e=>{ if(e.touches.length===2){ const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY); camDist-=(d-pinch)*0.02; pinch=d; drag=false; } },{passive:true});
+
+// ── WebSocket ──────────────────────────────────────────────────────────
+let ws=null, live=false, lastMsg=0, liveStep=0, liveHz=0, brainState='Vigilia';
+const modeEl=document.getElementById('mode'), clockEl=document.getElementById('clock');
+document.getElementById('ws-btn').addEventListener('click',()=>{
+  const url=document.getElementById('ws-url').value.trim();
+  if(ws){ ws.close(); ws=null; }
+  try{
+    ws=new WebSocket(url);
+    ws.onopen=()=>{ live=true; lastMsg=performance.now(); modeEl.textContent='AO VIVO'; modeEl.classList.add('live'); };
+    ws.onmessage=ev=>{ lastMsg=performance.now(); try{ handleTick(JSON.parse(ev.data)); }catch(_){} };
+    ws.onclose=ws.onerror=()=>{ live=false; modeEl.textContent='SIMULAÇÃO'; modeEl.classList.remove('live'); };
+  }catch(_){}
+});
+function handleTick(m){
+  if(m.event!=='neural_status') return;
+  if(typeof m.step==='number') liveStep=m.step;
+  if(typeof m.loop_hz==='number') liveHz=m.loop_hz;
+  if(m.brain_state) brainState=m.brain_state;
+  if(m.regions) for(const [id,d] of Object.entries(m.regions)){ const r=regionData[id]; if(!r)continue;
+    if(typeof d.rate==='number') r.targetRate=d.rate;
+    if(typeof d.spikes==='number') fire(r,d.spikes);
+  }
+  if(m.neurochem) for(const k in nm) if(typeof m.neurochem[k]==='number') nm[k]=m.neurochem[k];
+  if(Array.isArray(m.events)) m.events.forEach(e=>{ if(e==='bg_rpe'||e==='dopamine_burst'||e==='rpe_burst') dopamineBurst(); });
+}
+
+// ── Spikes ─────────────────────────────────────────────────────────────
+function fire(reg,count){
+  const n=Math.min(count,reg.n);
+  for(let i=0;i<n;i++){ intensity[reg.start + (Math.random()*reg.n|0)] = 1.0; }
+  reg.spikeCounter += n;
+  // raster: 1 marca por região por lote
+  rasterEvents.push({ age:0, row:REGIONS.findIndex(r=>r.id===reg.id), color:reg.col });
+}
+
+// ── Simulação ──────────────────────────────────────────────────────────
+let phase=Math.random()*100, nextDA=5+Math.random()*8, nextStim=2+Math.random()*4, simStep=0;
+function simulate(dt){
+  phase+=dt; simStep += dt*200;
+  nextStim-=dt;
+  if(nextStim<=0){ const s=Math.random()<0.5?'occipital':'temporal'; regionData[s].excite+=9; regionData.parietal.excite+=4; nextStim=2.5+Math.random()*5; }
+  nextDA-=dt;
+  if(nextDA<=0){ regionData.limbico.excite+=6; regionData.amigdala.excite+=5; setTimeout(dopamineBurst,300); nextDA=9+Math.random()*10; }
+  for(const r of Object.values(regionData)){
+    const osc=Math.sin(phase*0.4+r.start)*0.25+1;
+    r.targetRate=r.baseRate*osc*(0.7+nm.noradrenalina*0.8)+r.excite*4;
+    r.excite*=Math.exp(-dt*2.2);
+  }
+  // dinâmica de acoplamento real
+  nm.dopamina += (0.5-nm.dopamina)*dt*0.5;
+  nm.d1 += (0.3+ (nm.dopamina>1?(nm.dopamina-1)*0.6:0) - nm.d1)*dt*0.6; // sigmoide acima de DA~1
+  nm.d2 += (0.45 - nm.adenosina*0.3 - nm.d2)*dt*0.5;                    // adenosina→D2↓ (Ferré)
+  nm.adenosina += (0.25 + Math.min(simStep/200000,0.4) - nm.adenosina)*dt*0.1; // sobe com carga
+  nm.histamina += (0.5 - nm.adenosina*0.6 - nm.histamina)*dt*0.4;       // inverso à adenosina
+  nm.acetilcolina += (0.4 - nm.adenosina*0.3 + Math.sin(phase*0.2)*0.1 - nm.acetilcolina)*dt*0.5;
+  nm.noradrenalina += (0.3+Math.sin(phase*0.13)*0.12 - nm.noradrenalina)*dt*0.8;
+  nm.serotonina += (0.5+Math.sin(phase*0.07)*0.1 - nm.serotonina)*dt*0.3;
+  nm.cortisol += (0.2 - nm.cortisol)*dt*0.4;
+  nm.oxitocina += (0.5 - nm.cortisol*0.4 - nm.oxitocina)*dt*0.3;        // cortisol suprime oxitocina
+  nm.endocanabinoide += (nm.dopamina*0.4 + nm.cortisol*0.3 - nm.endocanabinoide)*dt*0.4;
+  for(const k in nm) nm[k]=Math.max(0,Math.min(k==='dopamina'?2:1, nm[k]));
+}
+
+// ── Loop ───────────────────────────────────────────────────────────────
+const colAttr = geo.getAttribute('color');
+let lastT=performance.now()/1000, hudT=0, hzWin=0, rasterT=0;
+function animate(){
+  requestAnimationFrame(animate);
+  const now=performance.now()/1000; const dt=Math.min(now-lastT,0.05); lastT=now;
+  if(live && performance.now()-lastMsg>4000){ live=false; modeEl.textContent='SIMULAÇÃO'; modeEl.classList.remove('live'); }
+  if(!live) simulate(dt);
+
+  for(const r of Object.values(regionData)){
+    r.rate += (r.targetRate-r.rate)*dt*4;
+    if(!live){ r.accum += r.rate*dt*(r.n/60); const k=r.accum|0; if(k>0){ fire(r,k); r.accum-=k; } }
+    const outs=pathways.filter(p=>p.from===r.id);
+    if(outs.length && Math.random()<r.rate*dt*0.06*(0.5+nm.acetilcolina)) spawnPulse(outs[Math.random()*outs.length|0]);
+    r.shell.opacity = 0.03 + Math.min(r.rate/80,0.09);
+  }
+
+  const decay=Math.exp(-dt*6);
+  for(let i=0;i<total;i++){
+    const v=intensity[i]; if(v===0) continue;
+    const k=i*3; const br=baseCol[k], bg=baseCol[k+1], bb=baseCol[k+2];
+    if(v>0.002){ intensity[i]=v*decay;
+      colors[k]=br*0.13+(br*0.7+0.9)*v; colors[k+1]=bg*0.13+(bg*0.7+0.9)*v; colors[k+2]=bb*0.13+(bb*0.7+0.9)*v;
+    } else { intensity[i]=0; colors[k]=br*0.13; colors[k+1]=bg*0.13; colors[k+2]=bb*0.13; }
+  }
+  colAttr.needsUpdate=true;
+
+  pPos.fill(0); pCol.fill(0);
+  for(let i=pulses.length-1;i>=0;i--){ const pu=pulses[i]; pu.t+=dt*pu.speed;
+    if(pu.t>=1){ const tg=regionData[pu.p.to]; tg.excite+=0.8; fire(tg,2+Math.random()*3|0); pulses.splice(i,1); continue; }
+    const vv=pu.p.curve.getPoint(pu.t); const k=i*3; pPos[k]=vv.x; pPos[k+1]=vv.y; pPos[k+2]=vv.z;
+    const c=regionData[pu.p.from].col; pCol[k]=c.r+0.4; pCol[k+1]=c.g+0.4; pCol[k+2]=c.b+0.4;
+  }
+  pGeo.attributes.position.needsUpdate=true; pGeo.attributes.color.needsUpdate=true;
+
+  if(daT>=0){ daT+=dt; const T=1.8; if(daT>T){ daT=-1; daWave.visible=false; } else { const f=daT/T; daWave.scale.setScalar(0.3+f*6); daMat.opacity=0.11*(1-f); } }
+
+  brain.rotation.y += dt*0.035;
+
+  // raster: envelhece eventos e redesenha
+  rasterT+=dt;
+  const RWIN=2.0;
+  for(let i=rasterEvents.length-1;i>=0;i--){ rasterEvents[i].age+=dt; if(rasterEvents[i].age>RWIN) rasterEvents.splice(i,1); }
+  if(rasterT>0.05){
+    rasterT=0;
+    rctx.clearRect(0,0,rc.width,rc.height);
+    const rh=rc.height/RASTER_ROWS;
+    for(const ev of rasterEvents){
+      const x=(1-ev.age/RWIN)*rc.width;
+      const y=ev.row*rh + rh*0.5;
+      const a=1-ev.age/RWIN;
+      rctx.fillStyle=`rgba(${ev.color.r*255|0},${ev.color.g*255|0},${ev.color.b*255|0},${a*0.85})`;
+      rctx.fillRect(x, y-1*devicePixelRatio, 2.5*devicePixelRatio, 2.5*devicePixelRatio);
+    }
+    // linha "agora"
+    rctx.strokeStyle='rgba(255,255,255,0.15)'; rctx.lineWidth=devicePixelRatio;
+    rctx.beginPath(); rctx.moveTo(rc.width-1,0); rctx.lineTo(rc.width-1,rc.height); rctx.stroke();
+  }
+
+  hudT+=dt; hzWin+=dt;
+  if(hudT>0.125){
+    hudT=0;
+    for(const r of Object.values(regionData)){
+      const hz=r.spikeCounter/Math.max(hzWin,0.01)/r.n*10;
+      r.measuredHz += (hz-r.measuredHz)*0.3; r.spikeCounter=0;
+      regionUI[r.id].textContent=r.measuredHz.toFixed(1);
+    }
+    hzWin=0;
+    for(const k in nmUI){ nmUI[k].fill.style.width=(nm[k]/(k==='dopamina'?2:1)*100)+'%'; nmUI[k].val.textContent=nm[k].toFixed(2); }
+    const stp = live?liveStep:(simStep|0); const hz=live?liveHz:200;
+    clockEl.textContent=`step ${stp.toLocaleString('pt-BR')} · ${hz.toFixed(0)}Hz · ${live?brainState:'Vigilia'}`;
+  }
+
+  updCam(); renderer.render(scene,camera);
+}
+addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); sizeRaster(); });
+updCam();
+animate();
+</script>
+</body>
+</html>

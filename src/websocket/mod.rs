@@ -78,6 +78,9 @@ pub async fn start_websocket_server(brain_state: Arc<Mutex<BrainState>>) {
     // Serve selene_mobile_ui.html em /mobile
     let mobile = warp::path("mobile").and(warp::fs::file("selene_mobile_ui.html"));
 
+    // V4.6.1 — Visualização 3D dos neurônios (cor por tipo, por zona) em /neural
+    let neural = warp::path("neural").and(warp::fs::file("selene_neural_viz.html"));
+
     // PWA: manifest.json e service worker (necessários para instalação no celular)
     let manifest = warp::path("manifest.json").and(warp::fs::file("selene_manifest.json"));
     let sw      = warp::path("sw.js").and(warp::fs::file("selene_sw.js"));
@@ -87,7 +90,7 @@ pub async fn start_websocket_server(brain_state: Arc<Mutex<BrainState>>) {
     let static_dir = warp::fs::dir(".");
 
     // Combina as rotas + handler de rejeição (401/404 limpos)
-    let routes = index.or(mobile).or(manifest).or(sw).or(ws_route).or(static_dir)
+    let routes = index.or(mobile).or(neural).or(manifest).or(sw).or(ws_route).or(static_dir)
         .recover(tratar_rejeicao);
 
     // ── Bind seguro (V4.6.1) ────────────────────────────────────────────────
