@@ -10,9 +10,28 @@ Você está trabalhando no projeto **Selene Brain 2.0** — uma IA com cérebro 
 
 ---
 
-## Estado atual — V4.5 (2026-05-24)
+## Estado atual — V4.6.1 (2026-06-13)
 
 Versões mais recentes:
+- **V4.6.1** — Corpo digital + leitura + visualização + 23/23 tipos conectados:
+  - Segurança: bind `127.0.0.1` padrão, `SELENE_TOKEN`, `SELENE_LAN`; build
+    `release-avell` (znver4) + `hardware_profile.rs` (`SELENE_HW`); swap path
+    portável (`SELENE_SWAP_POOL`).
+  - Leitura (B): WS `ingest`/`ingest_clear` SEM perda/loop (corrige bug de
+    conteúdo longo — era dedup/rate-limit/cap-10 do `passive_hear`, NÃO o WS).
+    Fila `fila_ingestao` (1/tick, prioritária). Cliente `ler_documento.py`.
+  - Corpo digital (A): `motor_cortex.rs` (ator Q-learning) + WS `env_step` +
+    daemon `selene_agent.py` (mss + pydirectinput no S145).
+  - **23/23 tipos conectados** via `enriquecer_interneuronios`/`reatribuir_cauda`/
+    `popular_cauda` (reatribui a CAUDA → preserva leitura posicional). DA_N/SST/
+    VIP/PV/NGF/ChIN, GridCell(hipo), MirrorCell(temporal), MSN(accumbens), TC(occ).
+  - Viz `/neural` (`selene_neural_viz.html`): partícula = 1 neurônio, cor por
+    tipo (tecla T). Telemetria REAL: `NeuralStatus` + `event/regions/neurochem(11)/
+    events`; `main.rs` preenche `bs.viz_*` a cada 100 ticks. Evento `spindle`.
+  - Fidelidade: `tests/validacao_allen.rs` (F-I); pressão evolutiva em `stem_cell.rs`.
+    ⚠️ tipos PUROS disparam acima do biológico (core-tuning pendente, deliberado).
+- **V4.6** — Célula-tronco digital + genoma evoluível (`stem_cell.rs`, `DnaNeuronal`,
+  `Hybrid`); GridCell/MirrorCell/MSN; event-driven + subsampler 200Hz.
 - **V4.5** — Persistência HIT (engrams + CA3 binário) + Export/Import
   knowledge para clonagem entre agentes + script `clonar_conhecimento.py` +
   Manual completo `MANUAL_ENGRAMS.md`

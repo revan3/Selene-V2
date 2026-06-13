@@ -1,6 +1,32 @@
-# Selene Brain V4.6 — Célula-Tronco Neural Digital + Genoma Evoluível sobre V4.5
+# Selene Brain V4.6.1 — Corpo Digital, Leitura, Visualização & 23 Tipos Conectados
 
 > **Simulação de cérebro artificial em Rust com neurônio V4 multicompartimental (5 compartimentos + metabolismo ATP + [K⁺]o dinâmico + acoplamento ephaptic), 20 tipos Izhikevich + neurônios `Hybrid` de genoma evoluível, pool neural 4096-bloco FP4–FP32, codificação localista, STDP 3-fatores, 14 regiões cerebrais, 11 neurotransmissores dinâmicos, processamento interno 100% em frequência/u32 (sem texto no núcleo neural), motor de hipóteses preditivo, watchdog + invariants do loop 200Hz, Union-Find (DSU) no `ChunkingEngine`, temperatura real via WMI, projeção nigrostriatal `BG←RPE` (rl.rs), interocepção modulando binding multimodal, e curriculo fonético PT-BR completo nas 11 fases.**
+
+---
+
+## V4.6.1 — Corpo Digital, Leitura, Visualização & Conexão Total dos Tipos
+
+| Frente | O quê | Onde |
+|---|---|---|
+| 🔒 **Segurança** | bind `127.0.0.1` por padrão (era `0.0.0.0`), token `SELENE_TOKEN`, LAN opt-in `SELENE_LAN` | `websocket/mod.rs` |
+| 🖥️ **Perfil Avell** | `--profile release-avell` (znver4) + `SELENE_HW=avell` + path de swap portável | `Cargo.toml`, `hardware_profile.rs`, `swap_manager.rs` |
+| 📖 **Leitura (B)** | ingestão dedicada sem perda/loop (`ingest`/`ingest_clear`) + `ler_documento.py` (.txt/.pdf/.epub/audiobook) | `server.rs`, `bridge.rs`, `ler_documento.py` |
+| 🤖 **Corpo digital (A)** | `MotorCortex` (ator Q-learning) + handler `env_step` + `selene_agent.py` (captura ecrã + teclado/rato no S145) | `motor_cortex.rs`, `selene_agent.py` |
+| 🧬 **23/23 tipos conectados** | todos os tipos (incl. PV/SST/VIP/DA_N/ChIN/NGF, GridCell, MirrorCell, MSN, TC, Izhikevich variantes) instanciados nas suas zonas | `synaptic_core.rs` + `brain_zones/` |
+| 🎨 **Visualização 3D** | `/neural` — cada partícula = 1 neurônio, **cor por tipo** (tecla T), telemetria REAL (taxa por zona + 11 neurochem + eventos) | `selene_neural_viz.html`, `bridge.rs`, `main.rs` |
+| 🔬 **Validação biológica** | harness F-I por tipo vs faixas da literatura (pronto p/ Allen Cell Types DB) | `tests/validacao_allen.rs` |
+| 🧪 **Fidelidade evolutiva** | seleção da célula-tronco recompensa taxas biológicas, penaliza runaway | `stem_cell.rs` |
+
+**Como ligar tudo:**
+```powershell
+# build (no Avell): $env:RUSTFLAGS="-C target-cpu=znver4"; cargo build --profile release-avell --bin selene_brain
+$env:SELENE_HW="avell"; $env:SELENE_TOKEN="segredo"; ./target/release-avell/selene_brain
+# visualização: http://127.0.0.1:3030/neural
+# ler um livro:  python ler_documento.py livro.pdf --token segredo
+# corpo digital: python selene_agent.py --region 100,100,400,400 --host IP --token segredo
+```
+
+> **Achado de fidelidade (validacao_allen):** sob corrente forte, os tipos puros disparam acima do biológico (RS ~92 Hz vs 1–20). A pressão evolutiva da célula-tronco corrige isto nos híbridos; o tuning dos tipos puros é core-tuning deliberado (próximo passo).
 
 ---
 
