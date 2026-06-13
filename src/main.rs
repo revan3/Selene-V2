@@ -1362,8 +1362,12 @@ async fn async_main() {
                 bs.oxytocin_level  = neuro.oxytocin;
                 bs.amygdala_fear   = amygdala.fear_signal;
                 bs.amygdala_extinction = amygdala.extinction_trace;
-                // Wernicke: consome um lote da fila FIFO por tick (evita starvation)
-                if let Some(tokens) = bs.pending_wernicke_tokens.pop_front() {
+                // Wernicke: consome 1 lote por tick. V4.6.1 — a fila de INGESTÃO
+                // (leitura/audiobook) tem PRIORIDADE e é processada em ordem, sem
+                // descarte; só quando vazia volta ao microfone ambiente (pending_*).
+                let tokens_wernicke = bs.fila_ingestao.pop_front()
+                    .or_else(|| bs.pending_wernicke_tokens.pop_front());
+                if let Some(tokens) = tokens_wernicke {
                     let valencias_w = if let Ok(sw) = swap_manager.try_lock() {
                         sw.valencias_conceitos()
                     } else {

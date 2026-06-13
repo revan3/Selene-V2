@@ -2717,6 +2717,67 @@ pub async fn handle_connection(
                                     }
                                 }
 
+                                // ── INGEST: leitura de documentos / audiobooks (V4.6.1) ───────────────────
+                                // Conteúdo LONGO processado por INTEIRO e EM ORDEM, sem dedup/rate-limit
+                                // e SEM descarte. Corrige o loop/perda de trechos do passive_hear (que é
+                                // para microfone ambiente). Consumido 1 trecho/tick com prioridade.
+                                // Payload: {"action":"ingest", "content":"<texto longo / transcrição>"}
+                                Some("ingest") => {
+                                    let content = json["content"].as_str().unwrap_or("").to_string();
+                                    if content.trim().is_empty() { continue; }
+                                    // Cota de segurança anti-OOM (payload malicioso), não de fluxo normal.
+                                    const MAX_CHUNKS: usize = 2_000_000;
+
+                                    // Segmenta em frases preservando a ORDEM (. ! ? ; nova-linha).
+                                    let mut chunks: Vec<Vec<u32>> = Vec::new();
+                                    for frase in content.split(|c: char|
+                                        matches!(c, '.' | '!' | '?' | ';' | '\n' | '\r'))
+                                    {
+                                        let toks: Vec<u32> = frase.split_whitespace()
+                                            .map(|w: &str| w.to_lowercase()
+                                                .trim_matches(|c: char| !c.is_alphabetic()).to_string())
+                                            .filter(|w| w.len() > 2)
+                                            .map(|w| word_to_concept_id(&w))
+                                            .collect();
+                                        if !toks.is_empty() { chunks.push(toks); }
+                                        if chunks.len() >= MAX_CHUNKS { break; }
+                                    }
+                                    let n_chunks = chunks.len();
+                                    if n_chunks == 0 { continue; }
+
+                                    // lock().await: enfileira SEM perda (não é o hot loop — é one-shot).
+                                    {
+                                        let mut state = brain.lock().await;
+                                        let espaco = MAX_CHUNKS.saturating_sub(state.fila_ingestao.len());
+                                        for c in chunks.into_iter().take(espaco) {
+                                            state.fila_ingestao.push_back(c);
+                                        }
+                                    }
+                                    let ack = serde_json::json!({
+                                        "type": "ingest_ack",
+                                        "chunks_enfileirados": n_chunks,
+                                        "msg": format!("📖 {} trechos na fila de leitura (em ordem, ~200/s)", n_chunks),
+                                    }).to_string();
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                    log::info!("[INGEST] {} trechos enfileirados para leitura sequencial", n_chunks);
+                                }
+
+                                // ── INGEST_CLEAR: cancela a leitura em curso ──────────────────────────────
+                                Some("ingest_clear") => {
+                                    let restantes = {
+                                        let mut state = brain.lock().await;
+                                        let n = state.fila_ingestao.len();
+                                        state.fila_ingestao.clear();
+                                        n
+                                    };
+                                    let ack = serde_json::json!({
+                                        "type": "ingest_ack",
+                                        "chunks_enfileirados": 0,
+                                        "msg": format!("🛑 Leitura cancelada — {} trechos descartados", restantes),
+                                    }).to_string();
+                                    let _ = ws_tx.send(Message::text(ack)).await;
+                                }
+
                                 // ── PASSIVE_HEAR: escuta de fundo — aprende sem responder ──────────────────
                                 // Enviado pelo modo Ambiente quando score < 0.40 (vídeo/podcast).
                                 // Melhorias V3.2:

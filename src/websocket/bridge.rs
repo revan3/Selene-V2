@@ -403,6 +403,14 @@ pub struct BrainState {
     /// Option<Vec<>> (canal único que sobrescrevia); agora acumula corretamente.
     pub pending_wernicke_tokens: std::collections::VecDeque<Vec<u32>>,
 
+    /// V4.6.1 — Fila de INGESTÃO dedicada (leitura de documentos / audiobooks).
+    /// Diferente de `pending_wernicke_tokens` (microfone ambiente, capada em 10 com
+    /// descarte): esta é ORDENADA, SEM dedup/rate-limit e SEM descarte do mais antigo
+    /// — consumida 1 lote por tick com prioridade. Garante que conteúdo longo é
+    /// processado por inteiro e em sequência (corrige o loop/perda de trechos).
+    /// Cota de segurança alta (anti-OOM de payload malicioso), não de fluxo normal.
+    pub fila_ingestao: std::collections::VecDeque<Vec<u32>>,
+
     /// Integração multimodal audiovisual — predição cruzada visual↔audio.
     /// Usado para amplificar sinal congruente e detectar incongruência (surpresa).
     pub convergencia_multimodal: ConvergenciaMultimodal,
@@ -810,6 +818,7 @@ impl BrainState {
             // únicos simultâneos. Excede com folga vocabulário humano ativo (~3-5k palavras).
             neural_pool: NeuralPool::new(4096),
             pending_wernicke_tokens: std::collections::VecDeque::new(),
+            fila_ingestao: std::collections::VecDeque::new(),
             ultimo_passive_tokens_hash: 0,
             ultimo_passive_hear_ts: std::time::Instant::now()
                 - std::time::Duration::from_secs(10),
