@@ -64,6 +64,8 @@ impl Cerebellum {
                 n.threshold = 25.0;
             }
         }
+        // V4.6.1 — acorda interneurônios/neuromoduladores órfãos (DA_N/SST/VIP/PV/NGF/ChIN)
+        purkinje.enriquecer_interneuronios(0.15);
         // Basket cells inibem Purkinje vizinhas → timing preciso de output motor
         purkinje.init_lateral_inhibition(3, 4.0);
 

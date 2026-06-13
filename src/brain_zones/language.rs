@@ -104,6 +104,8 @@ impl LanguageAreas {
             Some(wernicke_dist),
             escala_w,
         );
+        // V4.6.1 — acorda interneurônios/neuromoduladores órfãos
+        wernicke.enriquecer_interneuronios(0.15);
         // Inibição lateral em Wernicke: compressão para apenas o padrão mais forte
         wernicke.init_lateral_inhibition(3, 2.0);
 
@@ -114,6 +116,8 @@ impl LanguageAreas {
             Some(broca_dist),
             escala_b,
         );
+        // V4.6.1 — acorda interneurônios/neuromoduladores órfãos
+        broca.enriquecer_interneuronios(0.15);
         // Inibição lateral em Broca: seleção de um padrão motor por vez
         broca.init_lateral_inhibition(4, 3.0);
 

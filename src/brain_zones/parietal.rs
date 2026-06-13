@@ -46,6 +46,7 @@ impl ParietalLobe {
             nr.tipo = TipoNeuronal::FS;
             nr.threshold = 25.0;
         }
+        integration.enriquecer_interneuronios(0.15); // V4.6.1 — acorda órfãos (DA_N/SST/VIP/PV/NGF/ChIN)
         integration.init_lateral_inhibition(4, 2.0); // supressão leve para foco atencional
 
         let mut rng = thread_rng();

@@ -74,6 +74,8 @@ impl TemporalLobe {
             nr.tipo = TipoNeuronal::FS;
             nr.threshold = 25.0; // FS dispara com limiar menor
         }
+        // V4.6.1 — STS é zona social/de movimento biológico → MirrorCell (aprendizado vicariante)
+        recognition.reatribuir_cauda(TipoNeuronal::MirrorCell, 0.15);
         recognition.init_lateral_inhibition(4, 2.5); // 4 vizinhos, força moderada
 
         Self {

@@ -52,7 +52,7 @@ impl HippocampusV2 {
 
         let escala = 40.0 / 127.0;
 
-        let ca1 = CamadaHibrida::new(
+        let mut ca1 = CamadaHibrida::new(
             n_sub, "hipocampo_ca1",
             TipoNeuronal::RS,
             Some((TipoNeuronal::LT, 0.20)),
@@ -66,6 +66,9 @@ impl HippocampusV2 {
             Some(ca3_dist),
             escala,
         );
+
+        // V4.6.1 — Grid cells (entorrinal→hipocampo): mapa espacial hexagonal.
+        ca1.reatribuir_cauda(TipoNeuronal::GridCell, 0.15);
 
         Self {
             ca1_encoding: ca1,

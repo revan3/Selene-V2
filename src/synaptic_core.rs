@@ -2561,6 +2561,52 @@ impl CamadaHibrida {
         c
     }
 
+    /// V4.6.1 — Conecta os interneurônios/neuromoduladores órfãos a uma zona já
+    /// construída: reatribui a CAUDA da população (preserva os primeiros índices →
+    /// leitura posicional/rate intacta) e MANTÉM a contagem (recebem input → de fato
+    /// disparam, ao contrário de simplesmente anexar). Acorda a maquinaria V3.1
+    /// dormente: DA_N→RPE, SST gating, VIP disinibição, NGF normalização.
+    ///
+    /// Chame ANTES de `init_lateral_inhibition` (que então cabeia PV/SST/VIP).
+    /// `fracao` ∈ [0, 0.5] — proporção da população convertida (ex.: 0.18).
+    pub fn enriquecer_interneuronios(&mut self, fracao: f32) {
+        let n = self.neuronios.len();
+        if n < 12 { return; }
+        let total = ((n as f32) * fracao.clamp(0.0, 0.5)).round() as usize;
+        if total == 0 { return; }
+        // Mix ~Markram (proporções relativas dentro da fração convertida).
+        let mix = [
+            (TipoNeuronal::PV,   0.34), (TipoNeuronal::SST,  0.27),
+            (TipoNeuronal::VIP,  0.14), (TipoNeuronal::NGF,  0.10),
+            (TipoNeuronal::DA_N, 0.10), (TipoNeuronal::ChIN, 0.05),
+        ];
+        let prec = self.neuronios[n - 1].precisao;
+        let mut idx = n - total; // começa na cauda
+        for (tipo, p) in mix {
+            let q = (((total as f32) * p).round() as usize).max(1);
+            for _ in 0..q {
+                if idx >= n { break; }
+                let id = self.neuronios[idx].id;
+                self.neuronios[idx] = NeuronioHibrido::new(id, tipo, prec);
+                idx += 1;
+            }
+        }
+    }
+
+    /// V4.6.1 — Reatribui a cauda da população a UM tipo específico (ex.: GridCell
+    /// no hipocampo/entorrinal, MirrorCell em zona pré-motora/social). Preserva os
+    /// primeiros índices e a contagem (recebem input).
+    pub fn reatribuir_cauda(&mut self, tipo: TipoNeuronal, fracao: f32) {
+        let n = self.neuronios.len();
+        if n < 8 { return; }
+        let total = ((n as f32) * fracao.clamp(0.0, 0.5)).round() as usize;
+        let prec = self.neuronios[n - 1].precisao;
+        for idx in (n - total)..n {
+            let id = self.neuronios[idx].id;
+            self.neuronios[idx] = NeuronioHibrido::new(id, tipo, prec);
+        }
+    }
+
     pub fn init_lateral_inhibition(&mut self, n_vizinhos: usize, peso_inhib: f32) {
         let n = self.neuronios.len();
         self.lateral_w = vec![Vec::new(); n];
@@ -3468,5 +3514,40 @@ mod testes_v4 {
         assert!(combos.len() >= 2,
             "deve explorar ≥2 combinações estruturais (usa_hh, tem_compartimentos); got {}",
             combos.len());
+    }
+
+    // ──────── V4.6.1 — Conexão de tipos órfãos a zonas (enriquecimento) ────────
+
+    #[test]
+    fn enriquecer_conecta_orfaos_e_zona_continua_viva() {
+        let mut c = CamadaHibrida::new(
+            120, "zona", TipoNeuronal::RS, Some((TipoNeuronal::FS, 0.2)), None, 1.0,
+        );
+        c.enriquecer_interneuronios(0.18);
+        c.init_lateral_inhibition(4, 2.5);
+        // Os tipos antes órfãos agora EXISTEM na zona.
+        let tem = |t: TipoNeuronal| c.neuronios.iter().any(|n| n.tipo == t);
+        for t in [TipoNeuronal::DA_N, TipoNeuronal::SST, TipoNeuronal::VIP,
+                  TipoNeuronal::PV, TipoNeuronal::NGF, TipoNeuronal::ChIN] {
+            assert!(tem(t), "zona enriquecida deve conter {t:?}");
+        }
+        // A contagem é preservada (reatribuição, não anexação) → input mapeado.
+        assert_eq!(c.neuronios.len(), 120, "enriquecer preserva a contagem");
+        // E a zona continua a disparar (não morre nem trava) sob drive.
+        let mut spikes = 0usize;
+        for t in 0..400 {
+            let inputs = vec![18.0f32; c.neuronios.len()];
+            spikes += c.update(&inputs, 0.005, t as f32).iter().filter(|&&s| s).count();
+        }
+        assert!(spikes > 0, "zona enriquecida deve continuar viva (got {spikes})");
+    }
+
+    #[test]
+    fn reatribuir_cauda_coloca_tipo_especifico() {
+        let mut c = CamadaHibrida::new(80, "hip", TipoNeuronal::RS, None, None, 1.0);
+        c.reatribuir_cauda(TipoNeuronal::GridCell, 0.15);
+        let grid = c.neuronios.iter().filter(|n| n.tipo == TipoNeuronal::GridCell).count();
+        assert!(grid >= 10, "deve colocar ~15% de GridCell na cauda (got {grid})");
+        assert_eq!(c.neuronios.len(), 80, "contagem preservada");
     }
 }
