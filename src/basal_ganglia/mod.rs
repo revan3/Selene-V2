@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 use std::collections::VecDeque;
 use crate::config::Config;
+use crate::synaptic_core::{CamadaHibrida, TipoNeuronal};
 
 /// Representa um hábito procedural
 #[derive(Debug, Clone)]
@@ -22,16 +23,36 @@ pub struct BasalGanglia {
     pub dopamine_mod: f32,
     pub learning_rate: f32,
     pub historico_recompensas: VecDeque<f32>,
+    // ── V4.6.1: substrato spiking real — estriado (MSN, GABAérgico) ──────────
+    // MSN tem casa anatômica aqui (estriado dorsal). D1/D2 sensíveis à dopamina
+    // (dopamine_mod). Roda junto à lógica de hábitos abstrata.
+    pub striatum: CamadaHibrida,
+    dt: f32,
+    tick_ms: f32,
 }
 
 impl BasalGanglia {
     pub fn new(config: &Config) -> Self {
+        let mut striatum = CamadaHibrida::new(
+            128, "striatum_msn", TipoNeuronal::MSN,
+            Some((TipoNeuronal::FS, 0.10)), // alguns FS (interneurônios estriatais)
+            None, 1.0,
+        );
+        striatum.init_lateral_inhibition(4, 2.0); // MSN inibição lateral (winner-take-all)
         Self {
             habitos: Vec::with_capacity(100),
             dopamine_mod: 1.0,
             learning_rate: config.taxa_aprendizado * 2.0, // hábitos aprendem mais rápido
             historico_recompensas: VecDeque::with_capacity(100),
+            striatum,
+            dt: config.dt_simulacao,
+            tick_ms: 0.0,
         }
+    }
+
+    /// Taxa de disparo do estriado MSN (fração de neurônios ativos no último tick).
+    pub fn msn_spike_rate(&self) -> f32 {
+        self.striatum.estatisticas_v3().spike_rate
     }
     
     /// V4.2 — Recebe o RPE (Reward Prediction Error) do `ReinforcementLearning`
@@ -55,6 +76,13 @@ impl BasalGanglia {
         if self.historico_recompensas.len() > 100 {
             self.historico_recompensas.pop_front();
         }
+
+        // V4.6.1 — estriado spiking: dopamina (D1/D2) + drive do estado atual.
+        // MSN dispara esparso (down-state) → seleção de ação winner-take-all.
+        self.tick_ms += self.dt * 1000.0;
+        self.striatum.modular_neuro(self.dopamine_mod, 1.0, 0.0);
+        let drive: Vec<f32> = current_state.iter().take(128).map(|&v| v * 22.0).collect();
+        let _ = self.striatum.update(&drive, self.dt, self.tick_ms);
 
         // V4.2: dopamine_mod modula a taxa efetiva (vem de aplicar_rpe).
         let effective_lr = self.learning_rate * self.dopamine_mod;
