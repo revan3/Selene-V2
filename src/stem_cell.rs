@@ -46,6 +46,17 @@ use crate::synaptic_core::{
 const ATIVIDADE_VIAVEL_MIN: f32 = 0.005;
 const ATIVIDADE_VIAVEL_MAX: f32 = 0.55;
 
+// ── V4.6.1 — Fidelidade biológica (pressão evolutiva contra runaway) ─────────
+// A validação F-I (tests/validacao_allen) mostrou que sob drive forte os tipos
+// disparam ACIMA do biológico. A seleção da célula-tronco passa a RECOMPENSAR
+// taxas plausíveis e PENALIZAR runaway → as espécies evoluídas convergem para a
+// fisiologia. (Seguro: afeta só híbridos, não os tipos puros do cérebro a aprender.)
+/// Faixa cortical típica in vivo: ~10–40 Hz → activity_avg ≈ [0.01, 0.18].
+const FAIXA_BIO_LO: f32 = 0.01;
+const FAIXA_BIO_HI: f32 = 0.18;
+/// Acima disto (~350 Hz) é runaway implausível → penalidade forte.
+const RUNAWAY_BIO: f32 = 0.35;
+
 /// Atividade média da CAMADA acima da qual há excesso de excitação (falta inibição).
 const RUNAWAY_CAMADA: f32 = 0.22;
 
@@ -326,13 +337,22 @@ pub fn saude_camada(camada: &CamadaHibrida) -> f32 {
     0.5 * frac_ativa + 0.5 * banda
 }
 
-/// Viabilidade de uma célula individual: +1 se participa numa banda saudável,
-/// −1 se ficou silenciosa (inútil) ou em runaway (desestabilizadora).
+/// Viabilidade de uma célula individual — agora com PRESSÃO DE FIDELIDADE:
+///   +1.0  → dispara na faixa biológica cortical (~10–40 Hz) [ótimo]
+///   +0.4  → dispara mas fora da faixa ideal (ainda viável)
+///   −1.0  → silenciosa (inútil)
+///   −1.5  → runaway (>~350 Hz) — penalizada MAIS que o silêncio, para a evolução
+///           empurrar as espécies para taxas fisiológicas (corrige o achado F-I).
 pub fn viabilidade_celula(n: &NeuronioHibrido) -> f32 {
-    if n.activity_avg >= ATIVIDADE_VIAVEL_MIN && n.activity_avg <= ATIVIDADE_VIAVEL_MAX {
-        1.0
+    let a = n.activity_avg;
+    if a < ATIVIDADE_VIAVEL_MIN {
+        -1.0 // silenciosa
+    } else if a > RUNAWAY_BIO {
+        -1.5 // runaway implausível → seleção penaliza fidelidade ruim
+    } else if a >= FAIXA_BIO_LO && a <= FAIXA_BIO_HI {
+        1.0 // faixa cortical biológica → recompensa máxima
     } else {
-        -1.0
+        0.4 // dispara, viável, mas fora da faixa ideal
     }
 }
 
@@ -511,5 +531,21 @@ mod testes {
         let mut gestor = GestorNeurogenese::novo(3);
         let (_, _, nascidas) = gestor.tick_sono(&mut zona);
         assert_eq!(nascidas, 0, "zona saudável não deve gerar células-tronco");
+    }
+
+    #[test]
+    fn fitness_favorece_fidelidade_biologica() {
+        let mut n = NeuronioHibrido::novo_hibrido(
+            0, TipoNeuronal::RS.extrair_dna(), PrecisionType::FP32);
+        // Faixa biológica (~25 Hz) → recompensa máxima.
+        n.activity_avg = 0.05;
+        assert!(viabilidade_celula(&n) > 0.9, "faixa biológica deve dar fitness alto");
+        // Runaway (~400 Hz) → penalizado MAIS que silêncio (pressão de fidelidade).
+        n.activity_avg = 0.40;
+        let runaway = viabilidade_celula(&n);
+        n.activity_avg = 0.0;
+        let silencio = viabilidade_celula(&n);
+        assert!(runaway < silencio,
+            "runaway ({runaway}) deve ser penalizado mais que silêncio ({silencio})");
     }
 }
