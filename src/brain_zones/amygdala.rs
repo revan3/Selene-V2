@@ -80,13 +80,15 @@ impl Amygdala {
         let escala = 36.0 / 127.0;
         let n_sub = (n_neurons / 2).max(4);
 
-        let bla = CamadaHibrida::new(
+        let mut bla = CamadaHibrida::new(
             n_sub, "amygdala_bla",
             TipoNeuronal::IB,
             Some((TipoNeuronal::RS, 0.50)),
             Some(bla_dist),
             escala,
         );
+        // V4.6.1 — DAP (rebound despolarizante) — interneurônios da BLA.
+        bla.popular_cauda(&[TipoNeuronal::DAP], 0.15);
         let cea = CamadaHibrida::new(
             n_sub, "amygdala_cea",
             TipoNeuronal::RS,

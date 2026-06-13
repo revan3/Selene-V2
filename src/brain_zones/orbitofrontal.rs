@@ -75,13 +75,15 @@ impl OrbitalFrontal {
         let escala = 35.0 / 127.0;
         let n_sub = (n_neurons / 3).max(4);
 
-        let value = CamadaHibrida::new(
+        let mut value = CamadaHibrida::new(
             n_sub, "ofc_value",
             TipoNeuronal::RS,
             Some((TipoNeuronal::LT, 0.30)), // LT para resposta a estímulos de baixo valor
             Some(val_dist),
             escala,
         );
+        // V4.6.1 — BI (bistable) — manutenção de valor/estado ON-OFF no OFC.
+        value.popular_cauda(&[TipoNeuronal::BI], 0.15);
         let extinction = CamadaHibrida::new(
             n_sub, "ofc_extinction",
             TipoNeuronal::RS,

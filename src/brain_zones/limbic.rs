@@ -49,20 +49,25 @@ impl LimbicSystem {
         // Escala para correntes límbicas (~35pA)
         let escala = 35.0 / 127.0;
 
-        let amy = CamadaHibrida::new(
+        let mut amy = CamadaHibrida::new(
             n_sub, "limbico_amygdala",
             TipoNeuronal::IB,               // IB dominante — burst emocional
             Some((TipoNeuronal::RS, 0.50)),
             Some(amy_dist),
             escala,
         );
-        let acc = CamadaHibrida::new(
+        // V4.6.1 — habituação (AC, accommodating) na resposta emocional.
+        amy.popular_cauda(&[TipoNeuronal::AC], 0.15);
+
+        let mut acc = CamadaHibrida::new(
             n_sub, "limbico_accumbens",
             TipoNeuronal::RS,
             None,
             Some(acc_dist),
             escala,
         );
+        // V4.6.1 — Accumbens = estriado ventral → MSN (medium spiny neuron) é a célula principal.
+        acc.popular_cauda(&[TipoNeuronal::MSN], 0.20);
 
         Self {
             amygdala: amy,

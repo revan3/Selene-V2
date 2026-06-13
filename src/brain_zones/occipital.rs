@@ -52,13 +52,15 @@ impl OccipitalLobe {
         // Escala para correntes visuais típicas (~40pA)
         let escala = 40.0 / 127.0;
 
-        let v1 = CamadaHibrida::new(
+        let mut v1 = CamadaHibrida::new(
             n_v1, "occipital_v1",
             TipoNeuronal::RS,
             Some((TipoNeuronal::CH, 0.40)), // 40% CH para detecção rápida
             Some(v1_dist),
             escala,
         );
+        // V4.6.1 — relé sensorial (TC) + detecção de onset (PS) + novidade (PB).
+        v1.popular_cauda(&[TipoNeuronal::TC, TipoNeuronal::PS, TipoNeuronal::PB], 0.18);
         let v2 = CamadaHibrida::new(
             n_v2, "occipital_v2",
             TipoNeuronal::CH,               // CH dominante em V2

@@ -2607,6 +2607,27 @@ impl CamadaHibrida {
         }
     }
 
+    /// V4.6.1 — Popula a cauda com VÁRIOS tipos (divididos igualmente), permitindo
+    /// uma zona hospedar múltiplos tipos especializados sem sobrescrever. Preserva
+    /// os primeiros índices e a contagem (recebem input → funcionam).
+    pub fn popular_cauda(&mut self, tipos: &[TipoNeuronal], fracao_total: f32) {
+        let n = self.neuronios.len();
+        if n < 8 || tipos.is_empty() { return; }
+        let total = ((n as f32) * fracao_total.clamp(0.0, 0.5)).round() as usize;
+        if total == 0 { return; }
+        let prec = self.neuronios[n - 1].precisao;
+        let por_tipo = (total / tipos.len()).max(1);
+        let mut idx = n - total;
+        for &tipo in tipos {
+            for _ in 0..por_tipo {
+                if idx >= n { break; }
+                let id = self.neuronios[idx].id;
+                self.neuronios[idx] = NeuronioHibrido::new(id, tipo, prec);
+                idx += 1;
+            }
+        }
+    }
+
     pub fn init_lateral_inhibition(&mut self, n_vizinhos: usize, peso_inhib: f32) {
         let n = self.neuronios.len();
         self.lateral_w = vec![Vec::new(); n];

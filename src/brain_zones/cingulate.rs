@@ -78,13 +78,15 @@ impl AnteriorCingulate {
         let escala = 38.0 / 127.0;
         let n_sub = (n_neurons / 2).max(4);
 
-        let conflict = CamadaHibrida::new(
+        let mut conflict = CamadaHibrida::new(
             n_sub, "acc_conflict",
             TipoNeuronal::IB,               // IB dominante — burst de conflito
             Some((TipoNeuronal::RS, 0.60)), // 60% RS para integração sustentada
             Some(conflict_dist),
             escala,
         );
+        // V4.6.1 — IIS (inhibition-induced) — disparo rebote pós-inibição (disinibição).
+        conflict.popular_cauda(&[TipoNeuronal::IIS], 0.15);
         let regulation = CamadaHibrida::new(
             n_sub, "acc_regulation",
             TipoNeuronal::RS,
