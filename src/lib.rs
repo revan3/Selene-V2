@@ -28,6 +28,8 @@ pub mod meta;
 pub mod glia;
 pub mod synthesis;
 pub mod neural_pool;
+pub mod ternary;
+pub mod lateralization;
 
 // Re-exportações
 pub use sleep_manager::SleepManagerV2 as SleepManager;

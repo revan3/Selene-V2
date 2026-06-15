@@ -30,6 +30,8 @@ mod meta;
 mod glia;
 mod synthesis;
 mod neural_pool;
+mod ternary;
+mod lateralization;
 
 // Imports necessários
 use std::sync::mpsc::{channel, Sender, Receiver};
