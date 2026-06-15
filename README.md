@@ -1,6 +1,26 @@
-# Selene Brain V4.6.1 — Corpo Digital, Leitura, Visualização & 23 Tipos Conectados
+# Selene Brain V4.6.2 — Lateralização Especializada, Ternarização & Watchdog Real
 
 > **Simulação de cérebro artificial em Rust com neurônio V4 multicompartimental (5 compartimentos + metabolismo ATP + [K⁺]o dinâmico + acoplamento ephaptic), 20 tipos Izhikevich + neurônios `Hybrid` de genoma evoluível, pool neural 4096-bloco FP4–FP32, codificação localista, STDP 3-fatores, 14 regiões cerebrais, 11 neurotransmissores dinâmicos, processamento interno 100% em frequência/u32 (sem texto no núcleo neural), motor de hipóteses preditivo, watchdog + invariants do loop 200Hz, Union-Find (DSU) no `ChunkingEngine`, temperatura real via WMI, projeção nigrostriatal `BG←RPE` (rl.rs), interocepção modulando binding multimodal, e curriculo fonético PT-BR completo nas 11 fases.**
+
+---
+
+## V4.6.2 — Lateralização Especializada, Ternarização & Watchdog Real
+
+| Frente | O quê | Onde |
+|---|---|---|
+| 🧠 **Lateralização especializada** | hemisférios **diferentes** (não cópias): esquerdo = linguagem/sequencial (Temporal+Frontal, janela 25ms, fino, aprende rápido); direito = espacial/holístico (Occipital+Parietal, janela 200ms, suavizado). Corpo caloso = canal estreito (só resumo cruza). Opt-in `SELENE_LATERAL=1` | `lateralization.rs`, `main.rs` |
+| 🔢 **Ternarização de peso efetivo** | peso **latente FP** (onde STDP aprende) + peso **efetivo {-α,0,+α}** na propagação. Banda morta → esparsidade grátis; mult vira sinal+soma (casa com NPU). Aplicada à corrente calosa via `SELENE_TERNARY=1` | `ternary.rs`, `main.rs` |
+| 🐕 **Watchdog real (fix de causa raiz)** | o `[WATCHDOG] step=500` era **falso positivo** em modo ocioso (~5Hz): heartbeat só atualizava a cada 500 steps (=100s), watchdog cobrava a cada 5s. Agora heartbeat atualiza **a cada tick** → só alerta em stall verdadeiro | `main.rs` |
+| 🧪 **Testes de carga** | 500 / 1000 / 10000 ticks para ambos os mecanismos (sem NaN/Inf/divergência) + 24 tipos neuronais via `update()` real + zonas antes não testadas (amygdala, cerebellum, language) | `tests/lateralization_ternary_tests.rs`, `tests/detailed_level_tests.rs` |
+| 📚 **Doctests saneados** | exemplos ilustrativos marcados `ignore` → suite roda 434 testes, 0 falhas | `sensors/`, `learning/rl.rs` |
+
+> **Design:** lateralização é **seletiva** (só onde há especialização clara); sistemas globais (neuroquímica, sono, tronco) **não** são lateralizados. Detalhes em `LATERALIZACAO_ANALISE.md`. As flags são **default-off** — a Selene de produção roda idêntica até serem ligadas.
+
+**Como ligar (opt-in):**
+```powershell
+$env:SELENE_LATERAL="1"; $env:SELENE_TERNARY="1"; ./target/release/selene_brain
+# → "🧠 Lateralização: ON (esq janela=25ms/fino, dir janela=200ms/holístico) | Ternarização calosa: ON"
+```
 
 ---
 

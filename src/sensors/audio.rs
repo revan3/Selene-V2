@@ -297,7 +297,7 @@ impl WordAccumulator {
 ///
 /// Esta função **bloqueia a thread** — deve ser chamada em thread separada:
 ///
-/// ```rust
+/// ```ignore
 /// let (aud_tx, aud_rx) = mpsc::channel();
 /// std::thread::spawn(move || {
 ///     start_listening(config.n_neurons_temporal, aud_tx);

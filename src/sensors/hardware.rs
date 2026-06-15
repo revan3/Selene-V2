@@ -66,7 +66,7 @@ use windows::Win32::Media::{timeBeginPeriod, timeEndPeriod};
 /// Sensor de métricas do hardware — propriocepção digital da Selene.
 ///
 /// # Uso
-/// ```rust
+/// ```ignore
 /// let mut sensor = HardwareSensor::dummy();
 /// loop {
 ///     sensor.refresh(); // Atualiza sysinfo (CPU + RAM)
@@ -401,7 +401,7 @@ impl HardwareSensor {
     /// evita múltiplos locks no Arc<Mutex<System>>.
     ///
     /// Use este no loop principal:
-    /// ```rust
+    /// ```ignore
     /// let metricas = hw.get_all();
     /// neuro.update_from_hardware(&metricas, &config);
     /// ```
@@ -515,7 +515,7 @@ pub struct ModulacaoNeuroChem {
 /// Sem isso, `thread::sleep(1ms)` no Windows tem granularidade de ~15ms.
 ///
 /// # Uso
-/// ```rust
+/// ```ignore
 /// // No início do main():
 /// configurar_timer_alta_resolucao();
 /// // ... resto do programa

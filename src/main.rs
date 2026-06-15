@@ -410,6 +410,23 @@ async fn async_main() {
     let mut frontal = FrontalLobe::new(n_neurons, 0.2, 0.1, &config);
     let mut corpus_callosum = CorpusCallosum::new(10.0, 8);
 
+    // ── V4.6.2: Lateralização especializada + ternarização do corpo caloso ──
+    // Opt-in via env (default OFF → comportamento de produção inalterado):
+    //   SELENE_LATERAL=1 → perfis assimétricos esq(linguagem)/dir(espacial)
+    //   SELENE_TERNARY=1 → peso efetivo ternário {-α,0,+α} na corrente calosa
+    let lateral_on = std::env::var("SELENE_LATERAL").map(|v| v == "1").unwrap_or(false);
+    let ternary_on = std::env::var("SELENE_TERNARY").map(|v| v == "1").unwrap_or(false);
+    let perfil_esq = lateralization::PerfilHemisferio::esquerdo();
+    let perfil_dir = lateralization::PerfilHemisferio::direito();
+    if lateral_on || ternary_on {
+        println!("🧠 Lateralização: {} | Ternarização calosa: {}",
+            if lateral_on {
+                format!("ON (esq janela={}ms/fino, dir janela={}ms/holístico)",
+                    perfil_esq.janela_temporal_ms, perfil_dir.janela_temporal_ms)
+            } else { "off".to_string() },
+            if ternary_on { "ON ({-α,0,+α})" } else { "off" });
+    }
+
     // --- 8b. CEREBELO E RL ---
     println!("🏃 Inicializando Cerebelo e Aprendizado por Reforço...");
     let mut cerebelo = Cerebellum::new(n_neurons / 4, n_neurons / 2, &config);
@@ -627,6 +644,12 @@ async fn async_main() {
         }
 
         step += 1;
+        // Heartbeat do watchdog: atualizado a CADA tick (antes só em step%500).
+        // Em modo ocioso (~5Hz) o intervalo entre telemetrias é ~100s, então
+        // atualizar só ali fazia o watchdog (checa a cada 5s) disparar falso
+        // positivo "loop parado em step=500". Aqui ele reflete o avanço REAL e
+        // só alerta em stall verdadeiro (loop de fato congelado).
+        LOOP_HEARTBEAT.store(step, std::sync::atomic::Ordering::Relaxed);
         let loop_start = Instant::now();
         let elapsed = start_time.elapsed().as_secs_f32();
 
@@ -2093,10 +2116,21 @@ async fn async_main() {
         }
         // Frontal recebe o padrão vindo do hemisfério direito (atenção espacial → decisão)
         if let Some(spikes_parietal_echo) = corpus_callosum.receive_at_left(0, current_time) {
-            // Converte spikes booleanos em corrente contínua e injeta no frontal
-            let corrente_calosa: Vec<f32> = spikes_parietal_echo.iter()
-                .map(|&s| if s { 0.15 } else { 0.0 })
+            // Ganho base da transmissão calosa (era fixo em 0.15).
+            // Lateralização: o lado DIREITO (espacial/holístico) transmite com ganho
+            // do perfil direito — modula a força do eco que chega ao frontal.
+            let ganho = if lateral_on {
+                0.15 * (perfil_dir.vies_dopamina) // dir estável (<1) → eco mais suave
+            } else { 0.15 };
+            // Converte spikes booleanos em corrente contínua
+            let mut corrente_calosa: Vec<f32> = spikes_parietal_echo.iter()
+                .map(|&s| if s { ganho } else { 0.0 })
                 .collect();
+            // Ternarização do peso EFETIVO da corrente calosa: {-α, 0, +α}.
+            // O sinal contínuo (latente) vira ternário só na transmissão.
+            if ternary_on {
+                corrente_calosa = ternary::ternarizar_vetor(&corrente_calosa, ganho, ganho * 0.5);
+            }
             // Adiciona como bias ao working_memory_trace do frontal
             let wm_len = frontal.working_memory_trace.len();
             for (i, &c) in corrente_calosa.iter().enumerate() {

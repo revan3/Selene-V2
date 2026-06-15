@@ -170,7 +170,7 @@ impl ReinforcementLearning {
     /// # Retorno
     /// O RPE (Reward Prediction Error) deste tick.
     /// Use para ajustar a dopamina no NeuroChem:
-    /// ```rust
+    /// ```ignore
     /// let rpe = rl.update(&padrao, neuro.dopamine, acao, &config);
     /// neuro.dopamine = (neuro.dopamine + rpe * 0.1).clamp(0.0, 2.0);
     /// ```
@@ -288,7 +288,7 @@ impl ReinforcementLearning {
     /// - Valor zero     → padrão desconhecido → explorar com cautela
     ///
     /// # Exemplo de uso no FrontalLobe
-    /// ```rust
+    /// ```ignore
     /// let valor = rl.valor_de(&padrao_temporal);
     /// let bias_emocional = valor.clamp(-1.0, 1.0);
     /// // Adiciona bias ao output do Frontal antes de decidir a ação
