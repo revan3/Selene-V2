@@ -2598,8 +2598,9 @@ async fn async_main() {
 
         // O. Limpeza periódica + persistência do hipocampo (LTP)
         if step % 10000 == 0 {
-            let mut swap = swap_manager.lock().await;
-            let _ = swap.limpar_neurônios_inativos();
+            if let Ok(mut swap) = swap_manager.try_lock() {
+                let _ = swap.limpar_neurônios_inativos();
+            }
             hippocampus.save_ltp("selene_hippo_ltp.json");
         }
 
@@ -2613,8 +2614,9 @@ async fn async_main() {
                 let ram_total_gb = sys.total_memory() as f64 / 1e9;
                 let ram_livre_gb = sys.available_memory() as f64 / 1e9;
                 drop(sensor_guard);
-                let mut swap = swap_manager.lock().await;
-                swap.verificar_cap_ram(ram_total_gb, ram_livre_gb);
+                if let Ok(mut swap) = swap_manager.try_lock() {
+                    swap.verificar_cap_ram(ram_total_gb, ram_livre_gb);
+                }
             }
         }
     }
