@@ -1,330 +1,153 @@
-# 🔐 Auditoria de Segurança & Plano de Correção — Selene Brain V4.6.1
+# 🔐 Auditoria de Segurança — Selene Brain V4.6.1 (RE-VERIFICADA)
 
 **Data:** 2026-06-15  
-**Auditor:** Claude Code  
-**Status:** 6 vulnerabilidades identificadas, 5 críticas/médias
+**Revisão:** 2 (re-verificação linha-a-linha contra o código real)
+
+> ⚠️ **Nota importante sobre a revisão 1:** A primeira versão deste documento foi
+> gerada a partir de uma varredura automatizada que **citou linhas imprecisas e
+> reportou vulnerabilidades que não existem no código**. Esta revisão 2 corrige
+> isso: cada item abaixo foi verificado lendo o arquivo-fonte real. Mantive os
+> falsos positivos listados (marcados ❌) para registro — é importante saber o que
+> foi descartado e por quê.
 
 ---
 
-## Resumo Executivo
+## Resumo após verificação
 
-Análise automatizada identificou **6 caminhos críticos de segurança** com risco de:
-- Injeção de caminhos (Path Traversal)
-- Negação de Serviço (DOS via unbounded connections)
-- Vazamento de Informações (silent fallbacks)
-- Overflow numérico (STDP weight saturation)
-- Deadlock em async code (lock holding durante I/O)
+| # | Item reportado | Veredito | Ação |
+|---|----------------|----------|------|
+| V1 | Path injection no WebSocket | ❌ **Falso positivo** | Nenhuma |
+| V2 | Sem limite de conexões WS | ✅ **Confirmado** | **Corrigido** |
+| V3 | Fallback silencioso de sensor | ⚠️ **Trade-off de design** | Opcional |
+| V4 | NaN nas portas Hodgkin-Huxley | ❌ **Falso positivo** | Nenhuma (já protegido) |
+| V5 | Overflow de peso no STDP | ❌ **Falso positivo** | Nenhuma (já clamped) |
+| V6 | Panic em tasks async | ⚠️ **Menor** | Opcional |
 
-**Severidade Total:** 🔴🔴🟡🟡 (2 HIGH, 2 MEDIUM, 2 LOW)
+**Conclusão:** Das 6 "vulnerabilidades", **apenas 1 era real** (V2). O código já
+possui os controles de segurança que a varredura inicial ignorou: bind em
+`127.0.0.1` por padrão, autenticação por `SELENE_TOKEN`, LAN apenas com opt-in
+explícito (`SELENE_LAN=1`).
 
 ---
 
-## CRÍTICA #1: WebSocket Path Injection (HIGH)
+## ✅ V2 — Sem limite de conexões WebSocket (CONFIRMADO E CORRIGIDO)
 
-**Localização:** `src/websocket/bridge.rs` linhas 101–105  
-**Risco:** Escrita de arquivo em caminho arbitrário
+**Localização real:** `src/websocket/mod.rs` — `ws.on_upgrade(...)` (era ~linha 68)
+
+**Problema real:** cada conexão aceita dispara um `handle_connection` sob o
+executor tokio, sem teto. Em LAN (`SELENE_LAN=1`) um flood de conexões poderia
+multiplicar handlers indefinidamente.
+
+**Contexto que reduz a severidade (ignorado na rev. 1):**
+- Bind padrão é `127.0.0.1` → só processos locais conectam.
+- Com `SELENE_TOKEN`, conexões sem token são rejeitadas **antes** do upgrade.
+- LAN exige opt-in explícito.
+
+Portanto: defesa em profundidade, não um buraco crítico. Mesmo assim vale corrigir.
+
+### Correção aplicada
 
 ```rust
-// VULNERÁVEL:
-let filename = request.filename;  // User-controlled
-tokio::fs::write(filename, data).await?;  // No validation!
-```
+const MAX_CONEXOES_WS: usize = 64;
+static CONEXOES_WS_ATIVAS: AtomicUsize = AtomicUsize::new(0);
 
-**Cenário de Ataque:**
-```
-POST /chat
-{
-  "filename": "../../../etc/passwd_fake",  // Directory traversal
-  "message": "jailbreak attempt"
+// dentro de on_upgrade:
+let n = CONEXOES_WS_ATIVAS.fetch_add(1, Ordering::SeqCst);
+if n >= MAX_CONEXOES_WS {
+    CONEXOES_WS_ATIVAS.fetch_sub(1, Ordering::SeqCst);  // devolve o slot
+    eprintln!("⚠️  [WS] Limite de {} conexões atingido — recusando", MAX_CONEXOES_WS);
+    return;
 }
-→ Cria arquivo em ../../../etc/passwd_fake (fora de app directory)
+server::handle_connection(socket, rx, brain).await;
+CONEXOES_WS_ATIVAS.fetch_sub(1, Ordering::SeqCst);       // libera ao fechar
 ```
 
-### ✅ FIX #1: Path Canonicalization
-
-```rust
-use std::path::PathBuf;
-
-let request_path = PathBuf::from(&request.filename);
-let canonical = dunce::canonicalize(&request_path)
-    .map_err(|_| "Invalid path")?;
-
-let app_dir = dunce::canonicalize("./selene_data/")?;
-if !canonical.starts_with(&app_dir) {
-    return Err("Path outside app directory".into());
-}
-
-tokio::fs::write(&canonical, data).await?;
-```
-
-**Esforço:** 1-2 horas | **Risco Residual:** Baixo
+O `fetch_add`/`fetch_sub` é atomicamente correto: o contador nunca vaza slots,
+mesmo sob conexões concorrentes. **Status: aplicado.**
 
 ---
 
-## CRÍTICA #2: Unbounded WebSocket Connection Pool (HIGH)
+## ❌ V1 — Path injection (FALSO POSITIVO)
 
-**Localização:** `src/websocket/server.rs` linha 123  
-**Risco:** DOS via infinite connection spawn
+**Reportado:** "escrita de arquivo em caminho arbitrário controlado pelo usuário".
 
+**Verificação real:** `src/websocket/server.rs:101-102`
 ```rust
-// VULNERÁVEL:
-warp::ws()
-    .on_upgrade(|ws| {
-        tokio::spawn(async move { handle_socket(ws).await })  // No limit!
-    })
+std::fs::OpenOptions::new()
+    .create(true).append(true).open("selene_response_log.jsonl")  // nome FIXO
 ```
-
-**Cenário de Ataque:**
-```bash
-for i in {1..10000}; do
-    curl -i -N -H "Connection: Upgrade" \
-         -H "Upgrade: websocket" \
-         ws://127.0.0.1:3030/selene &
-done
-→ Cria 10K tasks tokio → OOM → Crash
-```
-
-### ✅ FIX #2: Connection Pool Limit + Rate Limiting
-
-```rust
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-
-let active_connections = Arc::new(AtomicUsize::new(0));
-const MAX_CONNECTIONS: usize = 100;
-
-warp::ws()
-    .and(warp::addr::remote())
-    .on_upgrade(move |ws, addr| {
-        let conn_count = Arc::clone(&active_connections);
-        async move {
-            // Check limit
-            if conn_count.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
-                eprintln!("Connection limit reached from {:?}", addr);
-                return;
-            }
-            
-            conn_count.fetch_add(1, Ordering::Relaxed);
-            if let Err(e) = handle_socket(ws).await {
-                log::warn!("Socket error: {}", e);
-            }
-            conn_count.fetch_sub(1, Ordering::Relaxed);
-        }
-    })
-```
-
-**Esforço:** 2-3 horas | **Risco Residual:** Médio (rate limiting por IP também recomendado)
+Todos os `fs::write` em server.rs usam nomes **hardcoded** (`selene_linguagem.json`,
+`selene_ego.json`, etc.). Não há nome de arquivo derivado de input do cliente.
+**Não existe path traversal.** Nenhuma ação necessária.
 
 ---
 
-## CRÍTICA #3: Silent Fallback to Dummy Sensor (MEDIUM)
+## ❌ V4 — NaN nas portas Hodgkin-Huxley (FALSO POSITIVO)
 
-**Localização:** `src/main.rs` linha 287  
-**Risco:** Fallback silencioso mascara falha de hardware
+**Reportado:** "exp() e divisão sem guards → NaN".
 
+**Verificação real:** `src/synaptic_core.rs:1141-1152` — as funções já tratam a
+singularidade removível clássica do HH:
 ```rust
-// VULNERÁVEL:
-let sensor = Arc::new(TokioMutex::new(
-    HardwareSensor::new()
-        .unwrap_or_else(|e| {
-            eprintln!("Sensor init failed: {}", e);
-            HardwareSensor::dummy()  // Silent fallback!
-        })
-));
-```
-
-**Problema:** Se sensor real falhar, sistema continua com dados dummy (cpu_temp=35°C sempre).
-Pode causar:
-- Superaquecimento não detectado
-- Adenosina calculation incorreta (depende de temperatura falsa)
-- Modo seguro nunca ativado
-
-### ✅ FIX #3: Explicit Fallible Mode
-
-```rust
-enum SensorMode {
-    Real(HardwareSensor),
-    Safe,  // Explicit safe mode with warnings
+fn alpha_m(v: f32) -> f32 {
+    let dv = v + 40.0;
+    if dv.abs() < 1e-4 { 1.0 } else { 0.1 * dv / (1.0 - (-dv / 10.0).exp()) }  // guard ✓
 }
-
-let sensor_mode = match HardwareSensor::new() {
-    Ok(hw) => SensorMode::Real(hw),
-    Err(e) => {
-        log::error!("[SENSOR FAILURE] Hardware sensor unavailable: {}", e);
-        log::warn!("[MODE] Entering Safe Mode — limited functionality");
-        SensorMode::Safe
-    }
-};
-
-// Later:
-let cpu_temp = match &sensor_mode {
-    SensorMode::Real(hw) => hw.get_cpu_temp(),
-    SensorMode::Safe => {
-        log::warn!("[SENSOR] Using fallback temperature (real sensor unavailable)");
-        35.0  // Explicit, logged fallback
-    }
-};
-```
-
-**Esforço:** 3-4 horas | **Risco Residual:** Baixo
-
----
-
-## MÉDIA #4: Synaptic NaN Risk in Hodgkin-Huxley Gates (MEDIUM)
-
-**Localização:** `src/synaptic_core.rs` linhas 1141–1152  
-**Risco:** exp() overflow → NaN na HH gating
-
-```rust
-// VULNERÁVEL:
-let alpha_m = 0.1 * (v + 40.0) / (1.0 - (-0.1 * (v + 40.0)).exp());
-// If (v + 40) >> 0: exp() overflows, alpha_m = NaN
-```
-
-**Cenário:** Injected excessive current → Vm exceeds +60mV → exp(6.0) ≈ 403 → division by zero
-
-### ✅ FIX #4: Safe Exponential with Bounds
-
-```rust
-fn safe_exp(x: f32) -> f32 {
-    // Clamp input to prevent overflow (exp(x) ≤ 1e30 for x ≤ 69)
-    x.clamp(-100.0, 30.0).exp()
-}
-
-fn hodgkin_huxley_gate(v: f32, mut_type: &str) -> f32 {
-    match mut_type {
-        "m" => {
-            let exp_term = safe_exp(-0.1 * (v + 40.0));
-            let denom = 1.0 - exp_term;
-            if denom.abs() < 1e-6 { 0.5 } else { 0.1 * (v + 40.0) / denom }
-        }
-        _ => 0.5,
-    }
+fn alpha_n(v: f32) -> f32 {
+    let dv = v + 55.0;
+    if dv.abs() < 1e-4 { 0.1 } else { 0.01 * dv / (1.0 - (-dv / 10.0).exp()) } // guard ✓
 }
 ```
-
-**Esforço:** 1-2 horas | **Risco Residual:** Low
-
----
-
-## MÉDIA #5: STDP Weight Divergence with High Dopamine (MEDIUM)
-
-**Localização:** `src/learning/inter_lobe.rs` linhas 152–159  
-**Risco:** Dopamine = 2.5 (max) × large STDP trace → weight overflow
-
-```rust
-// VULNERÁVEL:
-let dw = 0.0001 * trace_pre * trace_post * dopamine;
-weight = (weight + dw).clamp(-2.5, 2.5);
-// But trace_pre/post can be 0.5 each, dopamine = 2.5
-// → dw = 0.0001 * 0.5 * 0.5 * 2.5 = 0.0000625 per update
-// → After 40K updates: weight += 2.5 → saturation OK
-// BUT: If post-firing happens 100x per second + dopamine spike:
-//    dw could be 0.0001 * 0.8 * 0.8 * 2.5 = 0.00016 × 100 = 0.016/tick
-//    → 100 ticks: weight += 1.6 ✓ (still clipped)
-// Risk is LOW if clamp is enforced; verify it is.
-```
-
-### ✅ FIX #5: Add Saturation Logging + Conservative Bounds
-
-```rust
-let mut weight_before = weight;
-let dw = 0.0001 * trace_pre * trace_post * dopamine;
-weight = (weight + dw).clamp(-2.5, 2.5);
-
-if (weight - weight_before).abs() > 0.1 {
-    // Anomalously large weight change
-    log::debug!("[STDP] Large Δw: {:.6} (pre={:.3}, post={:.3}, da={:.2})", 
-        weight - weight_before, trace_pre, trace_post, dopamine);
-}
-```
-
-**Esforço:** 0.5-1 hora | **Risco Residual:** Low (already clamped)
+Além disso, `m/h/n` são `clamp(0.0, 1.0)` a cada sub-passo e o `i_h` usa `.min(10.0)`.
+**Já protegido.** Validado também pelo teste `l1_todos_tipos_estaveis_*` (TC usa HH e
+passa 500 ticks sem NaN). Nenhuma ação necessária.
 
 ---
 
-## BAIXA #6: Panic Inside Async Tasks (Not Caught) (LOW)
+## ❌ V5 — Overflow de peso no STDP (FALSO POSITIVO)
 
-**Localização:** `src/main.rs` line ~360 (tokio::spawn multiple places)  
-**Risco:** Task panic silently consumed; no supervisor restart
+**Reportado:** "dopamina alta → overflow em weight updates".
 
-```rust
-// VULNERABLE:
-tokio::spawn(async move {
-    // If this panics, the task dies silently
-    handle_socket(ws).await  
-});
-```
-
-### ✅ FIX #6: Add Panic Catcher in Spawn
-
-```rust
-tokio::spawn(async move {
-    if let Err(e) = std::panic::catch_unwind(
-        std::panic::AssertUnwindSafe(|| {
-            // Wrap in block since async closure needed
-        })
-    ) {
-        log::error!("[PANIC] Task panicked: {:?}", e);
-    }
-});
-
-// Better: Use tokio::task::spawn with catch
-let handle = tokio::spawn(async {
-    handle_socket(ws).await
-});
-
-if let Err(e) = handle.await {
-    if e.is_panic() {
-        log::error!("[PANIC] Socket handler panicked: {}", e);
-    }
-}
-```
-
-**Esforço:** 2-3 horas (refactor task spawning pattern) | **Risco Residual:** Médio
+**Verificação real:** todas as atualizações de peso terminam em `.clamp(-2.5, 2.5)`
+(ou bounds equivalentes). Não há caminho de acúmulo sem saturação. O teste
+`l1_todos_tipos_estaveis_sob_corrente_forte` confirma traces STDP finitos ao longo
+de 500 ticks. Nenhuma ação necessária.
 
 ---
 
-## Plano de Implementação (Sprint)
+## ⚠️ V3 — Fallback silencioso de sensor (TRADE-OFF DE DESIGN)
 
-### Sprint 1: HIGH Priority (1 dia)
-- [ ] Fix #1: Path canonicalization (WebSocket)
-- [ ] Fix #2: Connection pool limits (WebSocket)
-- [ ] Test: Re-run security tests with fuzzer on paths
+**Localização:** `src/main.rs` — `HardwareSensor` cai para `dummy()` se o hardware falhar.
 
-### Sprint 2: MEDIUM Priority (1 dia)
-- [ ] Fix #3: Explicit fallback mode (Sensor)
-- [ ] Fix #4: Safe HH gates (NaN prevention)
-- [ ] Fix #5: STDP saturation logging
-
-### Sprint 3: LOW Priority (0.5 dia)
-- [ ] Fix #6: Panic catching in async tasks
-- [ ] Add security test suite (fuzz WebSocket input)
-- [ ] Document risk model
+Isto é uma **decisão de design** (degradar graciosamente em vez de abortar), não um
+bug. O ponto válido: a degradação poderia ser **mais visível**. Sugestão opcional —
+logar em nível `error` quando o sensor real falha, para o operador notar. Baixa
+prioridade; não altera comportamento neural.
 
 ---
 
-## Testes de Validação Pós-Fix
+## ⚠️ V6 — Panic em tasks async (MENOR)
 
-```bash
-# Path Traversal Resistance
-cargo test security_numeric_bounds_stdp_dopamine --release
-
-# Connection Pool
-cargo test security_lock_timeout_simulation --release
-
-# HH Stability
-cargo test security_hodgkin_huxley_gate_nan_prevention --release
-
-# Full Security Suite
-cargo test security_ --release
-```
+Um panic dentro de um `tokio::spawn` morre isolado naquela task. Para o servidor
+WS isso significa que uma conexão problemática derruba só a si mesma — o que é
+aceitável. Um supervisor com restart seria um luxo, não uma necessidade. Baixa
+prioridade.
 
 ---
 
-## Conclusão
+## Recomendações de hardening (independentes da auditoria)
 
-**Status:** 🟡 Vulnerabilidades identificadas, correções planejadas  
-**Ação Imediata:** Implementar Fix #1 e #2 antes de produção  
-**Revisão Siguiente:** Post-fix audit após 1 sprint
+Estas valem sempre, e o código já suporta:
+1. **Sempre definir `SELENE_TOKEN`** ao usar `SELENE_LAN=1`. O próprio servidor já
+   avisa com `‼️` quando LAN está ligada sem token.
+2. **Manter o bind padrão** `127.0.0.1` salvo necessidade real de rede.
+3. (Aplicado) Teto de conexões WS = 64.
 
+---
+
+## Veredito final
+
+🟢 **Postura de segurança boa.** A única correção real (V2) foi aplicada. Os demais
+itens eram falsos positivos da varredura inicial ou trade-offs de design de baixa
+prioridade. Lição registrada: varreduras automatizadas devem ser **verificadas
+contra o código** antes de virar trabalho.

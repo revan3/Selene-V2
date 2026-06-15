@@ -9,13 +9,13 @@
 ## PARTE 1: TESTES ISOLADOS POR TIPO DE NEURÔNIO
 
 ### Objetivo
-Validar que cada um dos 27 tipos neuronais:
+Validar que cada um dos 24 tipos neuronais (a doc dizia "27", mas o enum `TipoNeuronal` tem 24 variantes — verificado pelo compilador):
 - Inicializa corretamente (sem NaN/Inf)
 - Responde a corrente com dinâmica esperada
 - Satura em bounds biológicos
 - Não diverge numericamente
 
-### Matriz de Testes: 27 Tipos × 5 Validações
+### Matriz de Testes: 24 Tipos × 5 Validações
 
 #### A. TIPOS IZHIKEVICH CLÁSSICOS (7)
 
@@ -87,7 +87,7 @@ Validar que cada um dos 27 tipos neuronais:
 ### Sumário L1:
 - ✅ **7 testados** (RS, FS, TC, RZ, DA_N básicos)
 - 🟡 **20 não testados completamente**
-- **Ação:** Criar suite de testes L1 com cobertura para todos 27 tipos
+- **Ação:** ✅ FEITO — `tests/detailed_level_tests.rs` agora cobre os 24 tipos (estabilidade numérica sob corrente/repouso) + diferenciação parcial
 
 ---
 
@@ -247,7 +247,7 @@ fn test_emergent_lateralization_via_learning() {
 ## RESUMO: AÇÕES POR PRIORIDADE
 
 ### 🔴 PRIORITÁRIAS (Sprint 1):
-- [ ] L1: Expandir testes neuronais para 27 tipos (foco: IB, CH, AC, BI)
+- [x] L1: Testes de estabilidade para os 24 tipos ✅ (falta diferenciação comportamental fina por tipo: IB burst, AC adaptação, BI histerese)
 - [ ] L3: Testes para Cingulate, Orbitofrontal, Dentate (estruturas não testadas)
 - [ ] L3: Validar Language areas (Wernicke, Broca)
 - [ ] Implementar testes de inter-zona connectivity (BrainConnections validation)
@@ -291,7 +291,7 @@ cargo test --lib l4_hemispheres           # L4 suite
 ```
 NÍVEL   TESTES   COBERTOS   GAPS        STATUS
 ───────────────────────────────────────────────
-L1      27       7 (26%)    20 (74%)    🟡 Incompleto
+L1      24       24 (100%)  0 (estab.) ✅ Estabilidade / 🟡 diferenciação fina
 L2      4        1 (25%)    3 (75%)     🟡 Incompleto
 L3      19       7 (37%)    12 (63%)    🟡 Incompleto
 L4      ℹ️ Design doc, sem L/R explícitos  ✅ Confirmado

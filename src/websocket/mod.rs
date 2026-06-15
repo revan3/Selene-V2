@@ -1,8 +1,19 @@
 // src/websocket/mod.rs
 use std::net::UdpSocket;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{broadcast, Mutex};
 use warp::Filter;
+
+/// Teto de conexões WebSocket simultâneas (defesa em profundidade contra
+/// flood de conexões — cada conexão faz tokio::spawn de um handler).
+/// O bind é 127.0.0.1 por padrão, então o vetor real só existe com SELENE_LAN=1;
+/// ainda assim limitamos para nunca esgotar o executor por engano.
+const MAX_CONEXOES_WS: usize = 64;
+
+/// Contador global de conexões WebSocket ativas. Incrementado ao aceitar,
+/// decrementado quando o handler retorna (conexão fechada).
+static CONEXOES_WS_ATIVAS: AtomicUsize = AtomicUsize::new(0);
 
 /// Descobre o IP local da máquina abrindo uma conexão UDP fictícia (não envia dados)
 fn local_ip_address() -> Option<String> {
@@ -67,7 +78,19 @@ pub async fn start_websocket_server(brain_state: Arc<Mutex<BrainState>>) {
                 }
                 Ok::<_, warp::Rejection>(ws.on_upgrade(move |socket| {
                     let rx = tx.subscribe();
-                    server::handle_connection(socket, rx, brain)
+                    async move {
+                        // Reserva um slot de forma atômica; se exceder o teto,
+                        // devolve o slot e fecha a conexão sem gastar recursos.
+                        let n = CONEXOES_WS_ATIVAS.fetch_add(1, Ordering::SeqCst);
+                        if n >= MAX_CONEXOES_WS {
+                            CONEXOES_WS_ATIVAS.fetch_sub(1, Ordering::SeqCst);
+                            eprintln!("⚠️  [WS] Limite de {} conexões atingido — recusando nova conexão",
+                                MAX_CONEXOES_WS);
+                            return;
+                        }
+                        server::handle_connection(socket, rx, brain).await;
+                        CONEXOES_WS_ATIVAS.fetch_sub(1, Ordering::SeqCst);
+                    }
                 }))
             }
         });
