@@ -14,7 +14,7 @@
 | 🧪 **Testes de carga** | 500 / 1000 / 10000 ticks para ambos os mecanismos (sem NaN/Inf/divergência) + 24 tipos neuronais via `update()` real + zonas antes não testadas (amygdala, cerebellum, language) | `tests/lateralization_ternary_tests.rs`, `tests/detailed_level_tests.rs` |
 | 📚 **Doctests saneados** | exemplos ilustrativos marcados `ignore` → suite roda 434 testes, 0 falhas | `sensors/`, `learning/rl.rs` |
 
-> **Design:** lateralização é **seletiva** (só onde há especialização clara); sistemas globais (neuroquímica, sono, tronco) **não** são lateralizados. Detalhes em `LATERALIZACAO_ANALISE.md`. As flags são **default-off** — a Selene de produção roda idêntica até serem ligadas.
+> **Design:** lateralização é **seletiva** (só onde há especialização clara); sistemas globais (neuroquímica, sono, tronco) **não** são lateralizados. As flags são **default-off** — a Selene de produção roda idêntica até serem ligadas.
 
 **Como ligar (opt-in):**
 ```powershell
