@@ -632,8 +632,9 @@ async fn async_main() {
         // Adenosina acumula com o tempo acordado (pressão de sono biológica):
         // 0.0 ao acordar → ~0.9 após 16h, revertido pelo sono.
         {
-            let sensor_lock = sensor.lock().await;
-            let cpu_temp = sensor_lock.get_cpu_temp();
+            let cpu_temp = sensor.try_lock()
+                .map(|lock| lock.get_cpu_temp())
+                .unwrap_or(35.0);
             let adenosina = (tempo_acordado.as_secs_f32() / (16.0 * 3600.0)).clamp(0.0, 0.95);
             interoception.update(adenosina, cpu_temp, neuro.noradrenaline);
             brainstem.update(adenosina, dt);
@@ -654,7 +655,9 @@ async fn async_main() {
         }
 
         // B. Bioquímica
-        neuro.update(&mut *sensor.lock().await, &config);
+        if let Ok(mut sensor_lock) = sensor.try_lock() {
+            neuro.update(&mut *sensor_lock, &config);
+        }
 
         // B0. Atualiza buffer perceptual no BrainState — snapshot do estado atual
         // para que o chat handler possa fazer grounding binding contextualizado.
@@ -2433,26 +2436,28 @@ async fn async_main() {
                 } else { None }
             } else { None };
 
-            // Fase 2: escreve fora do lock — tokio::fs não bloqueia o executor
+            // Fase 2: background I/O — não bloqueia o loop 200Hz
             if let Some((json, tracos_json, pens_json, autobiografia_json, hypotheses_json, (nv, na, nc, ng))) = export_payload {
-                if let Err(e) = tokio::fs::write(get_state_path("selene_linguagem.json"), json).await {
-                    log::warn!("[AUTO-EXPORT] Falha ao salvar linguagem: {}", e);
-                } else {
-                    println!("💾 [AUTO-EXPORT] Linguagem salva: {} palavras, {} assoc, {} causal, {} grounded",
-                        nv, na, nc, ng);
-                }
-                if let Some(tj) = tracos_json {
-                    let _ = tokio::fs::write(get_state_path("selene_ego.json"), tj).await;
-                }
-                if let Some(pj) = pens_json {
-                    let _ = tokio::fs::write(get_state_path("selene_memoria_ego.json"), pj).await;
-                }
-                if let Some(aj) = autobiografia_json {
-                    let _ = tokio::fs::write(get_state_path("selene_autobiografia.json"), aj).await;
-                }
-                if let Some(hj) = hypotheses_json {
-                    let _ = tokio::fs::write(get_state_path("selene_hypotheses.json"), hj).await;
-                }
+                tokio::spawn(async move {
+                    if let Err(e) = tokio::fs::write(get_state_path("selene_linguagem.json"), json).await {
+                        log::warn!("[AUTO-EXPORT] Falha ao salvar linguagem: {}", e);
+                    } else {
+                        println!("💾 [AUTO-EXPORT] Linguagem salva: {} palavras, {} assoc, {} causal, {} grounded",
+                            nv, na, nc, ng);
+                    }
+                    if let Some(tj) = tracos_json {
+                        let _ = tokio::fs::write(get_state_path("selene_ego.json"), tj).await;
+                    }
+                    if let Some(pj) = pens_json {
+                        let _ = tokio::fs::write(get_state_path("selene_memoria_ego.json"), pj).await;
+                    }
+                    if let Some(aj) = autobiografia_json {
+                        let _ = tokio::fs::write(get_state_path("selene_autobiografia.json"), aj).await;
+                    }
+                    if let Some(hj) = hypotheses_json {
+                        let _ = tokio::fs::write(get_state_path("selene_hypotheses.json"), hj).await;
+                    }
+                });
             }
             // Auto-save do estado semântico do swap_manager (async-safe: serializa dentro do lock, escreve fora)
             if let Ok(swap) = swap_manager.try_lock() {
