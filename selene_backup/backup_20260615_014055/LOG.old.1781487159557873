@@ -1,0 +1,1 @@
+2026/06/14-22:32:39.352312 3e10 [WARN] [d:2075] DB::Open() failed: IO error: Failed to create lock file: selene_memories.db/LOCK: O arquivo já está sendo usado por outro processo.

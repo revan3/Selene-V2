@@ -207,6 +207,7 @@ header::after {
   position: absolute;
   top: 28px; left: 0; right: 0; bottom: 0;
   cursor: grab;
+  background: #060a12;
 }
 #brain-canvas:active { cursor: grabbing; }
 #constellation-canvas {
@@ -1133,12 +1134,31 @@ header::after {
     const rect = svgEl.getBoundingClientRect();
     W = (rect.width  > 10 ? rect.width  : panel.clientWidth)  || 400;
     H = (rect.height > 10 ? rect.height : panel.clientHeight - 28) || 220;
-    S.attr('width', W).attr('height', H);
-    S.select('#gbg').attr('width', W).attr('height', H);
+    // preserveAspectRatio + viewBox (em zoomToFit) fazem o navegador
+    // escalar/centralizar o conteúdo para preencher o elemento real,
+    // independente do tamanho CSS — resolve o grafo pequeno/descentralizado.
+    S.attr('preserveAspectRatio', 'xMidYMid meet');
+    S.select('#gbg').attr('x', -5000).attr('y', -5000)
+                    .attr('width', 10000).attr('height', 10000);
     S.select('#gempty').attr('x', W/2).attr('y', H/2);
     if (sim) sim.force('x', d3.forceX(W/2).strength(0.05))
                  .force('y', d3.forceY(H/2).strength(0.05))
                  .alpha(0.1).restart();
+    zoomToFit();
+  }
+
+  // Ajuste canônico de SVG: viewBox = bounding box dos nós (com
+  // padding) + preserveAspectRatio="xMidYMid meet". O navegador
+  // escala e centraliza o grafo para PREENCHER o container, sempre
+  // proporcional, sem brigar com a simulação nem com o tamanho CSS.
+  function zoomToFit(pad = 1.12) {
+    if (!nodes.length || !gN.node()) return;
+    let b;
+    try { b = gN.node().getBBox(); } catch (_) { return; }
+    if (!b || b.width < 1 || b.height < 1) return;
+    const cx = b.x + b.width / 2, cy = b.y + b.height / 2;
+    const w  = b.width  * pad,    h  = b.height * pad;
+    S.attr('viewBox', `${cx - w / 2} ${cy - h / 2} ${w} ${h}`);
   }
 
   // Fit imediato + com delay (garante que o grid CSS já calculou)
@@ -1193,7 +1213,13 @@ header::after {
       .force('x',      d3.forceX(W/2).strength(0.08))
       .force('y',      d3.forceY(H/2).strength(0.08))
       .force('collide',d3.forceCollide().radius(d=>rN(d)+1))
-      .on('tick', tick);
+      .on('tick', tick)
+      .on('end', zoomToFit);
+    // Re-ajusta enquanto a simulação espalha os nós (não espera só o 'end',
+    // que pode demorar com muitos nós ou nunca disparar sob updates frequentes).
+    setTimeout(zoomToFit, 600);
+    setTimeout(zoomToFit, 1500);
+    setTimeout(zoomToFit, 3000);
 
     linkEl = gL.selectAll('line').data(links, d=>d.source+d.target);
     linkEl.exit().remove();

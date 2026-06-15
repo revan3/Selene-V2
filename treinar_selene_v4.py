@@ -26,6 +26,13 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
 from enum import Enum
 import threading
+import asyncio
+
+try:
+    import websockets
+except ImportError:
+    print("[FAIL] Instale: pip install websockets")
+    sys.exit(1)
 
 try:
     import pyttsx3
@@ -106,6 +113,263 @@ class TrainingConfig:
 
 
 config = TrainingConfig()
+
+
+# ==================== CONEXÃO COM A SELENE (WebSocket) ====================
+# v4 era um SIMULADOR standalone — não falava com a Selene. Esta camada
+# conecta de verdade ao núcleo neural: ENSINO → action "learn"/"learn_frase",
+# REM → action "force_sleep" (consolidação N3/REM real).
+
+WS_HOST = "127.0.0.1"
+WS_PORTA = "3030"
+WS_URL = f"ws://{WS_HOST}:{WS_PORTA}/selene"
+# ping_interval=None evita keepalive fechar a conexão durante rajadas de envio.
+WS_KWARGS = dict(ping_interval=None, close_timeout=5, max_size=2**20)
+ACK_EVENTS = {"learn_ack", "frase_ack", "associate_ack", "train_ack", "ok", "pong"}
+VALENCE_PADRAO = 0.5  # conceitos ensinados são reforçados positivamente
+
+# Cliente WS global — criado pelo OrquestradorTreinamento, usado pelas fases
+# (mesmo padrão dos globais `config` e `logger`).
+cliente_selene = None  # type: ClienteSelene | None
+
+
+class ClienteSelene:
+    """Ponte síncrona sobre websockets assíncrono.
+
+    Mantém UMA conexão persistente num event loop em thread de fundo, para
+    o código pedagógico síncrono do v4 chamar métodos normais (aprender_palavra,
+    aprender_frase, forcar_sono) sem espalhar async/await por 900 linhas.
+    """
+
+    def __init__(self, url: str = WS_URL):
+        self.url = url
+        self._ws = None
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._rodar_loop, daemon=True)
+        self._thread.start()
+
+    def _rodar_loop(self):
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
+
+    def _chamar(self, coro):
+        """Agenda uma corrotina no loop de fundo e bloqueia até o resultado."""
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
+
+    # ── async internals ──────────────────────────────────────────────────
+    async def _conectar(self):
+        self._ws = await websockets.connect(self.url, **WS_KWARGS)
+
+    async def _aguardar_ack(self, timeout: float = 3.0) -> bool:
+        """Drena mensagens (telemetria é ignorada) até um ACK ou timeout."""
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            restante = timeout - (time.time() - t0)
+            try:
+                msg = await asyncio.wait_for(self._ws.recv(), timeout=min(restante, 0.4))
+                d = json.loads(msg)
+                ev = d.get("event", "")
+                if ev in ACK_EVENTS:
+                    return True
+                if ev == "erro":
+                    return False
+            except asyncio.TimeoutError:
+                break
+            except Exception:
+                raise
+        return True
+
+    # IMPORTANTE: pós-migração texto→u32, a action "learn" exige json["bands"]
+    # (32 floats FFT) — texto é rejeitado (learn_error/missing_bands). O ÚNICO
+    # caminho que ainda treina a partir de TEXTO é "chat": o servidor faz
+    # tts_para_bandas → FFT → spike → grounding internamente. Aprendizado
+    # acontece em qualquer estágio de ontogenia (só a VERBALIZAÇÃO é gated).
+    async def _learn(self, palavra: str, contexto: str, valence: float):
+        await self._ws.send(json.dumps({
+            "action": "chat", "message": palavra,
+        }))
+        await self._aguardar_evento({"chat_reply"}, timeout=6.0)
+
+    async def _learn_frase(self, frase: str, contexto: str, valence: float):
+        # A frase inteira vai por chat — o servidor tokeniza e processa
+        # pelo pipeline de áudio. (learn_frase/associate também exigem
+        # bands agora, então não são mais usados aqui.)
+        await self._ws.send(json.dumps({
+            "action": "chat", "message": frase,
+        }))
+        await self._aguardar_evento({"chat_reply"}, timeout=8.0)
+
+    async def _force_sleep(self, minutos: int):
+        await self._ws.send(json.dumps({
+            "action": "force_sleep", "duration_min": int(minutos),
+        }))
+        await self._aguardar_ack(2.0)
+
+    async def _aguardar_evento(self, nomes: set, timeout: float = 8.0):
+        """Drena mensagens até um evento cujo campo 'event' ∈ nomes.
+        Telemetria/ACKs são ignorados. Retorna o dict ou None no timeout."""
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            restante = timeout - (time.time() - t0)
+            try:
+                msg = await asyncio.wait_for(
+                    self._ws.recv(), timeout=min(restante, 0.5))
+                d = json.loads(msg)
+                if d.get("event", "") in nomes:
+                    return d
+            except asyncio.TimeoutError:
+                break
+            except Exception:
+                raise
+        return None
+
+    async def _chat(self, pergunta: str) -> str:
+        await self._ws.send(json.dumps({
+            "action": "chat", "message": pergunta,
+        }))
+        d = await self._aguardar_evento({"chat_reply"}, timeout=10.0)
+        return (d or {}).get("message", "")
+
+    async def _feedback(self, valence: float):
+        await self._ws.send(json.dumps({
+            "action": "feedback", "valence": float(valence),
+        }))
+        await self._aguardar_ack(1.5)
+
+    async def _ontogeny(self) -> dict:
+        await self._ws.send(json.dumps({"action": "ontogeny_status"}))
+        d = await self._aguardar_evento({"ontogeny_status"}, timeout=6.0)
+        return (d or {}).get("data", {}) if d else {}
+
+    # ── API síncrona ─────────────────────────────────────────────────────
+    def conectar(self):
+        self._chamar(self._conectar())
+
+    def aprender_palavra(self, palavra: str, contexto: str,
+                         valence: float = VALENCE_PADRAO):
+        self._chamar(self._learn(palavra, contexto, valence))
+
+    def aprender_frase(self, frase: str, contexto: str,
+                       valence: float = VALENCE_PADRAO):
+        self._chamar(self._learn_frase(frase, contexto, valence))
+
+    def forcar_sono(self, minutos: int):
+        """Comanda sono real na Selene (N3/REM). O servidor agenda o
+        despertar automático após `minutos`."""
+        self._chamar(self._force_sleep(minutos))
+
+    def perguntar(self, pergunta: str) -> str:
+        """Faz uma pergunta e retorna a resposta emergente da Selene."""
+        try:
+            return self._chamar(self._chat(pergunta))
+        except Exception:
+            return ""
+
+    def feedback(self, valence: float):
+        """Envia 👍 (valence>0) ou 👎 (valence<0) → grounding_rpe."""
+        try:
+            self._chamar(self._feedback(valence))
+        except Exception:
+            pass
+
+    def status_ontogenia(self) -> dict:
+        """Retorna {stage, metrics{vocab_count,graph_edges,avg_reward,...}}."""
+        try:
+            return self._chamar(self._ontogeny())
+        except Exception:
+            return {}
+
+    def fechar(self):
+        try:
+            if self._ws is not None:
+                self._chamar(self._ws.close())
+        except Exception:
+            pass
+        self._loop.call_soon_threadsafe(self._loop.stop)
+
+
+# ==================== ENGINE DE TREINAMENTO MELHORADO ====================
+
+DEV_STAGE_ORDEM = ["Neonatal", "PreVerbal", "PalavraUnica", "Frase", "Discurso"]
+
+
+def stage_rank(nome: str) -> int:
+    try:
+        return DEV_STAGE_ORDEM.index(nome)
+    except ValueError:
+        return 0
+
+
+# 3 passes de repetição espaçada — casa com STDP/BDNF early→late LTP:
+# apresentação rápida, depois reforço, depois consolidação com mais
+# repetições e intervalos menores (massed no fim para travar o engrama).
+PASSES_ESPACADOS = [
+    (1, 0.20, "APRESENTAÇÃO"),
+    (2, 0.12, "REFORÇO"),
+    (3, 0.06, "CONSOLIDAÇÃO"),
+]
+
+
+def ensinar_espacado(itens: List[str], contexto: str) -> int:
+    """Repetição espaçada em 3 passes. Cada item é enviado via chat
+    (servidor faz texto→TTS→FFT→spike). Retorna total de envios."""
+    total = 0
+    for reps, delay, label in PASSES_ESPACADOS:
+        logger.info(f"   [{label}] {len(itens)} itens × {reps}×")
+        for _ in range(reps):
+            for it in itens:
+                if len(it.split()) > 1:
+                    cliente_selene.aprender_frase(it, contexto)
+                else:
+                    cliente_selene.aprender_palavra(it, contexto)
+                total += 1
+                time.sleep(delay)
+    return total
+
+
+def testar_conceito(significado: str, palavras: List[str]) -> bool:
+    """Pergunta à Selene, avalia a resposta e envia feedback real
+    (👍 grounding_rpe+ / 👎 grounding_rpe-).
+
+    GATE: nos estágios Neonatal/PreVerbal a Selene NÃO verbaliza (gate de
+    ontogenia) — a resposta vem vazia por design, não por erro. Mandar 👎
+    nesse caso empurra o reward para negativo e ensina nada. Então abaixo
+    de PalavraUnica o teste verbal é pulado (o ensino já ocorreu)."""
+    st = cliente_selene.status_ontogenia()
+    stage = st.get("stage", "Neonatal")
+    if stage_rank(stage) < stage_rank("PalavraUnica"):
+        logger.info(f"   [TEST] pulado — estágio '{stage}' ainda não "
+                     f"verbaliza (sem 👎 indevido). Ensino computado.")
+        return True
+
+    pergunta = f"o que significa {palavras[0]}?"
+    resposta = cliente_selene.perguntar(pergunta)
+    alvo = {p.lower() for p in palavras}
+    acertou = bool(resposta) and any(
+        tok.strip(".,!?;:").lower() in alvo for tok in resposta.split())
+    cliente_selene.feedback(1.0 if acertou else -0.5)
+    marca = "[OK]" if acertou else "[FAIL]"
+    logger.info(f"   [TEST] '{pergunta}' → '{resposta[:60]}' {marca}")
+    return acertou
+
+
+def status_ontogenia_log(min_stage: str) -> bool:
+    """Loga métricas de ontogenia e retorna True se o estágio atual
+    permite a fase (>= min_stage). Não bloqueia — só informa."""
+    st = cliente_selene.status_ontogenia()
+    stage = st.get("stage", "Neonatal")
+    m = st.get("metrics", {})
+    logger.info(
+        f"   [ONTOGENIA] stage={stage} | vocab={m.get('vocab_count', '?')} "
+        f"edges={m.get('graph_edges', '?')} "
+        f"reward={m.get('avg_reward', '?')}")
+    ok = stage_rank(stage) >= stage_rank(min_stage)
+    if not ok:
+        logger.warning(
+            f"   ⚠️  Estágio '{stage}' < '{min_stage}' — Selene ainda não "
+            f"verbaliza nesta fase (gate de ontogenia). Treino segue para "
+            f"alimentar o desenvolvimento dela mesmo assim.")
+    return ok
 
 
 # ==================== LOGGING ====================
@@ -558,55 +822,38 @@ class FaseLexico:
         logger.info(f"   Palavras: {', '.join(palavras)}")
         logger.info(f"{'='*70}")
 
-        # ===== ENSINO: 15 minutos =====
-        logger.info(f"\n[TIMER]  Ensino por {config.tempo_ensino_lexico_min} minutos...")
-        tempo_inicio = time.time()
-        tempo_maximo = config.tempo_ensino_lexico_min * 60 if not config.modo_teste_rapido else 10
+        # ===== ENSINO: repetição espaçada (3 passes) =====
+        status_ontogenia_log("Neonatal")
+        t0 = time.time()
+        envios = ensinar_espacado(palavras, significado)
+        self.logger.registrar(
+            "FASE1", significado, ",".join(palavras),
+            "-", "-", time.time() - t0, tipo_evento="ensino_espacado")
+        print(f"   [OK] {envios} envios reais à Selene (3 passes)")
 
-        repeticoes = 0
-        while time.time() - tempo_inicio < tempo_maximo:
-            palavra = random.choice(palavras)
-            entonacao = random.choice(config.variacao_entonacao)
-            ruido = random.choice(config.variacao_ruido_fase1)
-
-            # Gerar e reproduzir
-            audio = self.motor.gerar_estímulo(palavra, entonacao, ruido)
-            duracao = self.motor.reproduzir(audio)
-
-            self.logger.registrar(
-                "FASE1", significado, palavra,
-                entonacao.name, ruido.value, duracao
-            )
-
-            repeticoes += 1
-            progresso = (time.time() - tempo_inicio) / tempo_maximo
-            bar = '#' * int(progresso * 30) + '-' * (30 - int(progresso * 30))
-            print(f"\r   [{bar}] {progresso*100:.0f}%", end="", flush=True)
-
-            time.sleep(0.5)  # Pausa entre repetições
-
-        print(f"\n   [OK] {repeticoes} repetições concluídas")
-
-        # ===== REM: 20 minutos =====
-        logger.info(f"\n[SLEEP] Consolidação REM por {config.tempo_rem_min} minutos...")
-        tempo_rem = config.tempo_rem_min * 60 if not config.modo_teste_rapido else 5
-
+        # ===== REM: consolidação REAL (N3/REM) via force_sleep =====
+        rem_min = config.tempo_rem_min if not config.modo_teste_rapido else 1
+        logger.info(f"\n[SLEEP] Consolidação REM REAL por {rem_min} min "
+                     f"(comando force_sleep → Selene dorme de verdade)...")
+        cliente_selene.forcar_sono(rem_min)
+        tempo_rem = rem_min * 60
         tempo_inicio = time.time()
         while time.time() - tempo_inicio < tempo_rem:
             progresso = (time.time() - tempo_inicio) / tempo_rem
             bar = '#' * int(progresso * 30) + '-' * (30 - int(progresso * 30))
-            print(f"\r   [{bar}] {progresso*100:.0f}%", end="", flush=True)
-            time.sleep(1)
+            print(f"\r   [{bar}] {progresso*100:.0f}% (Selene dormindo)",
+                  end="", flush=True)
+            time.sleep(2)
 
-        print("\n   [OK] REM consolidation completa")
+        print("\n   [OK] Selene despertou — consolidação N3/REM concluída")
 
-        # ===== TESTE =====
-        sucesso = self.tester.teste_simples_fase1(significado, palavras)
+        # ===== TESTE REAL (pergunta → resposta → feedback 👍/👎) =====
+        sucesso = testar_conceito(significado, palavras)
 
         if sucesso:
             logger.info(f"   [OK] Significado '{significado}' aprendido!")
         else:
-            logger.info(f"   ⚠️  Baixo desempenho em '{significado}' - repetir recomendado")
+            logger.info(f"   ⚠️  '{significado}' fraco — feedback negativo enviado")
 
         return sucesso
 
@@ -655,54 +902,38 @@ class FaseSintatica:
         logger.info(f"   Termo: '{significado}'")
         logger.info(f"{'='*70}")
 
-        # ===== ENSINO: 20 minutos =====
-        logger.info(f"\n[TIMER]  Ensino por {config.tempo_ensino_sintatico_min} minutos...")
-        tempo_inicio = time.time()
-        tempo_maximo = config.tempo_ensino_sintatico_min * 60 if not config.modo_teste_rapido else 10
+        # ===== ENSINO: repetição espaçada (3 passes) — frases =====
+        status_ontogenia_log("PalavraUnica")
+        t0 = time.time()
+        envios = ensinar_espacado(frases, significado)
+        self.logger.registrar(
+            "FASE2", significado, f"{len(frases)} frases",
+            "-", "-", time.time() - t0, tipo_evento="ensino_espacado")
+        print(f"   [OK] {envios} envios reais à Selene (3 passes)")
 
-        repeticoes = 0
-        while time.time() - tempo_inicio < tempo_maximo:
-            frase = random.choice(frases)
-            entonacao = random.choice(config.variacao_entonacao)
-            ruido = random.choice(config.variacao_ruido_fase2)
-
-            audio = self.motor.gerar_estímulo(frase, entonacao, ruido)
-            duracao = self.motor.reproduzir(audio)
-
-            self.logger.registrar(
-                "FASE2", significado, frase[:40],
-                entonacao.name, ruido.value, duracao
-            )
-
-            repeticoes += 1
-            progresso = (time.time() - tempo_inicio) / tempo_maximo
-            bar = '#' * int(progresso * 30) + '-' * (30 - int(progresso * 30))
-            print(f"\r   [{bar}] {progresso*100:.0f}%", end="", flush=True)
-
-            time.sleep(0.5)
-
-        print(f"\n   [OK] {repeticoes} repetições concluídas")
-
-        # ===== REM: 20 minutos =====
-        logger.info(f"\n[SLEEP] Consolidação REM por {config.tempo_rem_min} minutos...")
-        tempo_rem = config.tempo_rem_min * 60 if not config.modo_teste_rapido else 5
-
+        # ===== REM: consolidação REAL (N3/REM) via force_sleep =====
+        rem_min = config.tempo_rem_min if not config.modo_teste_rapido else 1
+        logger.info(f"\n[SLEEP] Consolidação REM REAL por {rem_min} min "
+                     f"(comando force_sleep → Selene dorme de verdade)...")
+        cliente_selene.forcar_sono(rem_min)
+        tempo_rem = rem_min * 60
         tempo_inicio = time.time()
         while time.time() - tempo_inicio < tempo_rem:
             progresso = (time.time() - tempo_inicio) / tempo_rem
             bar = '#' * int(progresso * 30) + '-' * (30 - int(progresso * 30))
-            print(f"\r   [{bar}] {progresso*100:.0f}%", end="", flush=True)
-            time.sleep(1)
+            print(f"\r   [{bar}] {progresso*100:.0f}% (Selene dormindo)",
+                  end="", flush=True)
+            time.sleep(2)
 
-        print("\n   [OK] REM consolidation completa")
+        print("\n   [OK] Selene despertou — consolidação N3/REM concluída")
 
-        # ===== TESTE =====
-        sucesso = self.tester.teste_simples_fase2(significado, frases)
+        # ===== TESTE REAL (pergunta → resposta → feedback 👍/👎) =====
+        sucesso = testar_conceito(significado, self.dataset.nucleos[significado])
 
         if sucesso:
             logger.info(f"   [OK] Contexto '{significado}' aprendido!")
         else:
-            logger.info(f"   ⚠️  Baixo desempenho contextual em '{significado}'")
+            logger.info(f"   ⚠️  '{significado}' fraco — feedback negativo enviado")
 
         return sucesso
 
@@ -749,78 +980,46 @@ class FaseSemantica:
         logger.info(f"   Termo: '{significado}'")
         logger.info(f"{'='*70}")
 
-        # ===== ENSINO: 25 minutos COM MÚLTIPLAS CAMADAS =====
-        logger.info(f"\n[TIMER]  Ensino complexo por {config.tempo_ensino_semantico_min} minutos...")
-        tempo_inicio = time.time()
-        tempo_maximo = config.tempo_ensino_semantico_min * 60 if not config.modo_teste_rapido else 10
+        # ===== ENSINO: repetição espaçada com itens multi-camada =====
+        status_ontogenia_log("Frase")
+        sinonimo = self.dataset.nucleos[significado][0]
+        frases = self.dataset.gerar_frases_para_significado(significado, sinonimo)
+        outro_idx = (idx + 1) % config.significados
+        outro_significado, _ = self.dataset.obter_significado(outro_idx)
+        itens = list(self.dataset.nucleos[significado])          # palavras
+        itens += frases[:5]                                       # frases
+        itens.append(f"Considere {sinonimo} em um contexto diferente.")
+        itens.append(f"Diferente de {outro_significado} temos {significado}.")
 
-        repeticoes = 0
-        while time.time() - tempo_inicio < tempo_maximo:
-            # Variar: palavra pura, em frase, com contexto, etc.
-            choice = random.choice(['palavra', 'frase', 'contexto', 'contraste'])
+        t0 = time.time()
+        envios = ensinar_espacado(itens, significado)
+        self.logger.registrar(
+            "FASE3", significado, f"{len(itens)} itens multi-camada",
+            "-", "-", time.time() - t0, tipo_evento="ensino_espacado")
+        print(f"   [OK] {envios} envios reais à Selene (3 passes)")
 
-            if choice == 'palavra':
-                palavra = random.choice(self.dataset.nucleos[significado])
-                texto = palavra
-            elif choice == 'frase':
-                sinonimo = self.dataset.nucleos[significado][0]
-                frases = self.dataset.gerar_frases_para_significado(significado, sinonimo)
-                texto = random.choice(frases)
-            elif choice == 'contexto':
-                sinonimo = self.dataset.nucleos[significado][0]
-                texto = f"Considere {sinonimo} em um contexto diferente..."
-            else:  # contraste
-                outro_idx = (idx + 1) % config.significados
-                outro_significado, _ = self.dataset.obter_significado(outro_idx)
-                texto = f"Diferente de {outro_significado}, temos {significado}..."
-
-            entonacao = random.choice(config.variacao_entonacao)
-            ruido = random.choice(config.variacao_ruido_fase3)
-
-            audio = self.motor.gerar_estímulo(texto, entonacao, ruido)
-            duracao = self.motor.reproduzir(audio)
-
-            self.logger.registrar(
-                "FASE3", significado, texto[:40],
-                entonacao.name, ruido.value, duracao
-            )
-
-            repeticoes += 1
-            progresso = (time.time() - tempo_inicio) / tempo_maximo
-            bar = '#' * int(progresso * 30) + '-' * (30 - int(progresso * 30))
-            print(f"\r   [{bar}] {progresso*100:.0f}%", end="", flush=True)
-
-            time.sleep(0.5)
-
-        print(f"\n   [OK] {repeticoes} repetições concluídas")
-
-        # ===== REM: 20 minutos =====
-        logger.info(f"\n[SLEEP] Consolidação REM por {config.tempo_rem_min} minutos...")
-        tempo_rem = config.tempo_rem_min * 60 if not config.modo_teste_rapido else 5
-
+        # ===== REM: consolidação REAL (N3/REM) via force_sleep =====
+        rem_min = config.tempo_rem_min if not config.modo_teste_rapido else 1
+        logger.info(f"\n[SLEEP] Consolidação REM REAL por {rem_min} min "
+                     f"(comando force_sleep → Selene dorme de verdade)...")
+        cliente_selene.forcar_sono(rem_min)
+        tempo_rem = rem_min * 60
         tempo_inicio = time.time()
         while time.time() - tempo_inicio < tempo_rem:
             progresso = (time.time() - tempo_inicio) / tempo_rem
             bar = '#' * int(progresso * 30) + '-' * (30 - int(progresso * 30))
-            print(f"\r   [{bar}] {progresso*100:.0f}%", end="", flush=True)
-            time.sleep(1)
+            print(f"\r   [{bar}] {progresso*100:.0f}% (Selene dormindo)",
+                  end="", flush=True)
+            time.sleep(2)
 
-        print("\n   [OK] REM consolidation completa")
+        print("\n   [OK] Selene despertou — consolidação N3/REM concluída")
 
-        # ===== TESTE COMPLEXO =====
+        # ===== TESTE REAL: inferência via pergunta + feedback =====
         logger.info(f"\n  [TEST] TESTE FASE 3: Inferência e Causalidade")
-        print(f"    Questão: Como '{significado}' se relaciona com outros conceitos?")
-        # Simulação: 70% acerto em testes complexos
-        acertou = random.random() < 0.7
-        if acertou:
-            logger.info("   [OK] Inferência correta!")
-            taxa_sucesso = 1.0
-        else:
-            logger.info("   [FAIL] Inferência incorreta")
-            taxa_sucesso = 0.0
-
+        acertou = testar_conceito(significado, self.dataset.nucleos[significado])
+        taxa_sucesso = 1.0 if acertou else 0.0
         self.logger.registrar(
-            "FASE3", significado, "teste_complexo",
+            "FASE3", significado, "teste_inferencia",
             tipo_evento="teste", resultado_teste=f"{taxa_sucesso:.1%}"
         )
 
@@ -856,9 +1055,22 @@ class OrquestradorTreinamento:
     """Coordena todas as 3 fases"""
 
     def __init__(self):
+        global cliente_selene
         self.dataset = DatasetSemantico()
         self.motor = MotorAudioAvancado()
         self.logger = LoggerSemantico()
+
+        # Conecta de verdade à Selene ANTES de qualquer fase.
+        logger.info(f"[CONN] Conectando à Selene em {WS_URL}...")
+        cliente_selene = ClienteSelene(WS_URL)
+        try:
+            cliente_selene.conectar()
+            logger.info("[OK] Conectado ao núcleo neural da Selene.")
+        except (ConnectionRefusedError, OSError) as e:
+            logger.error(f"[FAIL] Não foi possível conectar em {WS_URL}: {e}")
+            logger.error("       A Selene está rodando? "
+                         "(target\\release-lowmem\\selene_brain.exe)")
+            sys.exit(1)
 
         self.fase1 = FaseLexico(self.dataset, self.motor, self.logger)
         self.fase2 = FaseSintatica(self.dataset, self.motor, self.logger)
@@ -904,17 +1116,39 @@ class OrquestradorTreinamento:
             logger.error(f"[FAIL] Erro: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            if cliente_selene is not None:
+                logger.info("[CONN] Encerrando conexão com a Selene...")
+                cliente_selene.fechar()
 
 
 # ==================== MAIN ====================
 
 def main():
-    """Ponto de entrada"""
-    # Modo teste rápido (para desenvolvimento)
-    if len(sys.argv) > 1 and sys.argv[1] == "--teste-rapido":
-        config.modo_teste_rapido = True
-        config.significados = 2  # Apenas 2 significados para teste rápido
-        logger.info("🚀 Modo TESTE RÁPIDO ativado (2 significados, timers reduzidos)")
+    """Ponto de entrada.
+
+    Flags:
+      --teste-rapido     2 significados, timers reduzidos, REM=1min
+      --host <ip>        host da Selene (padrão 127.0.0.1)
+      --porta <p>        porta WS (padrão 3030)
+    """
+    global WS_HOST, WS_PORTA, WS_URL
+    argv = sys.argv[1:]
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--teste-rapido":
+            config.modo_teste_rapido = True
+            config.significados = 2
+            logger.info("🚀 Modo TESTE RÁPIDO (2 significados, timers reduzidos)")
+            i += 1
+        elif a == "--host" and i + 1 < len(argv):
+            WS_HOST = argv[i + 1]; i += 2
+        elif a == "--porta" and i + 1 < len(argv):
+            WS_PORTA = argv[i + 1]; i += 2
+        else:
+            i += 1
+    WS_URL = f"ws://{WS_HOST}:{WS_PORTA}/selene"
 
     orquestrador = OrquestradorTreinamento()
     orquestrador.executar()
