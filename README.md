@@ -13,6 +13,10 @@
 | 🐕 **Watchdog real (fix de causa raiz)** | o `[WATCHDOG] step=500` era **falso positivo** em modo ocioso (~5Hz): heartbeat só atualizava a cada 500 steps (=100s), watchdog cobrava a cada 5s. Agora heartbeat atualiza **a cada tick** → só alerta em stall verdadeiro | `main.rs` |
 | 🧪 **Testes de carga** | 500 / 1000 / 10000 ticks para ambos os mecanismos (sem NaN/Inf/divergência) + 24 tipos neuronais via `update()` real + zonas antes não testadas (amygdala, cerebellum, language) | `tests/lateralization_ternary_tests.rs`, `tests/detailed_level_tests.rs` |
 | 📚 **Doctests saneados** | exemplos ilustrativos marcados `ignore` → suite roda 434 testes, 0 falhas | `sensors/`, `learning/rl.rs` |
+| 🔊 **Áudio corrigido (BUG crítico)** | o `cochlea` chegava **zerado** ao cérebro — o loop drenava o backlog de silêncio do canal (a thread envia zeros enquanto o mic está off) e nunca alcançava o áudio real. Fix: drenar até a amostra **mais recente** → áudio passou de `max=0.0` para `max=1.0` | `main.rs` |
+| 👂 **Temporal audiovisual** | o lobo temporal agora processa **visão + áudio** (córtex auditivo), não só visão. Ganho calibrado (medido cochlea max≈1.0) → o hemisfério ESQUERDO acende com som (temporal 0.000→0.003 com jazz; cresce com fala/STDP) | `main.rs` |
+| 💾 **Sono profundo por RAM** | além do sono por tempo (16h), RAM livre < 10% → sono de emergência + flush/evicção de inativos ao NVMe (mantém só os ativos). Essencial p/ aprendizado prolongado | `main.rs`, `swap_manager.rs` |
+| 🔁 **Aprendizado prolongado** | `aprendizado_prolongado.py`: roda com flags ON, liga câmera+mic, monitora hemisférios/RAM, reinicia se cair | `aprendizado_prolongado.py` |
 
 > **Design:** lateralização é **seletiva** (só onde há especialização clara); sistemas globais (neuroquímica, sono, tronco) **não** são lateralizados. As flags são **default-off** — a Selene de produção roda idêntica até serem ligadas.
 

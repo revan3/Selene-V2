@@ -599,6 +599,13 @@ async fn async_main() {
     let mut tempo_acordado = Duration::from_secs(0);
     let dia_duracao = Duration::from_secs(16 * 60 * 60);
 
+    // Gatilho de sono por pressão de RAM (V4.6.2): além do sono por tempo (16h),
+    // a Selene entra em sono profundo de EMERGÊNCIA quando a RAM livre cai abaixo
+    // do crítico — consolida memória e faz flush/backup, evictando inativos ao NVMe
+    // para manter só os neurônios ativos. Essencial para aprendizado prolongado.
+    let mut forcar_sono_ram = false;
+    const SONO_RAM_LIVRE_FRACAO_CRITICA: f64 = 0.10; // < 10% RAM livre → sono profundo
+
     // --- 14. LOOP NEURAL PRINCIPAL ---
     loop {
         current_time += dt;
@@ -616,8 +623,9 @@ async fn async_main() {
             }
         }
 
-        if tempo_acordado >= dia_duracao {
-            println!("\n🌙 Hora de dormir! Iniciando ciclo de sono...");
+        if tempo_acordado >= dia_duracao || forcar_sono_ram {
+            let motivo = if forcar_sono_ram { "RAM crítica" } else { "fim do dia (16h)" };
+            println!("\n🌙 Hora de dormir ({motivo})! Iniciando ciclo de sono...");
             let body_feeling = interoception.sentir();
             if let Some(pensamento) = ego.update(body_feeling, current_time).await {
                 println!("    💭 Pensamento antes de dormir: {}", pensamento);
@@ -634,9 +642,23 @@ async fn async_main() {
                     frontal.gestor_neurogenese.registro.total()
                 );
             }
-            // Snapshot de fim de dia antes de continuar
+            // Snapshot de fim de dia antes de continuar (backup do estado semântico)
             if let Ok(mut sw) = swap_manager.try_lock() {
                 sw.criar_snapshot(step as u64);
+            }
+            // Flush/backup AGRESSIVO quando o sono foi por pressão de RAM:
+            // evicta neurônios inativos ao NVMe + persiste o hipocampo → libera RAM
+            // mantendo apenas os neurônios ativos. (verificar_cap_ram já faz isto de
+            // forma contínua; aqui forçamos o flush completo durante o sono profundo.)
+            if forcar_sono_ram {
+                if let Ok(mut sw) = swap_manager.try_lock() {
+                    let antes = sw.ram_count();
+                    let _ = sw.limpar_neurônios_inativos();
+                    println!("    🧹 [RAM-SONO] Flush concluído: RAM {} → {} neurônios ativos",
+                        antes, sw.ram_count());
+                }
+                hippocampus.save_ltp(&get_state_path("selene_hippo_ltp.json"));
+                forcar_sono_ram = false;
             }
             tempo_acordado = Duration::from_secs(0);
             println!("☀️ Novo dia começou!\n");
@@ -771,7 +793,15 @@ async fn async_main() {
 
         // C. Filtragem sensorial
         let raw_retina = rx_vision.try_recv().unwrap_or_else(|_| vec![0.0f32; n_neurons]);
-        let audio_signal = rx_audio.try_recv().ok();
+        // Áudio: a thread de captura produz a ~22Hz e o loop pode estar mais lento
+        // (ocioso ~5Hz). Pegar só try_recv() uma vez ficaria SEMPRE atrasado, drenando
+        // o backlog de silêncio antigo (a thread envia zeros enquanto o mic está off).
+        // Drenamos até a amostra MAIS RECENTE → áudio atual, sem latência nem silêncio velho.
+        let audio_signal = {
+            let mut ultimo = None;
+            while let Ok(sig) = rx_audio.try_recv() { ultimo = Some(sig); }
+            ultimo
+        };
 
         // ── Reconhecimento auditivo via microfone (córtex auditivo secundário) ──
         // Pipeline nativo: cpal → FFT → acumulador → palavra_completa → cérebro.
@@ -1044,6 +1074,20 @@ async fn async_main() {
             for j in start..end { vision_full[j] = feature / 100.0; }
         }
 
+        // ── Temporal AUDIOVISUAL (V4.6.2): o lobo temporal processa reconhecimento
+        // de objetos (ventral, visão) E o córtex auditivo (cochlea). Antes recebia só
+        // visão — por isso o áudio não o acendia. Aqui combinamos visão + áudio.
+        // Com lateralização (temporal = hemisfério ESQUERDO, linguagem/áudio), o ganho
+        // auditivo é maior — reforçando a via auditiva do lado esquerdo.
+        // Ganho calibrado (medido: cochlea max≈1.0, avg baixo). O recognition_layer
+        // do temporal precisa de corrente sustentada para gerar spikes; 0.6 era fraco
+        // demais (output ficava 0). 2.5 (lateral) leva o áudio a disparar o temporal.
+        // O próprio temporal.process normaliza se a norma explodir (>2.0), então é seguro.
+        let ganho_audio_temporal = if lateral_on { 2.5 } else { 1.5 };
+        let temporal_stimulus: Vec<f32> = vision_full.iter().zip(cochlea_input.iter())
+            .map(|(&v, &a)| (v + ganho_audio_temporal * a).clamp(0.0, 6.0))
+            .collect();
+
         // ── WAVE 2 [paralelo]: parietal + temporal ────────────────────────────
         // Skip adaptativo: lóbulos com gate baixo reutilizam output anterior.
         // Temporal usa prev_parietal_rates (1-tick latência) — paralelo + biológico.
@@ -1067,7 +1111,7 @@ async fn async_main() {
                 if routing.deve_skipar(LobeId::Temporal) {
                     prev_temporal_rates.clone()
                 } else {
-                    let out = temporal.process(&vision_full, &prev_parietal_rates, dt, current_time, &config);
+                    let out = temporal.process(&temporal_stimulus, &prev_parietal_rates, dt, current_time, &config);
                     // Robustez: normaliza output se norma explodir
                     let max_v = out.iter().copied().fold(0.0f32, f32::max);
                     if max_v > 2.0 {
@@ -2657,6 +2701,15 @@ async fn async_main() {
                 drop(sensor_guard);
                 if let Ok(mut swap) = swap_manager.try_lock() {
                     swap.verificar_cap_ram(ram_total_gb, ram_livre_gb);
+                }
+                // Pressão de RAM crítica (< 10% livre): agenda sono profundo de
+                // emergência para o próximo tick — consolida + flush, liberando RAM.
+                if ram_livre_gb < ram_total_gb * SONO_RAM_LIVRE_FRACAO_CRITICA {
+                    if !forcar_sono_ram {
+                        println!("⚠️  [RAM] Livre {:.1}GB < {:.0}% de {:.1}GB → agendando sono profundo",
+                            ram_livre_gb, SONO_RAM_LIVRE_FRACAO_CRITICA * 100.0, ram_total_gb);
+                    }
+                    forcar_sono_ram = true;
                 }
             }
         }
