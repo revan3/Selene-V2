@@ -152,8 +152,12 @@ impl NeuroChem {
         };
         self.dopamine += (target_dopa - self.dopamine) * decay_rate;
 
-        // Cortisol
-        self.cortisol = (delta_temp / 5.0).clamp(0.0, 1.0);
+        // Cortisol — RELAXA em direção ao nível térmico (não sobrescreve). Assim os
+        // impulsos de dor (beliscão, rejeição) aplicados DEPOIS do update persistem e
+        // decaem gradualmente, em vez de serem zerados no tick seguinte.
+        let target_cortisol = (delta_temp / 5.0).clamp(0.0, 1.0);
+        self.cortisol += (target_cortisol - self.cortisol) * decay_rate;
+        self.cortisol = self.cortisol.clamp(0.0, 2.0);
 
         // Noradrenalina - CORRIGIDO: todos os modos cobertos
         self.noradrenaline = match config.modo {

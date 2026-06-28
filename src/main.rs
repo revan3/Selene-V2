@@ -10,6 +10,8 @@ mod synaptic_core;
 mod stem_cell;
 mod hardware_profile;
 mod motor_cortex;
+mod motor_babbling;
+mod motor_primitives;
 mod brain_zones;
 mod sensors;
 mod storage;
@@ -157,6 +159,10 @@ static TIME_PERIOD_SET: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 // Heartbeat do loop neural 200Hz — detecta stall (deadlock/panic não capturado).
 // Atualizado em step%200; watchdog task verifica a cada 5s.
 static LOOP_HEARTBEAT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// `true` enquanto a Selene dorme (ciclo de sono natural). O sono PAUSA o loop
+/// 200Hz de propósito (consolidação REM), então o watchdog não deve alertar nesse
+/// período — senão reporta "loop parado" durante todo o sono.
+static SELENE_DORMINDO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // ================== ESTADO PERSISTIDO - Caminhos ==================
 /// Construir caminho para arquivo de estado, permitindo override via env var
@@ -382,7 +388,8 @@ async fn async_main() {
         loop {
             iv.tick().await;
             let cur = LOOP_HEARTBEAT.load(std::sync::atomic::Ordering::Relaxed);
-            if cur == last && last > 0 {
+            let dormindo = SELENE_DORMINDO.load(std::sync::atomic::Ordering::Relaxed);
+            if cur == last && last > 0 && !dormindo {
                 log::error!("[WATCHDOG] loop neural parado há >5s (step={})", cur);
                 eprintln!("⚠️  [WATCHDOG] loop neural parado há >5s (step={})", cur);
             }
@@ -467,6 +474,7 @@ async fn async_main() {
     let mut ego = Ego::carregar_ou_criar("Selene");
     let mut thalamus = Thalamus::new();
     let mut interoception = Interoception::new();
+    let mut prev_propriocepcao: Vec<f32> = Vec::new();  // pose anterior das juntas (Fase A: sentir o movimento)
     let mut basal_ganglia = BasalGanglia::new(&config);
     let mut brainstem = Brainstem::new();
     // Fix 6: Neurônios espelho — ressonância motora com input do usuário.
@@ -491,8 +499,14 @@ async fn async_main() {
     println!("📷 Inicializando sensores (DESATIVADOS — ative via interface)...");
     let sensor_flags = SensorFlags::new_desativados();
 
-    let video_flag = sensor_flags.video_ativo.clone();
-    let estereo_flag = sensor_flags.video_ativo.clone(); // reutiliza mesma flag; câmera 1 inativa por ora
+    // A câmera NATIVA (nokhwa) e o navegador (getUserMedia) disputam a MESMA câmera
+    // física. O navegador é o olho primário (envia visual_learn → occipital). Se a
+    // nativa também abrisse com `video_ativo`, o getUserMedia falhava e o feed
+    // "desativava instantaneamente". Solução: a nativa usa um flag PRÓPRIO (desligado),
+    // liberando a câmera para o navegador. (video_ativo segue gateando o visual_learn.)
+    let cam_nativa_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let video_flag = cam_nativa_flag.clone();
+    let estereo_flag = cam_nativa_flag;
     let dual_cam = DualCameraSystem::novo(false); // stereo_disponivel=false (1 câmera física)
     let frame_buf_clone = std::sync::Arc::clone(&dual_cam.frame_buf);
     let (rx_vision_dual, _rx_estereo) = dual_cam.iniciar(n_neurons, video_flag, estereo_flag);
@@ -552,6 +566,10 @@ async fn async_main() {
     let start_time = Instant::now();
     let mut step: u64 = 0;
     let mut current_time = 0.0f32;
+    // Cronômetro p/ acumular horas_escuta da ontogenia com TEMPO REAL de funcionamento
+    // (qualquer entrada), não só o mic nativo. Sem isso, horas_escuta=0 e o progresso
+    // trava em 67% no Neonatal (vocab✓ + edges✓ + horas✗)/3 — bug confirmado 2026-06-28.
+    let mut ultimo_onto_instant = Instant::now();
 
     // --- 12b. CHUNKING ENGINE ---
     let mut chunking = ChunkingEngine::new(RegionType::Temporal);
@@ -604,7 +622,17 @@ async fn async_main() {
     // do crítico — consolida memória e faz flush/backup, evictando inativos ao NVMe
     // para manter só os neurônios ativos. Essencial para aprendizado prolongado.
     let mut forcar_sono_ram = false;
-    const SONO_RAM_LIVRE_FRACAO_CRITICA: f64 = 0.10; // < 10% RAM livre → sono profundo
+    let mut diag_coch_pico = 0.0f32;  // DIAG: pico de energia da cochlea entre relatos
+    let mut diag_ws_count = 0u32;     // DIAG: ticks com áudio na cochlea (de 500)
+    let mut diag_tstim_pico = 0.0f32; // DIAG: pico do estímulo temporal (visão+áudio)
+    // Cooldown: após um flush por RAM, não re-dispara sono por N ticks. Evita o loop
+    // eterno caso o alocador demore a devolver páginas ao SO (a RAM livre do sistema
+    // pode não subir na hora mesmo após o flush real já ter desalocado os neurônios).
+    let mut proximo_sono_ram_step: u64 = 0;
+    const COOLDOWN_SONO_RAM_TICKS: u64 = 12_000; // ~60s @ 200Hz entre sonos por RAM
+    // Sono de emergência quando o PROCESSO da Selene passa desta fração da RAM total
+    // (mede a Selene, não o sistema — file cache/outros apps não contam mais).
+    const SONO_RAM_PROCESSO_FRACAO: f64 = 0.55; // Selene > 55% da RAM total → sono
 
     // --- 14. LOOP NEURAL PRINCIPAL ---
     loop {
@@ -630,7 +658,12 @@ async fn async_main() {
             if let Some(pensamento) = ego.update(body_feeling, current_time).await {
                 println!("    💭 Pensamento antes de dormir: {}", pensamento);
             }
-            ciclo_sono.dormir(&mut *memory_tier.lock().await, &config).await;
+            SELENE_DORMINDO.store(true, std::sync::atomic::Ordering::Relaxed);
+            // Sono por RAM é frequente; pular o backup completo nele evita a espiral
+            // de I/O (backup → file cache → mais pressão de RAM → mais sono). O backup
+            // roda só no sono por TEMPO (fim de dia) e no shutdown.
+            ciclo_sono.dormir(&mut *memory_tier.lock().await, &config, !forcar_sono_ram).await;
+            SELENE_DORMINDO.store(false, std::sync::atomic::Ordering::Relaxed);
             // Extinção do medo durante sono (hipocampo + vmPFC consolida segurança)
             amygdala.extinção_durante_sono();
             // V4.6 — Neurogênese autônoma: a célula-tronco avalia o frontal e
@@ -651,13 +684,38 @@ async fn async_main() {
             // mantendo apenas os neurônios ativos. (verificar_cap_ram já faz isto de
             // forma contínua; aqui forçamos o flush completo durante o sono profundo.)
             if forcar_sono_ram {
-                if let Ok(mut sw) = swap_manager.try_lock() {
+                // (1) RAM → SSD por LRU (Active incluído): esvazia o HashMap `ram`.
+                let antes = if let Ok(mut sw) = swap_manager.try_lock() {
                     let antes = sw.ram_count();
-                    let _ = sw.limpar_neurônios_inativos();
-                    println!("    🧹 [RAM-SONO] Flush concluído: RAM {} → {} neurônios ativos",
-                        antes, sw.ram_count());
+                    sw.dormir_excesso((antes * 2 / 5).max(1)); // ~40% menos usados
+                    antes
+                } else { 0 };
+                // (2) SSD → DISCO em lotes: ISTO é o que libera RAM do SO de verdade.
+                // Antes o flush parava no passo (1) — mas `ssd` é um HashMap em memória,
+                // então mover ram→ssd liberava ZERO; a RAM nunca baixava e o sono de
+                // emergência entrava em loop eterno. Aqui drenamos o ssd ao NVMe (disco).
+                let mut escritos = 0usize;
+                for _ in 0..400 { // teto de segurança (~2M neurônios por flush)
+                    let lote_path = if let Ok(mut sw) = swap_manager.try_lock() {
+                        let lote = sw.preparar_lote_nvme(storage::swap_manager::NVME_LOTE_MAX);
+                        if lote.is_empty() { None } else { Some((lote, sw.swap_path.clone())) }
+                    } else { None };
+                    let (lote, path) = match lote_path { Some(x) => x, None => break };
+                    let n = lote.len();
+                    let uuids_ok = SwapManager::escrever_nvme(&path, lote).await;
+                    escritos += uuids_ok.len();
+                    if let Ok(mut sw) = swap_manager.try_lock() {
+                        sw.confirmar_evicao_nvme(&uuids_ok);
+                    }
+                    if n < storage::swap_manager::NVME_LOTE_MAX { break; }
                 }
+                let depois = if let Ok(sw) = swap_manager.try_lock() { sw.ram_count() } else { antes };
+                println!("    🧹 [RAM-SONO] Flush REAL: {} → {} neurônios na RAM | {} escritos ao DISCO (NVMe)",
+                    antes, depois, escritos);
                 hippocampus.save_ltp(&get_state_path("selene_hippo_ltp.json"));
+                // Cooldown: não re-dorme por RAM já no próximo check (dá tempo do SO
+                // recuperar as páginas e evita o loop apertado de sono de emergência).
+                proximo_sono_ram_step = step as u64 + COOLDOWN_SONO_RAM_TICKS;
                 forcar_sono_ram = false;
             }
             tempo_acordado = Duration::from_secs(0);
@@ -687,23 +745,45 @@ async fn async_main() {
             brainstem.update(adenosina, dt);
         }
 
-        // A1. Efeito tátil — aplica delta neuromodulador do toque à bioquímica.
-        // O sinal decai dentro do próprio efeito_toque() a cada tick.
-        // Carinho:  da+, sero+, na-, cortisol-
-        // Beliscão: da-, sero-, na+, cortisol+
-        {
-            let (d_da, d_ser, d_na, d_cor) = interoception.efeito_toque();
-            if d_da.abs() > 0.001 || d_ser.abs() > 0.001 {
-                neuro.dopamine      = (neuro.dopamine      + d_da ).clamp(0.3, 2.5);
-                neuro.serotonin     = (neuro.serotonin     + d_ser).clamp(0.0, 2.0);
-                neuro.noradrenaline = (neuro.noradrenaline + d_na ).clamp(0.0, 2.0);
-                neuro.cortisol      = (neuro.cortisol      + d_cor).clamp(0.0, 2.0);
+        // A0. Toque + propriocepção do corpo (handler `touch` / Webots) → interoception.
+        // O toque pendente é repassado ao sistema interoceptivo (efeito aplicado em A1).
+        // A propriocepção (ângulos das juntas) deixa a Selene SENTIR o corpo se mover.
+        let mut mov_corporal = 0.0f32;
+        if let Ok(mut bs) = brain_state.try_lock() {
+            if let Some((intens, tipo)) = bs.touch_pendente.take() {
+                interoception.receber_toque(intens, Interoception::tipo_de_str(&tipo));
             }
+            if !bs.propriocepcao.is_empty() && prev_propriocepcao.len() == bs.propriocepcao.len() {
+                mov_corporal = bs.propriocepcao.iter().zip(&prev_propriocepcao)
+                    .map(|(a, b)| (a - b).abs()).sum();
+            }
+            if !bs.propriocepcao.is_empty() { prev_propriocepcao = bs.propriocepcao.clone(); }
+        }
+        // sentir o próprio corpo se mexer → leve arousal proprioceptivo
+        if mov_corporal > 0.01 {
+            neuro.noradrenaline = (neuro.noradrenaline + (mov_corporal * 0.02).min(0.1)).clamp(0.0, 2.0);
         }
 
         // B. Bioquímica
         if let Ok(mut sensor_lock) = sensor.try_lock() {
             neuro.update(&mut *sensor_lock, &config);
+        }
+
+        // A1. Efeito tátil — aplicado DEPOIS de neuro.update() de propósito:
+        // a cascata bioquímica SOBRESCREVE o cortisol (= f(temperatura)) e re-clampa
+        // a oxitocina; o toque precisa ter a ÚLTIMA palavra para ser sentido.
+        // O sinal decai dentro do próprio efeito_toque() a cada tick.
+        // Carinho:  da+ sero+ oxitocina+  na- cortisol-   (vínculo, prazer)
+        // Beliscão: da- sero- oxitocina-  na+ cortisol+   (dor, alerta)
+        {
+            let (d_da, d_ser, d_na, d_cor, d_oxt) = interoception.efeito_toque();
+            if d_da.abs() > 0.001 || d_ser.abs() > 0.001 || d_oxt.abs() > 0.001 {
+                neuro.dopamine      = (neuro.dopamine      + d_da ).clamp(0.3, 2.5);
+                neuro.serotonin     = (neuro.serotonin     + d_ser).clamp(0.0, 2.0);
+                neuro.noradrenaline = (neuro.noradrenaline + d_na ).clamp(0.0, 2.0);
+                neuro.cortisol      = (neuro.cortisol      + d_cor).clamp(0.0, 2.0);
+                neuro.oxytocin      = (neuro.oxytocin      + d_oxt).clamp(0.0, 2.0);
+            }
         }
 
         // B0. Atualiza buffer perceptual no BrainState — snapshot do estado atual
@@ -792,7 +872,24 @@ async fn async_main() {
         let idle_replay_agora = meta_feedback.habilitar_replay && atividade_recente < 0.005;
 
         // C. Filtragem sensorial
-        let raw_retina = rx_vision.try_recv().unwrap_or_else(|_| vec![0.0f32; n_neurons]);
+        // Visão: prioriza o mundo do JOGO (grid 1ª pessoa via env_step) quando presente;
+        // senão usa a câmera real. Assim a Selene ENXERGA o jogo pelos olhos do avatar,
+        // em vez do compartilhamento de tela ser injetado direto na mente.
+        let raw_retina = {
+            let grid_jogo = brain_state.try_lock().ok()
+                .and_then(|bs| (!bs.visao_jogo.is_empty()).then(|| bs.visao_jogo.clone()));
+            match grid_jogo {
+                Some(g) => {
+                    // Reescala o grid (ex.: 256 = 16×16) para n_neurons, por vizinhança.
+                    let ratio = g.len() as f32 / n_neurons as f32;
+                    (0..n_neurons).map(|i| {
+                        let idx = ((i as f32 * ratio) as usize).min(g.len().saturating_sub(1));
+                        g[idx]
+                    }).collect()
+                }
+                None => rx_vision.try_recv().unwrap_or_else(|_| vec![0.0f32; n_neurons]),
+            }
+        };
         // Áudio: a thread de captura produz a ~22Hz e o loop pode estar mais lento
         // (ocioso ~5Hz). Pegar só try_recv() uma vez ficaria SEMPRE atrasado, drenando
         // o backlog de silêncio antigo (a thread envia zeros enquanto o mic está off).
@@ -899,8 +996,26 @@ async fn async_main() {
             }
         }
 
-        let raw_cochlea: Vec<f32> = match audio_signal {
-            Some(sig) => {
+        let raw_cochlea: Vec<f32> = {
+            // PRIORIZA o áudio via WS (interface, stream contínuo). O mic nativo envia
+            // silêncio CONTÍNUO mesmo quando desativado (run_silencio_com_flag) → isso
+            // mascarava o stream WS e a cochlea ficava muda (0 disparos). Por isso o WS
+            // vem primeiro; só caímos no mic/silêncio quando NÃO há áudio WS pendente.
+            let bandas_ws = brain_state.try_lock().ok()
+                .and_then(|mut bs| bs.audio_ws_bandas.take())
+                .filter(|v| !v.is_empty());
+            if let Some(v) = bandas_ws {
+                // A fala real chega FRACA (~0.05) e variável; normaliza pra um pico-alvo
+                // (~0.7) SÓ quando há sinal (pico > limiar) — assim a recognition_layer
+                // dispara independente do volume, sem amplificar silêncio/ruído baixo.
+                let pico = v.iter().cloned().fold(0.0f32, f32::max);
+                let escala = if pico > 0.02 { (0.7 / pico).min(25.0) } else { 0.0 };
+                let ratio = v.len() as f32 / n_neurons as f32;
+                (0..n_neurons).map(|i| {
+                    (v.get((i as f32 * ratio) as usize).copied().unwrap_or(0.0) * escala)
+                        .min(1.0)
+                }).collect()
+            } else if let Some(sig) = audio_signal {
                 let mut v = sig.bandas.clone();
                 v.push(sig.energia);
                 v.push(sig.pitch_dominante);
@@ -911,12 +1026,19 @@ async fn async_main() {
                         v.get(idx).copied().unwrap_or(0.0)
                     }).collect()
                 } else { v }
+            } else {
+                vec![0.0f32; n_neurons]
             }
-            None => vec![0.0f32; n_neurons],
         };
 
         let retina_input = thalamus.relay(&raw_retina, neuro.noradrenaline, &config);
         let cochlea_input = brainstem.modulate(&raw_cochlea);
+        {   // DIAG acumulado: a cochlea recebe energia em ALGUM tick?
+            let c: f32 = cochlea_input.iter().sum::<f32>()
+                / cochlea_input.len().max(1) as f32;
+            if c > diag_coch_pico { diag_coch_pico = c; }
+            if c > 0.001 { diag_ws_count += 1; }
+        }
 
         // D. Feedback (recall de memória → imaginação mental)
         if let Ok(memory) = rx_feedback.try_recv() {
@@ -1083,10 +1205,15 @@ async fn async_main() {
         // do temporal precisa de corrente sustentada para gerar spikes; 0.6 era fraco
         // demais (output ficava 0). 2.5 (lateral) leva o áudio a disparar o temporal.
         // O próprio temporal.process normaliza se a norma explodir (>2.0), então é seguro.
-        let ganho_audio_temporal = if lateral_on { 2.5 } else { 1.5 };
+        let ganho_audio_temporal = if lateral_on { 7.0 } else { 5.0 };
         let temporal_stimulus: Vec<f32> = vision_full.iter().zip(cochlea_input.iter())
-            .map(|(&v, &a)| (v + ganho_audio_temporal * a).clamp(0.0, 6.0))
+            .map(|(&v, &a)| (v + ganho_audio_temporal * a).clamp(0.0, 8.0))
             .collect();
+        {   // DIAG: pico do estímulo temporal (confirma que o áudio chega forte)
+            let ts: f32 = temporal_stimulus.iter().sum::<f32>()
+                / temporal_stimulus.len().max(1) as f32;
+            if ts > diag_tstim_pico { diag_tstim_pico = ts; }
+        }
 
         // ── WAVE 2 [paralelo]: parietal + temporal ────────────────────────────
         // Skip adaptativo: lóbulos com gate baixo reutilizam output anterior.
@@ -1126,6 +1253,16 @@ async fn async_main() {
         {
             let p_len = prev_parietal_rates.len().min(new_parietal_rates.len());
             prev_parietal_rates[..p_len].copy_from_slice(&new_parietal_rates[..p_len]);
+        }
+
+        // DIAG-AUDIO (temporário): onde o sinal de áudio morre? cochlea→stimulus→spikes
+        if step % 500 == 0 {
+            let disp_temp = temporal.recognition_layer.neuronios.iter()
+                .filter(|n| n.last_spike_ms > 0.0
+                    && n.last_spike_ms >= current_time * 1000.0 - 500.0).count();
+            println!("   🔊 [DIAG] cochlea_pico={:.3} ticks_audio={}/500 tstim_pico={:.3} ganho={:.1} disparos={}",
+                diag_coch_pico, diag_ws_count, diag_tstim_pico, ganho_audio_temporal, disp_temp);
+            diag_coch_pico = 0.0; diag_ws_count = 0; diag_tstim_pico = 0.0;
         }
 
         // F1. CHUNKING — detecta padrões STDP emergentes na camada temporal
@@ -1365,15 +1502,20 @@ async fn async_main() {
             // Absorve recompensa/punição externa (reward/punish do jogo ou interface WS).
             // Sem isso o sinal do jogo nunca chega à Q-table — o loop usa neuro.dopamine
             // local e não lê bs.neurotransmissores diretamente.
-            if let Ok(mut bs) = brain_state.try_lock() {
-                if bs.recompensa_pendente.abs() > 0.001 {
-                    neuro.dopamine = (neuro.dopamine + bs.recompensa_pendente).clamp(0.3, 2.0);
+            // Captura o reward EXTERNO (jogo/feedback/toque) e injeta na dopamina.
+            // O MESMO valor alimenta o RL como recompensa real — sem auto-referência
+            // (antes usava neuro.dopamine, criando o loop que saturava tudo).
+            let reward_ext = if let Ok(mut bs) = brain_state.try_lock() {
+                let r = bs.recompensa_pendente;
+                if r.abs() > 0.001 {
+                    neuro.dopamine = (neuro.dopamine + r).clamp(0.3, 2.0);
                     bs.recompensa_pendente = 0.0;
                 }
-            }
+                r
+            } else { 0.0 };
 
             let action_scalar = action.iter().sum::<f32>() / action.len().max(1) as f32;
-            let rl_rpe = rl.update(&recognized, neuro.dopamine, action_scalar, &config);
+            let rl_rpe = rl.update(&recognized, reward_ext, action_scalar, &config);
             // Fix 5: floor em 0.3 previne espiral dopaminérgica.
             // RPE negativo contínuo deprimia dopamina → reward sempre negativo → ciclo vicioso.
             // Baseline biológica: neurônios dopaminérgicos da SNpc nunca param completamente.
@@ -2583,7 +2725,11 @@ async fn async_main() {
                 let progressou = if let Some((vocab_n, edges_n)) = metricas_swap {
                     if let Ok(mut bs) = brain_state.try_lock() {
                         let rpe = bs.ultimo_rpe;
-                        bs.ontogeny.tick(vocab_n, edges_n, Some(rpe), None)
+                        // tempo REAL desde o último tick → horas_escuta acumula com o
+                        // funcionamento (destrava a progressão; antes era None = 67%).
+                        let dt_onto = ultimo_onto_instant.elapsed().as_secs_f32();
+                        ultimo_onto_instant = Instant::now();
+                        bs.ontogeny.tick(vocab_n, edges_n, Some(rpe), Some(dt_onto))
                     } else { false }
                 } else {
                     false  // swap indisponível — métricas preservadas
@@ -2693,21 +2839,32 @@ async fn async_main() {
         // Verificado a cada 500 ticks para não sobrecarregar o lock
         if step % 500 == 0 {
             if let Ok(sensor_guard) = sensor.try_lock() {
-                use sysinfo::System;
+                use sysinfo::{System, get_current_pid};
                 let mut sys = System::new();
                 sys.refresh_memory();
                 let ram_total_gb = sys.total_memory() as f64 / 1e9;
-                let ram_livre_gb = sys.available_memory() as f64 / 1e9;
+                // RAM do PROCESSO da Selene (não do sistema): file cache do Windows e
+                // outros apps NÃO contam mais. Antes media o `available` do sistema → ela
+                // dormia pelo cache dos próprios backups (loop eterno). Agora só dorme
+                // quando ELA cresce de verdade.
+                let selene_ram_gb = get_current_pid().ok()
+                    .and_then(|pid| { sys.refresh_process(pid); sys.process(pid).map(|p| p.memory()) })
+                    .map(|b| b as f64 / 1e9)
+                    .unwrap_or(0.0);
                 drop(sensor_guard);
+                // Cap de neurônios ATIVOS baseado em quanto a SELENE ocupa (não no cache
+                // do sistema) — senão o file cache derrubava o cap e a deixava comatosa.
+                let ram_livre_efetiva = (ram_total_gb - selene_ram_gb).max(0.0);
                 if let Ok(mut swap) = swap_manager.try_lock() {
-                    swap.verificar_cap_ram(ram_total_gb, ram_livre_gb);
+                    swap.verificar_cap_ram(ram_total_gb, ram_livre_efetiva);
                 }
-                // Pressão de RAM crítica (< 10% livre): agenda sono profundo de
-                // emergência para o próximo tick — consolida + flush, liberando RAM.
-                if ram_livre_gb < ram_total_gb * SONO_RAM_LIVRE_FRACAO_CRITICA {
+                // Sono de emergência só quando a SELENE passa de SONO_RAM_PROCESSO_FRACAO
+                // da RAM total — consolida + flush (drena ao disco), liberando RAM real.
+                if selene_ram_gb > ram_total_gb * SONO_RAM_PROCESSO_FRACAO
+                    && (step as u64) >= proximo_sono_ram_step {
                     if !forcar_sono_ram {
-                        println!("⚠️  [RAM] Livre {:.1}GB < {:.0}% de {:.1}GB → agendando sono profundo",
-                            ram_livre_gb, SONO_RAM_LIVRE_FRACAO_CRITICA * 100.0, ram_total_gb);
+                        println!("⚠️  [RAM] Selene {:.1}GB > {:.0}% de {:.1}GB → agendando sono profundo",
+                            selene_ram_gb, SONO_RAM_PROCESSO_FRACAO * 100.0, ram_total_gb);
                     }
                     forcar_sono_ram = true;
                 }

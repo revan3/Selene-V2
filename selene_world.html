@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mundo da Selene — Fase 0 (Esqueleto)</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; background:#0a0e16; overflow:hidden; font-family:system-ui,sans-serif; }
+  #c { display:block; width:100vw; height:100vh; }
+  .hud { position:fixed; color:#cfe0ff; font-size:12px; text-shadow:0 1px 3px #000; z-index:10; }
+  #info { top:12px; left:12px; line-height:1.7; background:rgba(12,18,32,0.7); padding:10px 14px;
+          border-radius:10px; border:1px solid rgba(120,180,255,0.25); backdrop-filter:blur(5px); }
+  #info b { color:#7fb4ff; }
+  .pill { display:inline-block; min-width:42px; text-align:center; padding:1px 8px; border-radius:6px;
+          background:rgba(90,150,255,0.18); color:#bcd6ff; font-weight:600; }
+  #vis { position:fixed; bottom:12px; right:12px; z-index:10; text-align:center; color:#9fb4d8; font-size:10px; }
+  #vis canvas { width:128px; height:128px; image-rendering:pixelated; border-radius:8px;
+                border:1px solid rgba(120,180,255,0.3); background:#000; display:block; margin-bottom:4px; }
+  #toggle { position:fixed; top:12px; right:12px; z-index:20; padding:9px 15px; border-radius:9px;
+            border:1px solid rgba(120,180,255,0.45); background:rgba(18,28,48,0.82); color:#d4e4ff;
+            font:600 12px system-ui; cursor:pointer; backdrop-filter:blur(5px); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud" id="info">
+  <div><b>Mundo da Selene</b> · Fase 0</div>
+  <div>Conexão: <span id="conn" class="pill">…</span></div>
+  <div>Ação dela: <span id="act" class="pill">—</span></div>
+  <div>Câmera: <span id="cam" class="pill">observador</span></div>
+  <div>Recompensa Σ: <span id="rew" class="pill">0.00</span></div>
+  <div>Visão (luz): <span id="lum" class="pill">—</span></div>
+  <div>Occipital dela: <span id="occ" class="pill">—</span></div>
+</div>
+<button id="toggle">👁 ver pelos olhos dela</button>
+<button id="tvbtn" style="position:fixed;top:56px;right:12px;z-index:20;padding:9px 15px;border-radius:9px;border:1px solid rgba(120,180,255,0.45);background:rgba(18,28,48,0.82);color:#d4e4ff;font:600 12px system-ui,sans-serif;cursor:pointer;backdrop-filter:blur(5px)">📺 Ligar TV</button>
+<div class="hud" id="vis"><canvas id="visc" width="16" height="16"></canvas>o que a Selene vê</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script>
+'use strict';
+
+// ── Cena ────────────────────────────────────────────────────────────────
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0e16);
+scene.fog = new THREE.Fog(0x0a0e16, 12, 30);
+
+const renderer = new THREE.WebGLRenderer({ canvas:document.getElementById('c'), antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth, innerHeight);
+
+// Luz
+const hemi = new THREE.HemisphereLight(0xcfe0ff, 0x202838, 0.9); scene.add(hemi);
+const lamp = new THREE.PointLight(0xffe9c0, 0.8, 30); lamp.position.set(0, 5, 0); scene.add(lamp);
+// As luzes também iluminam o layer 1 (corpo da Selene), senão a mesh fica preta no observador.
+hemi.layers.enable(1); lamp.layers.enable(1);
+
+// ── O QUARTO (criança, simples) ─────────────────────────────────────────
+const ROOM = 5; // meia-largura
+const matChao = new THREE.MeshStandardMaterial({ color:0x3a4a63, roughness:0.95 });
+const chao = new THREE.Mesh(new THREE.PlaneGeometry(ROOM*2, ROOM*2), matChao);
+chao.rotation.x = -Math.PI/2; scene.add(chao);
+// tapete colorido (zona de brincar)
+const tapete = new THREE.Mesh(new THREE.CircleGeometry(2.2, 32),
+  new THREE.MeshStandardMaterial({ color:0x4a6fa5, roughness:1 }));
+tapete.rotation.x = -Math.PI/2; tapete.position.y = 0.01; scene.add(tapete);
+
+const matParede = new THREE.MeshStandardMaterial({ color:0x26303f, roughness:1, side:THREE.DoubleSide });
+function parede(x,z,rotY){
+  const p = new THREE.Mesh(new THREE.PlaneGeometry(ROOM*2, 4), matParede);
+  p.position.set(x, 2, z); p.rotation.y = rotY; scene.add(p);
+}
+parede(0, -ROOM, 0); parede(0, ROOM, Math.PI); parede(-ROOM, 0, Math.PI/2); parede(ROOM, 0, -Math.PI/2);
+
+// ── Estímulos nas paredes (quadros coloridos com formas) ────────────────
+function quadroTex(bg, fg, forma){
+  const c=document.createElement('canvas'); c.width=c.height=128; const x=c.getContext('2d');
+  x.fillStyle=bg; x.fillRect(0,0,128,128); x.fillStyle=fg;
+  if(forma==='circ'){ x.beginPath(); x.arc(64,64,42,0,7); x.fill(); }
+  else if(forma==='quad'){ x.fillRect(26,26,76,76); }
+  else if(forma==='tri'){ x.beginPath(); x.moveTo(64,22); x.lineTo(106,104); x.lineTo(22,104); x.closePath(); x.fill(); }
+  else if(forma==='listras'){ for(let i=0;i<6;i++){ x.fillStyle=i%2?fg:bg; x.fillRect(0,i*22,128,22); } }
+  else if(forma==='bolhas'){ for(let i=0;i<7;i++){ x.beginPath(); x.arc(20+Math.random()*88,20+Math.random()*88,8+Math.random()*14,0,7); x.fill(); } }
+  return new THREE.CanvasTexture(c);
+}
+function quadro(tex, x,y,z, rotY){
+  const m=new THREE.Mesh(new THREE.PlaneGeometry(1.4,1.4), new THREE.MeshBasicMaterial({ map:tex }));
+  m.position.set(x,y,z); m.rotation.y=rotY; scene.add(m);
+}
+quadro(quadroTex('#1e2c4a','#ff6b6b','circ'),    -1.6,2.2,-ROOM+0.03, 0);
+quadro(quadroTex('#2a1e3e','#ffd166','tri'),      1.6,2.2,-ROOM+0.03, 0);
+quadro(quadroTex('#1e3a2e','#6be0a0','bolhas'),  -ROOM+0.03,2.2, 1.2, Math.PI/2);
+quadro(quadroTex('#3a2a1e','#9b8cff','quad'),    -ROOM+0.03,2.2,-1.5, Math.PI/2);
+quadro(quadroTex('#24344e','#5dd0ff','listras'),  ROOM-0.03,2.2,-0.5, -Math.PI/2);
+
+// ── Cama no canto (futuro: a Selene dorme aqui quando cansada) ──────────
+const cama = new THREE.Group();
+const camaBase=new THREE.Mesh(new THREE.BoxGeometry(2.0,0.4,1.2), new THREE.MeshStandardMaterial({color:0x6b4a3a,roughness:0.9}));
+camaBase.position.y=0.2; cama.add(camaBase);
+const colchao=new THREE.Mesh(new THREE.BoxGeometry(1.9,0.28,1.1), new THREE.MeshStandardMaterial({color:0xbfd0e8,roughness:0.8}));
+colchao.position.y=0.52; cama.add(colchao);
+const travesseiro=new THREE.Mesh(new THREE.BoxGeometry(0.55,0.18,0.9), new THREE.MeshStandardMaterial({color:0xffffff,roughness:0.7}));
+travesseiro.position.set(-0.6,0.71,0); cama.add(travesseiro);
+cama.position.set(-ROOM+1.3,0,-ROOM+1.0); cama.rotation.y=0.25; scene.add(cama);
+
+// ── TV: compartilhamento de tela visto pelos OLHOS do avatar (não injetado) ─
+const tvMoldura=new THREE.Mesh(new THREE.BoxGeometry(2.5,1.55,0.12),
+  new THREE.MeshStandardMaterial({color:0x0c0e12,roughness:0.4,metalness:0.3}));
+tvMoldura.position.set(2.4,2.1,ROOM-0.07); scene.add(tvMoldura);
+const tvTela=new THREE.Mesh(new THREE.PlaneGeometry(2.3,1.35),
+  new THREE.MeshBasicMaterial({color:0x080a10}));
+tvTela.position.set(2.4,2.1,ROOM-0.14); scene.add(tvTela);
+const tvVideo=document.createElement('video'); tvVideo.muted=true; tvVideo.playsInline=true;
+async function ligarTV(){
+  try{
+    const stream=await navigator.mediaDevices.getDisplayMedia({ video:true, audio:false });
+    tvVideo.srcObject=stream; await tvVideo.play();
+    const tvTex=new THREE.VideoTexture(tvVideo);
+    tvTela.material=new THREE.MeshBasicMaterial({ map:tvTex });
+    document.getElementById('tvbtn').textContent='📺 TV ligada';
+    stream.getVideoTracks()[0].addEventListener('ended',()=>{
+      tvTela.material=new THREE.MeshBasicMaterial({color:0x080a10});
+      document.getElementById('tvbtn').textContent='📺 Ligar TV';
+    });
+  }catch(e){ console.warn('TV não ligou:', e); }
+}
+
+// ── DESAFIO: encaixe de formas (shape sorter) ───────────────────────────
+const FORMAS = [
+  {nome:'círculo',   cor:0xff5e7e}, {nome:'quadrado',  cor:0x5dd0ff},
+  {nome:'triângulo', cor:0xffd166}, {nome:'estrela',   cor:0x9b8cff},
+];
+function geomForma(i,esc){
+  if(i===0) return new THREE.CylinderGeometry(0.22*esc,0.22*esc,0.30*esc,24);
+  if(i===1) return new THREE.BoxGeometry(0.38*esc,0.38*esc,0.38*esc);
+  if(i===2) return new THREE.ConeGeometry(0.27*esc,0.46*esc,3);
+  return new THREE.DodecahedronGeometry(0.27*esc);
+}
+// mesa-base do sorter (próximo à parede dos fundos)
+const sorter=new THREE.Mesh(new THREE.BoxGeometry(2.3,0.5,0.7),
+  new THREE.MeshStandardMaterial({color:0x8a95a8,roughness:0.85}));
+sorter.position.set(0,0.25,ROOM-0.7); scene.add(sorter);
+const buracos=[], pecas=[];
+const ESPALHA=[[-3.2,3.2],[3.2,2.6],[-3.0,-1.8],[2.2,-3.0]];
+FORMAS.forEach((f,i)=>{
+  const bx = -0.86 + i*0.57;
+  // marcador do buraco (forma "fantasma" translúcida no topo da mesa)
+  const marc=new THREE.Mesh(geomForma(i,0.78),
+    new THREE.MeshStandardMaterial({color:f.cor,transparent:true,opacity:0.22,emissive:f.cor,emissiveIntensity:0.35}));
+  marc.position.set(bx,0.6,ROOM-0.7); scene.add(marc);
+  buracos.push({forma:i, pos:new THREE.Vector3(bx,0.6,ROOM-0.7), marc, preenchido:false});
+  // peça correspondente espalhada pelo quarto
+  const [px,pz]=ESPALHA[i];
+  const pe=new THREE.Mesh(geomForma(i,1),
+    new THREE.MeshStandardMaterial({color:f.cor,roughness:0.5,emissive:f.cor,emissiveIntensity:0.18}));
+  pe.position.set(px,0.32,pz); scene.add(pe);
+  pecas.push({forma:i, mesh:pe, encaixada:false});
+});
+let carregando=-1, sorterFeito=false, rewardPendente=0;
+
+// ── DESAFIO 2: torre de blocos (empilhar — causa-efeito + coordenação) ───
+const torreBase = new THREE.Vector3(2.7, 0, -2.7);   // canto livre (longe da cama/mesa)
+const marcaTorre = new THREE.Mesh(new THREE.CircleGeometry(0.62,28),
+  new THREE.MeshStandardMaterial({color:0xffd166,transparent:true,opacity:0.32,emissive:0xffd166,emissiveIntensity:0.3}));
+marcaTorre.rotation.x=-Math.PI/2; marcaTorre.position.set(torreBase.x,0.02,torreBase.z); scene.add(marcaTorre);
+const ALTURA_BLOCO=0.5;
+const CORES_BLOCO=[0xff5e7e,0x5dd0ff,0xffd166,0x9b8cff];
+const POS_BLOCO=[[-2.6,3.2],[3.4,-1.2],[-3.8,0.2],[0.8,3.4]];
+const blocos=[];
+CORES_BLOCO.forEach((c,i)=>{
+  const m=new THREE.Mesh(new THREE.BoxGeometry(0.5,ALTURA_BLOCO,0.5),
+    new THREE.MeshStandardMaterial({color:c,roughness:0.55,emissive:c,emissiveIntensity:0.12}));
+  m.position.set(POS_BLOCO[i][0],0.25,POS_BLOCO[i][1]); scene.add(m);
+  blocos.push({mesh:m, empilhado:false});
+});
+let carregaBloco=-1, torreAltura=0, torreFeita=false;
+
+// ── AVATAR DA SELENE (corpo simples; cresce nas próximas fases) ──────────
+const avatar = new THREE.Group();
+const corpo = new THREE.Mesh(new THREE.CylinderGeometry(0.28,0.34,0.9,16),
+  new THREE.MeshStandardMaterial({ color:0xff9ff3, roughness:0.6 }));
+corpo.position.y = 0.75; avatar.add(corpo);
+const cabeca = new THREE.Mesh(new THREE.SphereGeometry(0.3,20,16),
+  new THREE.MeshStandardMaterial({ color:0xffd9f5, roughness:0.5 }));
+cabeca.position.y = 1.45; avatar.add(cabeca);
+// "nariz" — indica a frente (direção do olhar)
+const nariz = new THREE.Mesh(new THREE.ConeGeometry(0.08,0.22,12),
+  new THREE.MeshStandardMaterial({ color:0x5a3f55 }));
+nariz.position.set(0,1.45,0.3); nariz.rotation.x = Math.PI/2; avatar.add(nariz);
+scene.add(avatar);
+
+// ── MESH 3D real da Selene (Avatar_3D/Selene_avatar1.glb) ───────────────
+// Carrega assíncrono. Enquanto não chega, os placeholders acima aparecem.
+// Ao carregar: normaliza (pés no y=0, altura ~1.7), centraliza, olha para +Z
+// (frente do avatar) e esconde os placeholders. Se falhar, fica o placeholder.
+let modeloSelene = null;
+const ALTURA_AVATAR = 1.7;
+new THREE.GLTFLoader().load('Avatar_3D/model.glb', (gltf)=>{
+  const m = gltf.scene;
+  // 0. ORIENTAÇÃO primeiro (model.glb do Hitem3D veio Z-up/deitado → levanta p/ Y-up).
+  //    Se a pose sair errada, ajuste SÓ estes 2 valores:
+  //    ORIENT_X = -Math.PI/2 levanta o deitado; troque o sinal se ficar de cabeça p/ baixo.
+  //    ORIENT_Y = 0 olha p/ +Z (frente); use Math.PI se vier de costas, ±Math.PI/2 se de lado.
+  const ORIENT_X = Math.PI/2, ORIENT_Y = 0;
+  m.rotation.set(ORIENT_X, ORIENT_Y, 0);
+  m.updateMatrixWorld(true);
+  // 1. escala pela altura REAL (medida já em pé)
+  const size = new THREE.Vector3();
+  new THREE.Box3().setFromObject(m).getSize(size);
+  m.scale.setScalar(ALTURA_AVATAR / (size.y || 1));
+  m.updateMatrixWorld(true);
+  // 2. assenta os pés em y=0 e centraliza x/z (já rotacionado+escalado)
+  const b = new THREE.Box3().setFromObject(m);
+  m.position.x -= (b.min.x + b.max.x) / 2;
+  m.position.z -= (b.min.z + b.max.z) / 2;
+  m.position.y -= b.min.y;
+  // 4. esconde os placeholders
+  corpo.visible = false; cabeca.visible = false; nariz.visible = false;
+  // 5. o corpo vai para o layer 1 → o OBSERVADOR vê, mas a câmera 1ª pessoa (layer 0)
+  //    NÃO renderiza o próprio corpo. Sem isso a câmera fica enterrada na mesh e vê preto.
+  m.traverse(o => o.layers.set(1));
+  avatar.add(m);
+  modeloSelene = m;
+  console.log('[Selene] mesh 3D carregada (escala '+(ALTURA_AVATAR/(size.y||1)).toFixed(3)+')');
+}, undefined, (err)=>{ console.warn('[Selene] falha ao carregar mesh; mantendo placeholder', err); });
+
+let heading = 0;                 // ângulo de visão (rad)
+avatar.position.set(-2, 0, 2);
+
+// ── CÂMERAS: 1ª pessoa (a Selene vê) e observador (você) ────────────────
+const camFP = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 100);
+const camOBS = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 100);
+camOBS.layers.enable(1);         // observador vê o corpo (layer 1); a camFP NÃO → 1ª pessoa limpa
+let modoFP = false;              // false = observador (padrão)
+// órbita do observador
+let obsTheta = 0.6, obsPhi = 1.0, obsDist = 9, drag=false, lx=0, ly=0;
+const cv = renderer.domElement;
+cv.addEventListener('pointerdown', e=>{ drag=true; lx=e.clientX; ly=e.clientY; });
+addEventListener('pointerup', ()=> drag=false);
+addEventListener('pointermove', e=>{ if(!drag)return; obsTheta-=(e.clientX-lx)*0.006; obsPhi=Math.max(0.2,Math.min(1.5,obsPhi-(e.clientY-ly)*0.006)); lx=e.clientX; ly=e.clientY; });
+cv.addEventListener('wheel', e=>{ obsDist=Math.max(4,Math.min(18,obsDist+e.deltaY*0.01)); e.preventDefault(); }, {passive:false});
+
+function atualizarCameras(){
+  // 1ª pessoa: na "cabeça", olhando na direção do heading
+  camFP.position.set(avatar.position.x, 1.45, avatar.position.z);
+  camFP.lookAt(avatar.position.x + Math.sin(heading), 1.40, avatar.position.z + Math.cos(heading));
+  // observador: orbita em torno do avatar
+  const cx = avatar.position.x + obsDist*Math.sin(obsPhi)*Math.cos(obsTheta);
+  const cy = obsDist*Math.cos(obsPhi);
+  const cz = avatar.position.z + obsDist*Math.sin(obsPhi)*Math.sin(obsTheta);
+  camOBS.position.set(cx, cy, cz);
+  camOBS.lookAt(avatar.position.x, 0.8, avatar.position.z);
+}
+
+document.getElementById('toggle').addEventListener('click', e=>{
+  modoFP = !modoFP;
+  e.target.textContent = modoFP ? '🧍 ver como observador' : '👁 ver pelos olhos dela';
+  document.getElementById('cam').textContent = modoFP ? '1ª pessoa (ela)' : 'observador';
+});
+document.getElementById('tvbtn').addEventListener('click', ligarTV);
+
+// ── VISÃO 1ª pessoa → grid (observação enviada ao cérebro) ──────────────
+const VW=16, VH=16;
+const rt = new THREE.WebGLRenderTarget(VW, VH);
+const pix = new Uint8Array(VW*VH*4);
+const visc = document.getElementById('visc'); const vctx = visc.getContext('2d');
+const vimg = vctx.createImageData(VW, VH);
+function capturarVisao(){
+  renderer.setRenderTarget(rt);
+  renderer.render(scene, camFP);
+  renderer.readRenderTargetPixels(rt, 0, 0, VW, VH, pix);
+  renderer.setRenderTarget(null);
+  const grid = new Array(VW*VH);
+  for(let i=0;i<VW*VH;i++){
+    const r=pix[i*4], g=pix[i*4+1], b=pix[i*4+2];
+    grid[i] = (0.299*r + 0.587*g + 0.114*b)/255;
+    // mini-preview (flip vertical: o render vem de baixo p/ cima)
+    const row=VH-1-((i/VW)|0), col=i%VW, j=(row*VW+col)*4;
+    vimg.data[j]=r; vimg.data[j+1]=g; vimg.data[j+2]=b; vimg.data[j+3]=255;
+  }
+  vctx.putImageData(vimg,0,0);
+  return grid;
+}
+
+// ── AÇÃO: tecla da Selene → movimento (tanque) ──────────────────────────
+// Móveis sólidos que a Selene NÃO atravessa (círculos de colisão no plano XZ).
+// A mesa tem raio pequeno p/ ela ainda encostar e encaixar (encaixe acontece a 0.95).
+const OBSTACULOS = [
+  { x:-ROOM+1.3, z:-ROOM+1.0, r:1.15 },  // cama
+  { x:0,         z:ROOM-0.7,  r:0.78 },  // mesa do shape sorter
+];
+function aplicarAcao(key){
+  const speed=0.22, turn=0.30, lim=ROOM-0.5;
+  if(key==='up'){ avatar.position.x += Math.sin(heading)*speed; avatar.position.z += Math.cos(heading)*speed; }
+  else if(key==='down'){ avatar.position.x -= Math.sin(heading)*speed; avatar.position.z -= Math.cos(heading)*speed; }
+  else if(key==='left'){ heading += turn; }
+  else if(key==='right'){ heading -= turn; }
+  // COLISÃO: se entrou num móvel, empurra para a borda (desliza ao redor, não trava).
+  for(const o of OBSTACULOS){
+    const dx=avatar.position.x-o.x, dz=avatar.position.z-o.z;
+    const d=Math.hypot(dx,dz)||0.001;
+    if(d<o.r){ avatar.position.x=o.x+(dx/d)*o.r; avatar.position.z=o.z+(dz/d)*o.r; }
+  }
+  avatar.position.x = Math.max(-lim, Math.min(lim, avatar.position.x));
+  avatar.position.z = Math.max(-lim, Math.min(lim, avatar.position.z));
+  avatar.rotation.y = heading;
+}
+
+// ── Recompensa: SÓ por ACERTO (pegar a peça certa, encaixar, concluir).
+//    Sem gradiente contínuo de aproximação — a soma só sobe quando a Selene
+//    realmente faz algo certo. Recompensa esparsa, igual aprendizado real.
+let somaRew = 0;
+function calcReward(){
+  const r = rewardPendente; rewardPendente = 0;   // bônus discretos de acerto
+  somaRew += r;
+  return r;
+}
+// Pegar/encaixar por PROXIMIDADE (4 ações não dão "pegar" explícito).
+// A Selene segura UM objeto por vez: peça do sorter (carregando) OU bloco (carregaBloco).
+function atualizarDesafio(){
+  const livre = carregando<0 && carregaBloco<0;   // mãos vazias
+
+  // ── DESAFIO 1: shape sorter ──────────────────────────────────────────
+  if(!sorterFeito){
+    if(livre){
+      for(let i=0;i<pecas.length;i++){ const p=pecas[i]; if(p.encaixada) continue;
+        if(avatar.position.distanceTo(p.mesh.position)<0.85){ carregando=i; rewardPendente+=0.6; break; }
+      }
+    }
+    if(carregando>=0){
+      const p=pecas[carregando];
+      p.mesh.position.set(avatar.position.x, 1.95, avatar.position.z); // peça flutua acima dela
+      p.mesh.rotation.y+=0.06;
+      const b=buracos.find(b=>b.forma===p.forma && !b.preenchido);
+      if(b && Math.hypot(avatar.position.x-b.pos.x, avatar.position.z-b.pos.z)<0.95){
+        p.mesh.position.copy(b.pos); p.encaixada=true; b.preenchido=true; carregando=-1;
+        rewardPendente+=3; b.marc.material.opacity=0.85;
+        if(buracos.every(b=>b.preenchido)){ sorterFeito=true; rewardPendente+=10; document.getElementById('act').textContent='🎉 formas!'; }
+      }
+    }
+  }
+
+  // ── DESAFIO 2: torre de blocos ───────────────────────────────────────
+  if(!torreFeita){
+    if(livre && carregando<0){
+      for(let i=0;i<blocos.length;i++){ const bl=blocos[i]; if(bl.empilhado) continue;
+        if(avatar.position.distanceTo(bl.mesh.position)<0.85){ carregaBloco=i; rewardPendente+=0.6; break; }
+      }
+    }
+    if(carregaBloco>=0){
+      const bl=blocos[carregaBloco];
+      bl.mesh.position.set(avatar.position.x, 2.1, avatar.position.z); // bloco flutua acima dela
+      if(Math.hypot(avatar.position.x-torreBase.x, avatar.position.z-torreBase.z)<0.9){
+        // empilha no topo da torre (altura cresce a cada bloco)
+        bl.mesh.position.set(torreBase.x, 0.25+torreAltura*ALTURA_BLOCO, torreBase.z);
+        bl.empilhado=true; torreAltura++; carregaBloco=-1; rewardPendente+=2;
+        if(blocos.every(b=>b.empilhado)){ torreFeita=true; rewardPendente+=8; document.getElementById('act').textContent='🎉 torre!'; }
+      }
+    }
+  }
+}
+
+// ── WebSocket com a Selene ──────────────────────────────────────────────
+let ws=null, wsReady=false;
+const connEl=document.getElementById('conn'), actEl=document.getElementById('act'), rewEl=document.getElementById('rew');
+function conectar(){
+  try{
+    ws = new WebSocket('ws://127.0.0.1:3030/selene');
+    ws.onopen = ()=>{ wsReady=true; connEl.textContent='LIVE'; connEl.style.background='rgba(90,255,150,0.2)'; };
+    ws.onclose = ws.onerror = ()=>{ wsReady=false; connEl.textContent='offline'; connEl.style.background='rgba(255,120,120,0.2)'; setTimeout(conectar,2000); };
+    ws.onmessage = ev=>{ try{ const m=JSON.parse(ev.data);
+      if(m.type==='motor_action'){ aplicarAcao(m.key); actEl.textContent=m.key; }
+      // telemetria da Selene: mostra o occipital reagindo À VISÃO, aqui no jogo
+      // (sem depender de outra aba, que o navegador congela em background).
+      if(m.regions && m.regions.occipital){
+        const occ = m.regions.occipital.rate || 0;
+        const oe = document.getElementById('occ');
+        oe.textContent = occ.toFixed(3);
+        oe.style.background = occ>0.05 ? 'rgba(90,255,150,0.25)' : 'rgba(255,255,255,0.08)';
+      }
+    }catch(_){} };
+  }catch(_){ setTimeout(conectar,2000); }
+}
+conectar();
+
+// Loop de decisão: a cada 400ms manda visão+reward e recebe a ação
+setInterval(()=>{
+  if(!wsReady) return;
+  const grid = capturarVisao();
+  const reward = calcReward();
+  rewEl.textContent = somaRew.toFixed(2);
+  // DIAGNÓSTICO: luminância média da visão (0 = câmera vê preto; >0 = vê o quarto)
+  const lum = grid.reduce((a,b)=>a+b,0)/grid.length;
+  document.getElementById('lum').textContent = lum.toFixed(3);
+  try{ ws.send(JSON.stringify({ action:'env_step', reward, grid, done:false })); }catch(_){}
+}, 400);
+
+// ── Loop de render (o que VOCÊ vê) ──────────────────────────────────────
+function animate(){
+  requestAnimationFrame(animate);
+  atualizarDesafio();
+  for(const p of pecas){ if(!p.encaixada && carregando<0) p.mesh.rotation.y += 0.01; } // peças livres giram p/ chamar atenção
+  for(const bl of blocos){ if(!bl.empilhado && carregaBloco<0) bl.mesh.rotation.y += 0.012; } // blocos livres idem
+  atualizarCameras();
+  // sempre atualiza a mini-visão mesmo offline (pra você ver o "olho")
+  if(!wsReady) capturarVisao();
+  renderer.render(scene, modoFP ? camFP : camOBS);
+}
+animate();
+
+addEventListener('resize', ()=>{
+  camFP.aspect = camOBS.aspect = innerWidth/innerHeight;
+  camFP.updateProjectionMatrix(); camOBS.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

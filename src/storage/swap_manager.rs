@@ -411,17 +411,15 @@ impl SwapManager {
         precisao: PrecisionType,
         contexto: &str,
     ) -> Option<Uuid> {
-        // Verifica limite físico: 80% da RAM disponível para neurônios ativos
+        // Limite APENAS sobre neurônios ATIVOS na RAM — NÃO impede mais a criação.
+        // `max_ativos` só decide se o novo nasce na RAM ou já dormente no SSD (abaixo);
+        // a neurogênese é ilimitada e o swap (RAM↔SSD↔NVMe) controla a memória ativa.
         let max_ativos = (self.max_ram_neurons as f32 * RAM_PERCENT_FOR_NEURONS) as usize;
-        if self.ram.len() >= max_ativos {
-            println!("⚠️ Limite físico de RAM atingido ({} neurônios ativos).", self.ram.len());
-            return None;
-        }
 
-        // Verifica limite biológico (1,1% do cérebro humano)
-        let total_neurons = self.ram.len() + self.ssd.len();
+        // Salvaguarda de DISCO (não de RAM): teto físico final p/ não lotar o NVMe.
+        let total_neurons = self.ram.len() + self.ssd.len() + self.nvme_index.len();
         if total_neurons >= LIMITE_BIOLOGICO {
-            println!("⚠️ Limite biológico de neurônios atingido ({}).", LIMITE_BIOLOGICO);
+            println!("⚠️ Teto de disco atingido ({} neurônios). Neurônio descartado.", LIMITE_BIOLOGICO);
             return None;
         }
 

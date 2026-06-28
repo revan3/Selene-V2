@@ -177,17 +177,18 @@ impl ReinforcementLearning {
     pub fn update(
         &mut self,
         padrao_temporal: &[f32],
-        dopamina: f32,
+        reward_externo: f32,
         acao_frontal: f32,
         config: &Config,
     ) -> f32 {
         // Codifica o padrão de ativação como chave de estado compacta
         let estado_atual = Self::codificar_estado(padrao_temporal);
 
-        // Recompensa = quanto a dopamina atual difere da baseline esperada.
-        // Negativa se dopamina caiu → punição implícita.
-        // Positiva se dopamina subiu → recompensa implícita.
-        let recompensa = dopamina - BASELINE_DOPAMINA;
+        // Recompensa = sinal EXTERNO real (reward do jogo/feedback/toque), NÃO a própria
+        // dopamina. Usar a dopamina como recompensa cria auto-referência (dopa → RPE →
+        // +dopa) que satura nos tetos. Com reward externo: sem estímulo → RPE→0 → dopamina
+        // fica no nível tônico do neuro.update(); com reward → pico fásico que decai.
+        let recompensa = reward_externo;
 
         // ── Atualização TD-lambda ─────────────────────────────────────────────
         if let Some(estado_anterior) = self.ultimo_estado {

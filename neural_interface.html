@@ -2133,7 +2133,31 @@ function calcBands32(analyser, sampleRate) {
 }
 
 let audioCtx = null, analyserNode = null, lastBands = null;
-let lastTranscript = '';
+let lastTranscript = '', lastTranscriptTs = 0;
+// Transcript só "fresco" (≤2.5s após a fala). Sem isso, a câmera revincula a MESMA
+// frase a cada frame (5/s) pra sempre, saturando o grounding → loop de confusão.
+function transcriptFresco() {
+  return (Date.now() - lastTranscriptTs < 2500) ? lastTranscript : '';
+}
+
+// ── STREAM CONTÍNUO DE ÁUDIO (audição em tempo real) ────────────────────────
+// Envia as bandas FFT do mic a cada ~80ms, INDEPENDENTE do STT. A Selene passa a
+// OUVIR o som contínuo (recognition_layer dispara em tempo real); o texto do STT
+// (que vem quebrado) vira só rótulo semântico — não governa mais a audição.
+let audioStreamTimer = null;
+function startAudioStream() {
+  if (audioStreamTimer) return;
+  audioStreamTimer = setInterval(() => {
+    if (!analyserNode || state.ws?.readyState !== 1) return;
+    const bands = calcBands32(analyserNode, audioCtx.sampleRate);
+    const energia = bands.reduce((a, b) => a + b, 0) / bands.length;
+    if (energia > 0.01)  // só quando há som (poupa banda e evita ruído de silêncio)
+      state.ws.send(JSON.stringify({ action: 'audio_raw', bands, energia }));
+  }, 80);
+}
+function stopAudioStream() {
+  if (audioStreamTimer) { clearInterval(audioStreamTimer); audioStreamTimer = null; }
+}
 
 async function initAudioCapture() {
   if (audioCtx) return true;
@@ -2144,6 +2168,7 @@ async function initAudioCapture() {
     analyserNode = audioCtx.createAnalyser();
     analyserNode.fftSize = 256;
     source.connect(analyserNode);
+    startAudioStream();   // ← inicia a audição contínua (não depende do STT)
     return true;
   } catch { return false; }
 }
@@ -2218,7 +2243,7 @@ if (SR) {
     $mic.classList.remove('recording');
     const text = $input.value.trim();
     if (text && state.connected) {
-      lastTranscript = text;
+      lastTranscript = text; lastTranscriptTs = Date.now();
       setTimeout(() => {
         if (state.ambientOn) {
           // MODO AMBIENTE: avalia relevância antes de decidir
@@ -2361,7 +2386,7 @@ async function startCamera() {
       }
 
       if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
-      state.ws.send(JSON.stringify({ action: 'visual_learn', pixels, transcript: lastTranscript }));
+      state.ws.send(JSON.stringify({ action: 'visual_learn', pixels, transcript: transcriptFresco() }));
     }, 200);
     return true;
   } catch (e) { console.warn('[CAMERA]', e); return false; }
@@ -2381,6 +2406,7 @@ function stopCamera() {
 
 let _camStarting = false;
 document.getElementById('btn-vid').addEventListener('click', async () => {
+  if (_camStarting) return;          // ignora cliques enquanto a câmera inicia (anti-race)
   // Desligar sempre funciona, mesmo sem WebSocket
   if (state.camOn) {
     state.camOn = false;
@@ -2547,7 +2573,7 @@ async function startScreenShare() {
       for (let i = 0; i < imgData.length; i += 4) {
         pixels.push((0.299 * imgData[i] + 0.587 * imgData[i+1] + 0.114 * imgData[i+2]) / 255);
       }
-      state.ws.send(JSON.stringify({ action: 'visual_learn', pixels, transcript: lastTranscript }));
+      state.ws.send(JSON.stringify({ action: 'visual_learn', pixels, transcript: transcriptFresco() }));
     }, 200);
 
     // Loop áudio: captura frequências do áudio da tela
@@ -2559,9 +2585,9 @@ async function startScreenShare() {
       screenAnalyser.fftSize = 256;
       src.connect(screenAnalyser);
       screenAudioId = setInterval(() => {
-        if (!state.ws || state.ws.readyState !== WebSocket.OPEN || !lastTranscript) return;
+        if (!state.ws || state.ws.readyState !== WebSocket.OPEN || !transcriptFresco()) return;
         const bands = calcBands32(screenAnalyser, screenAudioCtx.sampleRate);
-        state.ws.send(JSON.stringify({ action: 'audio_learn', transcript: lastTranscript, bands }));
+        state.ws.send(JSON.stringify({ action: 'audio_learn', transcript: transcriptFresco(), bands }));
       }, 500);
     }
 

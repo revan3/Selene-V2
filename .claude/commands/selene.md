@@ -7,12 +7,43 @@ Você está trabalhando no projeto **Selene Brain 2.0** — uma IA com cérebro 
 3. **tokio::fs::write** para I/O assíncrono. `std::fs::write` bloqueia o executor Tokio.
 4. **Decaimento por `fator_boost()`**: todo `decay_rate` deve ser dividido por `config.fator_boost()` para escalar corretamente com o modo de operação.
 5. **cpal::Stream é !Send no Windows (WASAPI)**: nunca colocar `cpal::Stream` em structs que precisam ser `Send`. Usar thread `std` dedicado que owna a stream; comunicar via `SyncSender<Vec<f32>>`.
+6. **Sensor = STREAM contínuo, não snapshot**: áudio/visão devem alimentar a cochlea/occipital em fluxo (~80ms), não 1 foto por evento (ex: por frase do STT). Sem fluxo a `recognition_layer` não sustenta atividade → loop cai a 5Hz ocioso → nada consolida. O texto (STT) é só rótulo semântico; a percepção é o stream.
+7. **"ssd" do `swap_manager` É RAM** (`HashMap<Uuid, NeuronioHibrido>`), não disco. Mover `ram→ssd` libera ZERO memória do SO. Só `nvme_index` (UUID 16B + arquivo via `escrever_nvme`) libera RAM de verdade.
+8. **Gatilho de RAM mede o PROCESSO, não o sistema**: `sysinfo` Process (`get_current_pid`), não `available_memory()` — o file cache do Windows (inflado pelos próprios backups) poluía o `available` e causava loop eterno de sono.
+9. **MEDIR antes de tunar**: instrumente (DIAG: energia em cada estágio cochlea→stimulus→disparos) pra achar ONDE o sinal morre. Nunca chute ganho/threshold às cegas — o teste interno (rodar a Selene + cliente WS simulado) é viável e rápido.
+10. **Build = `release-lowmem`** (`cargo build --profile release-lowmem`, lto=false). `release-avell` (lto=fat) → OOM nesta máquina (20GB). O `cargo run --release` recompila o profile `release` (6min); rode o `.exe` direto ou copie o `release-lowmem`.
 
 ---
 
-## Estado atual — V4.6.1 (2026-06-13)
+## Estado atual — V4.6.2 (2026-06-26)
 
 Versões mais recentes:
+- **V4.6.2** — Embodiment (Webots) + AUDIÇÃO REAL + RAM robusta + paralelismo:
+  - **Corpo físico no Webots** (`webots/`): bebê URDF vê 2 olhos (estéreo) + sente 23
+    juntas (propriocepção) + tato; física estável. Motor babbling + curiosidade
+    (`motor_babbling.rs` = forward model linear, erro de predição = recompensa
+    intrínseca). Pipeline `gerar_corpos.py`: `.glb` Meshy → Blender
+    `converter_urdf.py` → urdf2webots → `pos_proto.py`. Eixo de junta = DOBRADIÇA
+    real (normal do plano pai×filho), limites anatômicos por nome de osso, decimação
+    de malha, colisor caixa, olhos via bone `headfront`. 4 corpos por idade (Fase C).
+  - **AUDIÇÃO REAL** (ver [[project_audicao_real]]): o áudio WS (`audio_learn`/
+    `audio_raw`) só populava vocab — NÃO disparava neurônios (0 disparos, loop preso
+    em 5Hz, 67% travado). Fix em 3 camadas: (1) handlers setam
+    `BrainState.audio_ws_bandas`; (2) `raw_cochlea` (main.rs) PRIORIZA o WS sobre o
+    silêncio CONTÍNUO do mic (`run_silencio_com_flag`) e NORMALIZA pra pico-alvo (fala
+    real chega fraca, ~0.05); (3) ganho temporal subiu. Interface: `startAudioStream()`
+    manda `audio_raw` a 80ms (stream contínuo, independente do STT/texto quebrado).
+  - **RAM robusta** (ver [[project_ram_eviction_diagnosis]]): flush do sono drena
+    `ssd→DISCO` (era `ram→ssd`, ambos RAM → libera ZERO → loop eterno de sono).
+    Criação de neurônios ILIMITADA (cap só nos ATIVOS via swap). Gatilho de sono mede
+    o PROCESSO da Selene (não o sistema — file cache do Windows poluía). Backup
+    completo só no sono por TEMPO. Cooldown anti-loop (`proximo_sono_ram_step`).
+  - **Paralelismo (B)**: `gerar_resposta_emergente` (server.rs) roda com o lock SOLTO
+    (clona o estado que lê + `drop(state)` + re-lock) → a Selene ouve/processa
+    ENQUANTO responde (antes o loop 200Hz congelava durante a fala).
+  - **Neuroquímica** (ver [[project_neurochem_loop_fix]]): RL usa reward EXTERNO (não
+    a dopamina) — quebra o self-loop dopa→RPE→dopa que travava nos extremos. Cortisol
+    relaxa para o baseline (não sobrescreve).
 - **V4.6.1** — Corpo digital + leitura + visualização + 23/23 tipos conectados:
   - Segurança: bind `127.0.0.1` padrão, `SELENE_TOKEN`, `SELENE_LAN`; build
     `release-avell` (znver4) + `hardware_profile.rs` (`SELENE_HW`); swap path
@@ -100,8 +131,11 @@ Versões mais recentes:
 - HelixStore O(n) → HNSW quando vocab > 10.000
 - Núcleos neuromoduladores reais: Raphe (5-HT), LC (NA), VTA (DA) como módulos próprios
 - Theory of Mind básico (`src/learning/tom.rs`)
-- Whisper ASR para validação de produção (audio.rs TODO)
 - Busca externa via WS para `GapConhecimento` (hypothesis.rs)
+- Áudio: calibrar ganho/normalização com FALA REAL; remover `🔊 [DIAG]` quando validado
+- Embodiment: Fase B.3 (controle com objetivo via modelo inverso); sistema vestibular
+  (Gyro/InertialUnit p/ equilíbrio); replicar eixos anatômicos aos 4 corpos
+- Skill "desktop VR": stream contínuo da tela → occipital (reusa env_step + visao_jogo)
 
 ---
 
@@ -126,7 +160,9 @@ Versões mais recentes:
 | `src/learning/active_context.rs` | ActiveContext lock-free (Arc, AtomicU64) |
 | `src/learning/inter_lobe.rs` | InterlLobeCurrents — comunicação entre regiões |
 | `src/learning/chunking.rs` (20.1K) | Detecção de chunks via co-ativação STDP |
-| `src/sensors/audio.rs` | FFT coclear → SpikePattern; mic nativo cpal input |
+| `src/sensors/audio.rs` | FFT coclear → SpikePattern; mic nativo cpal input. ⚠️ `run_silencio_com_flag` manda silêncio CONTÍNUO no `rx_audio` (por isso `raw_cochlea` prioriza o WS) |
+| `src/motor_babbling.rs` | Fase B.2: controle motor das juntas (Webots). Forward model linear + curiosidade (erro de predição). Campo `BrainState.motor_babbling` |
+| `webots/` (Python) | `gerar_corpos.py` (orquestra), `converter_urdf.py` (Blender: .glb→URDF, segmenta por osso, eixo=dobradiça pai×filho, limites anatômicos), `pos_proto.py` (paths+olhos+física), `bones_dump.py` (diag de orientação dos ossos), controller `selene_nao/selene_nao.py` |
 | `src/brain_zones/occipital.rs` | V1→V2 visual → SpikePattern |
 | `src/brain_zones/frontal.rs` (18.4K) | PFC: WM (4±1 chunks), Episodic Buffer, Goal queue |
 | `src/brain_zones/amygdala.rs` | BLA+CeA: fear signal, oxytocin gate, extinção |
@@ -157,14 +193,21 @@ Versões mais recentes:
 ## Arquitetura de áudio (nativa)
 
 ```
-INPUT:  OS mic → cpal (audio.rs) → AudioSignal → rx_audio → main.rs → aprender_conceito()
-        Interface: {"action":"start_mic"} / {"action":"stop_mic"}
-        Fallback mobile: {"action":"audio_raw", "bands":[...32 floats...]}
+INPUT (mic nativo): OS mic → cpal (audio.rs) → AudioSignal → rx_audio → main.rs
+INPUT (WS, PRINCIPAL): interface STT/mic → audio_raw|audio_learn {bands,transcript}
+        → handler seta BrainState.audio_ws_bandas → raw_cochlea (main.rs) PRIORIZA o WS
+        (mic manda silêncio contínuo) + NORMALIZA pico → cochlea_input → temporal.process
+        → recognition_layer DISPARA → atividade → loop acelera (5→200Hz) → consolida.
+        ⚠️ Sem isso o áudio só ia pro vocab (0 disparos). audio_learn = som+texto
+        (vínculo semântico); audio_raw = stream contínuo 80ms (audição bruta).
 
 OUTPUT: chat handler → lookup audio_frames → sintetizar_neural() OU sintetizar() (Klatt)
                      → AudioOutput.enqueue() → cpal thread → speaker
         Porta mobile: voz_params JSON via WS (síntese no browser)
 ```
+
+Telemetria/debug: `🔊 [DIAG]` (temporário em main.rs, a cada 500 ticks) mostra
+`cochlea_pico / ticks_audio / tstim_pico / ganho / disparos` — usar pra calibrar o áudio.
 
 ---
 
@@ -204,6 +247,11 @@ Handlers WS: `reset_memory`, `set_stage`, `ontogeny_status`.
 | `acc_conflict` | `f32` | Conflito cingulado → walk mais cauteloso |
 | `ofc_value_bias` | `f32` | Valência contextual OFC [-1, 1] |
 | `neural_pool` | `NeuralPool` | 4096 blocos u32 — localist coding V3.2 |
+| `audio_ws_bandas` | `Option<Vec<f32>>` | Bandas do último áudio WS — `raw_cochlea` consome (take) p/ alimentar a cochlea (V4.6.2) |
+| `visao_jogo` | `Vec<f32>` | Grid visual do Webots/jogo (env_step) → occipital |
+| `touch_pendente` | `Option<(f32, String)>` | Toque do corpo (intensidade, tipo) → interocepção |
+| `propriocepcao` | `Vec<f32>` | Ângulo das juntas do corpo (Webots) |
+| `motor_babbling` | `MotorBabbling` | Forward model + curiosidade p/ controle motor (Fase B.2) |
 
 ---
 
@@ -271,6 +319,10 @@ Campos novos adicionados em V3.5 (além dos existentes):
 | **Interocepção→binding AV (insula gate)** | ✅ V4.2 |
 | **Curriculo fonético PT-BR completo (Fase 1-11)** | ✅ V4.2 |
 | BDNF/BCM/Adenosina-D2/Oxitocina-BLA/WM/Episodic/Prospectiva | ✅ V3.5 |
+| **Audição real (WS→cochlea→recognition_layer dispara)** | ✅ V4.6.2 (calibrando ganho/normalização c/ fala real) |
+| **Corpo embodied no Webots (vê 2 olhos / sente 23 juntas / motor babbling)** | ✅ V4.6.2 |
+| **RAM robusta (flush→disco, gatilho por processo, criação ilimitada, backup só por tempo)** | ✅ V4.6.2 |
+| **Paralelismo: ouvir+processar ENQUANTO responde (lock solto na geração)** | ✅ V4.6.2 |
 | Fase 3 (brain_zones V3, HNSW, ToM) | ⏳ pendente |
 
 ---
@@ -278,7 +330,8 @@ Campos novos adicionados em V3.5 (além dos existentes):
 ## Ao receber uma tarefa
 
 1. Se envolve novo arquivo ou área desconhecida: use o agente Explore antes de editar
-2. Sempre `cargo check --release` após modificações em Rust
+2. Após editar Rust: `cargo check --bin selene_brain`; build = `cargo build --profile release-lowmem` (release-avell=lto fat → OOM). Copiar o `.exe` p/ `target/release/` só com a Selene PARADA (senão "Device busy")
 3. Commit apenas quando solicitado explicitamente
 4. Nunca adicionar tratamento de erro para cenários impossíveis internamente
 5. Consultar memória em `C:\Users\alx_r\.claude\projects\f--Selene-brain-2-0\memory\MEMORY.md` quando relevante
+6. Mexer no cérebro com a Selene aprendendo a alta RAM: MEDIR antes de tunar (ver princípio 9). Pode-se TESTAR INTERNAMENTE — rodar a Selene em background + cliente WS que simula sensor (ex `scratchpad/inj_audio.py`)

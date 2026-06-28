@@ -1,4 +1,0 @@
-Selene Brain 2.0 — Backup
-Timestamp: 20260615_014055
-Fonte: selene_memories.db
-Destino: \\?\F:\Selene_brain_2.0\selene_backup\backup_20260615_014055

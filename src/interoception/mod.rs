@@ -50,35 +50,49 @@ impl Interoception {
         self.toque_tipo = tipo;
     }
 
+    /// Converte rótulo textual ("carinho"/"beliscao"/"neutro") em TipoToque.
+    pub fn tipo_de_str(s: &str) -> TipoToque {
+        match s {
+            "carinho"  => TipoToque::Carinho,
+            "beliscao" => TipoToque::Beliscao,
+            _          => TipoToque::Neutro,
+        }
+    }
+
     /// Efeito neuromodulador do toque no tick atual.
-    /// Retorna (delta_dopamina, delta_serotonina, delta_noradrenalina, delta_cortisol).
+    /// Retorna (d_dopamina, d_serotonina, d_noradrenalina, d_cortisol, d_oxitocina).
     /// O sinal decai a cada chamada (meia-vida ~100 ticks = 0.5s @ 200Hz).
-    pub fn efeito_toque(&mut self) -> (f32, f32, f32, f32) {
+    /// Carinho libera OXITOCINA (toque social aferente C → vínculo, Uvnäs-Moberg).
+    pub fn efeito_toque(&mut self) -> (f32, f32, f32, f32, f32) {
         if self.toque_intensidade < 0.01 {
-            return (0.0, 0.0, 0.0, 0.0);
+            return (0.0, 0.0, 0.0, 0.0, 0.0);
         }
         let i = self.toque_intensidade;
-        self.toque_intensidade *= 0.993;
-        if self.toque_intensidade < 0.005 {
-            self.toque_intensidade = 0.0;
-            self.toque_tipo = TipoToque::Neutro;
-        }
-        match self.toque_tipo {
+        // IMPULSO ÚNICO: consome o toque agora. Antes o efeito era somado a CADA tick
+        // enquanto o toque decaía (~100 ticks) → integrava em ~25 e saturava a
+        // neuroquímica de imediato. Agora 1 toque = 1 impulso; a neuroquímica decai
+        // no próprio ritmo (o carinho deixa efeito duradouro, sem saturar na hora).
+        let tipo = self.toque_tipo.clone();
+        self.toque_intensidade = 0.0;
+        self.toque_tipo = TipoToque::Neutro;
+        match tipo {
             TipoToque::Carinho => {
                 let da  =  i * 0.15;
                 let ser =  i * 0.12;
                 let na  = -i * 0.04;
                 let cor = -i * 0.06;
-                (da, ser, na, cor)
+                let oxt =  i * 0.20;   // carinho → oxitocina (vínculo social)
+                (da, ser, na, cor, oxt)
             }
             TipoToque::Beliscao => {
                 let da  = -i * 0.10;
                 let ser = -i * 0.08;
                 let na  =  i * 0.20;
                 let cor =  i * 0.15;
-                (da, ser, na, cor)
+                let oxt = -i * 0.04;   // dor reduz levemente o vínculo
+                (da, ser, na, cor, oxt)
             }
-            TipoToque::Neutro => (0.0, 0.0, 0.0, 0.0),
+            TipoToque::Neutro => (0.0, 0.0, 0.0, 0.0, 0.0),
         }
     }
 

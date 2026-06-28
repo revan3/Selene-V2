@@ -275,9 +275,22 @@ impl CicloSono {
         // REM semântico: replay episódico + atalhos no grafo de palavras
         if let Some(bs_arc) = &self.brain_state {
             if let Ok(mut bs) = bs_arc.try_lock() {
-                let (novas, relato) = bs.rem_semantico();
-                if novas > 0 { println!("   🧠 REM semântico: {} novas sinapses", novas); }
-                if let Some(r) = relato { println!("   💭 Sonho: {}", r); }
+                // Replay REPETIDO (V4.6.2): o REM reproduz as memórias do dia várias
+                // vezes — é a repetição que consolida. Antes era 1 passada só (consolidação
+                // "instantânea"). Agora N ciclos de rem_semantico no mesmo sono.
+                const N_CICLOS_REM: usize = 6;
+                let mut total_novas = 0usize;
+                let mut primeiro_relato = None;
+                for _ in 0..N_CICLOS_REM {
+                    let (novas, relato) = bs.rem_semantico();
+                    total_novas += novas;
+                    if primeiro_relato.is_none() { primeiro_relato = relato; }
+                }
+                if total_novas > 0 {
+                    println!("   🧠 REM semântico: {} novas sinapses em {} ciclos de replay",
+                        total_novas, N_CICLOS_REM);
+                }
+                if let Some(r) = primeiro_relato { println!("   💭 Sonho: {}", r); }
 
                 // P4.1 — Replay reverso: reforça caminhos causais de trás para frente.
                 // Biologicamente: hippocampus replay é tanto forward quanto reverse.
@@ -379,7 +392,7 @@ impl CicloSono {
     // ================================================================
     // LOOP PRINCIPAL DO SONO
     // ================================================================
-    pub async fn dormir(&mut self, memoria: &mut MemoryTier, config: &Config) {
+    pub async fn dormir(&mut self, memoria: &mut MemoryTier, config: &Config, fazer_backup: bool) {
         println!("\n{}", "=".repeat(60));
         println!("💤 SELENE INICIANDO CICLO DE SONO");
         println!("{}", "=".repeat(60));
@@ -387,7 +400,13 @@ impl CicloSono {
         self.fase_n1(memoria).await;
         self.fase_n2().await;
         self.fase_n3().await;
-        self.fase_n4().await;
+        // Backup completo (I/O pesado) só quando solicitado — pulado no sono por RAM
+        // pra não alimentar a espiral I/O → file cache → mais pressão de RAM → mais sono.
+        if fazer_backup {
+            self.fase_n4().await;
+        } else {
+            println!("\n💾 FASE 4: backup pulado (sono por RAM — evita espiral de I/O)");
+        }
 
         println!("\n{}", "=".repeat(60));
         println!("🔆 SELENE DESPERTOU!");

@@ -766,6 +766,12 @@ fn fase_n2_podar(state: &mut crate::websocket::bridge::BrainState) {
 }
 
 /// N3 — REM: replay hipocampal + fechamento transitivo via swap_manager.
+/// Sono FORÇADO ativo (via force_sleep / treinador). Quando true, o state machine
+/// de sono por horário NÃO desperta a Selene — o force_sleep tem precedência.
+/// Sem isto, fora da madrugada (hora ≥ 5) o force_sleep era cancelado no mesmo tick,
+/// abortando todo o REM (consolidação "instantânea" que o usuário observou).
+static SONO_FORCADO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn fase_n3_rem(state: &mut crate::websocket::bridge::BrainState) {
     // Tenta o REM semântico completo (replay episódico + atalhos + STDP)
     let (_novas, relato) = state.rem_semantico();
@@ -1040,8 +1046,9 @@ pub async fn handle_connection(
                     let _ = sleep_tx_task.send(ev);
                 }
 
-            } else if !deve_dormir && state.dormindo {
-                // ── Despertar natural às 05:00 ──────────────────────────────
+            } else if !deve_dormir && state.dormindo
+                && !SONO_FORCADO.load(std::sync::atomic::Ordering::Relaxed) {
+                // ── Despertar natural às 05:00 (só se NÃO for sono forçado) ─────
                 state.dormindo = false;
                 state.fase_sono = String::new();
                 state.aresta_contagem.clear();
@@ -1275,6 +1282,9 @@ pub async fn handle_connection(
                                     let duration_min = json["duration_min"].as_u64()
                                         .unwrap_or(30)
                                         .min(1440); // Max 24 hours
+                                    // Marca sono forçado ANTES de dormir → o state machine de
+                                    // horário não cancela este sono (precedência do force_sleep).
+                                    SONO_FORCADO.store(true, std::sync::atomic::Ordering::Relaxed);
                                     {
                                         let mut st = brain.lock().await;
                                         if !st.dormindo {
@@ -1291,13 +1301,31 @@ pub async fn handle_connection(
                                     let _ = sleep_tx.send(ev.clone());
                                     let _ = ws_tx.send(Message::text(ev)).await;
 
-                                    // Agenda despertar automático
+                                    // Replay REM ATIVO durante o sono (V4.6.2): antes o sono só
+                                    // esperava o timer (1 consolidação N1 e nada mais). Agora executa
+                                    // ciclos de fase_n3_rem a cada INTERVALO_REM_S — é a REPETIÇÃO do
+                                    // replay que consolida a memória (como o REM biológico). Nº de
+                                    // ciclos ∝ duração: duration_min de sono ≈ 6·duration_min replays.
                                     let brain_wake = brain.clone();
                                     let sleep_tx_wake = sleep_tx.clone();
                                     tokio::spawn(async move {
-                                        tokio::time::sleep(
-                                            tokio::time::Duration::from_secs(duration_min * 60)
-                                        ).await;
+                                        const INTERVALO_REM_S: u64 = 10;
+                                        let n_ciclos = ((duration_min * 60) / INTERVALO_REM_S).max(1);
+                                        let mut ciclos_feitos = 0u64;
+                                        for _ in 0..n_ciclos {
+                                            tokio::time::sleep(
+                                                tokio::time::Duration::from_secs(INTERVALO_REM_S)
+                                            ).await;
+                                            // try_lock: não bloqueia o loop neural 200Hz. Pula o ciclo
+                                            // se o lock estiver ocupado (tenta de novo no próximo).
+                                            if let Ok(mut st) = brain_wake.try_lock() {
+                                                if !st.dormindo { break; } // acordou por outro caminho
+                                                fase_n3_rem(&mut st);
+                                                ciclos_feitos += 1;
+                                            }
+                                        }
+                                        // Despertar — libera a precedência do sono forçado.
+                                        SONO_FORCADO.store(false, std::sync::atomic::Ordering::Relaxed);
                                         let mut st = brain_wake.lock().await;
                                         if st.dormindo {
                                             st.dormindo = false;
@@ -1306,7 +1334,8 @@ pub async fn handle_connection(
                                             let wake_ev = serde_json::json!({
                                                 "event": "despertar",
                                             }).to_string();
-                                            println!("🔆 [SONO] Despertar após {} min.", duration_min);
+                                            println!("🔆 [SONO] Despertar após {} min — {} ciclos de replay REM.",
+                                                duration_min, ciclos_feitos);
                                             let _ = sleep_tx_wake.send(wake_ev);
                                         }
                                     });
@@ -1900,24 +1929,39 @@ pub async fn handle_connection(
                                         let emap_chat = ids_to_str_map(&state.emocao_palavras, &id_to_word_chat);
                                         let gmap_chat = ids_to_str_map(&state.grounding, &id_to_word_chat);
                                         let qmap_chat = ids_to_str_map(&state.palavra_qvalores, &id_to_word_chat);
+                                        // ── B (paralelismo): clona o que a geração LÊ e SOLTA o lock
+                                        // do cérebro ANTES de gerar. Assim o loop neural (200Hz) e o
+                                        // áudio seguem rodando ENQUANTO ela "fala" — ouvir e responder
+                                        // deixam de ser serializados. A geração só lê (args &), então o
+                                        // snapshot é seguro. (Se a fala ficar muito frequente e estes
+                                        // clones pesarem, migrar estes campos p/ Arc.)
+                                        let frases_padrao_s = state.frases_padrao.clone();
+                                        let indice_prefixo_s = state.indice_prefixo.clone();
+                                        let ultimos_prefixos_s: Vec<Vec<String>> =
+                                            state.ultimos_prefixos.iter().cloned().collect();
+                                        let trigrama_cache_s = state.trigrama_cache.clone();
+                                        let ultimo_estado_corpo_s = state.ultimo_estado_corpo;
+                                        let ctx_gen = {
+                                            let mut ctx = ctx_para_log.clone();
+                                            if state.pensamento_step % 7 == 0 {
+                                                if let Some(w) = state.pensamento_inconsciente.front() {
+                                                    ctx.push(w.clone());
+                                                }
+                                            }
+                                            ctx
+                                        };
+                                        drop(state); // ← libera o cérebro durante a geração (B)
+
                                         let reply = gerar_resposta_emergente(
                                             &mensagem, diversity_seed, emocao_resposta,
                                             emocao_bias, n_passos,
                                             dopa, sero,
                                             &valencias_neural,
                                             &grafo_neural,
-                                            &state.frases_padrao,
-                                            &state.indice_prefixo,
-                                            &state.ultimos_prefixos.iter().cloned().collect::<Vec<_>>(),
-                                            &{
-                                                let mut ctx = ctx_para_log.clone();
-                                                if state.pensamento_step % 7 == 0 {
-                                                    if let Some(w) = state.pensamento_inconsciente.front() {
-                                                        ctx.push(w.clone());
-                                                    }
-                                                }
-                                                ctx
-                                            },
+                                            &frases_padrao_s,
+                                            &indice_prefixo_s,
+                                            &ultimos_prefixos_s,
+                                            &ctx_gen,
                                             &mut caminho_local,
                                             &emap_chat,
                                             &mut prefixo_buf,
@@ -1925,13 +1969,18 @@ pub async fn handle_connection(
                                             &causal_vazio_chat,
                                             &qmap_chat,
                                             &mut ancora_log,
-                                            &state.ultimo_estado_corpo,
+                                            &ultimo_estado_corpo_s,
                                             &scaffold_chat,
-                                            &state.trigrama_cache,
+                                            &trigrama_cache_s,
                                             Some(&v34_active_ctx),
                                             &v34_lateral_words,
                                             Some(&v34_abort_flag),
                                         );
+
+                                        // Re-lockeia o cérebro pro pós-processamento (interrupt, log,
+                                        // template feedback). O estado pode ter avançado durante a
+                                        // geração — ok, são operações independentes.
+                                        let mut state = brain.lock().await;
 
                                         // V3.4 Fase E: se ForceInterrupt foi disparado durante o
                                         // walk, sinaliza ao cliente e zera o flag para o próximo chat.
@@ -2541,6 +2590,9 @@ pub async fn handle_connection(
                                     if !transcript.is_empty() && bands.len() >= 16 {
                                         let audio_pat = bands_to_spike_pattern(&bands);
                                         let mut state = brain.lock().await;
+                                        // Alimenta a cochlea no loop neural → a recognition_layer
+                                        // DISPARA (antes o áudio WS só ia pro vocab, sem atividade).
+                                        state.audio_ws_bandas = Some(bands.clone());
 
                                         // Tokeniza o transcript
                                         let palavras: Vec<String> = transcript
@@ -2644,6 +2696,9 @@ pub async fn handle_connection(
 
                                     if bands.len() >= 16 {
                                         let mut state = brain.lock().await;
+                                        // Stream contínuo → alimenta a cochlea: a recognition_layer
+                                        // dispara em TEMPO REAL, independente do STT/texto quebrado.
+                                        state.audio_ws_bandas = Some(bands.clone());
 
                                         // Usa acumulador SEPARADO do WebSocket (não contamina o microfone físico)
                                         let palavra_completa = state.audio_acumulador_ws
@@ -2774,6 +2829,10 @@ pub async fn handle_connection(
                                     let grid: Vec<f32> = json["grid"].as_array()
                                         .map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect())
                                         .unwrap_or_default();
+                                    // Propriocepção (Fase A): ângulo de cada junta do corpo (Webots).
+                                    let joints: Vec<f32> = json["joints"].as_array()
+                                        .map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect())
+                                        .unwrap_or_default();
 
                                     // Hash de estado (observação quantizada) — bootstrap até a
                                     // seleção emergir do gânglio basal sobre o frame do occipital.
@@ -2786,22 +2845,30 @@ pub async fn handle_connection(
                                         h
                                     };
 
-                                    let tecla = {
+                                    let resposta = {
                                         let mut state = brain.lock().await;
-                                        // 1. Aprende com a recompensa do passo anterior (ator Q-learning).
-                                        state.motor_cortex.aprender(estado, reward);
-                                        // 2. Injeta a recompensa no sistema dopaminérgico (crítico/STDP).
+                                        // Recompensa externa → dopamina/crítico (STDP) e visão → occipital.
                                         state.recompensa_pendente += reward;
-                                        if done { state.motor_cortex.fim_episodio(); }
-                                        // 3. Seleciona a próxima ação.
-                                        state.motor_cortex.selecionar(estado).tecla()
-                                    };
+                                        state.visao_jogo = grid;
 
-                                    let resp = serde_json::json!({
-                                        "type": "motor_action",
-                                        "key": tecla,
-                                    }).to_string();
-                                    let _ = ws_tx.send(Message::text(resp)).await;
+                                        if !joints.is_empty() {
+                                            // ── FASE B: controle motor CONTÍNUO do corpo (Webots) ──
+                                            // Aprende o modelo do corpo; o erro de predição é a
+                                            // CURIOSIDADE → recompensa intrínseca (explorar o corpo).
+                                            let curiosidade = state.motor_babbling.aprender(&joints);
+                                            state.recompensa_pendente += curiosidade.min(0.5);
+                                            state.propriocepcao = joints;
+                                            let comandos = state.motor_babbling.gerar_comando();
+                                            serde_json::json!({ "type": "motor_joints", "comandos": comandos, "curiosidade": curiosidade })
+                                        } else {
+                                            // ── jogos: ator discreto (4 teclas, Q-learning) ──
+                                            state.motor_cortex.aprender(estado, reward);
+                                            if done { state.motor_cortex.fim_episodio(); }
+                                            let tecla = state.motor_cortex.selecionar(estado).tecla();
+                                            serde_json::json!({ "type": "motor_action", "key": tecla })
+                                        }
+                                    };
+                                    let _ = ws_tx.send(Message::text(resposta.to_string())).await;
                                 }
 
                                 // ── INGEST_CLEAR: cancela a leitura em curso ──────────────────────────────
@@ -3986,17 +4053,23 @@ pub async fn handle_connection(
                                     // até termos touch_pendente no BrainState.
                                     // Por agora: carinho → recompensa_pendente positiva,
                                     //            beliscao → recompensa_pendente negativa.
+                                    // Recompensa MENOR (0.2): o efeito neuroquímico forte do toque já
+                                    // vem do efeito_toque() no loop. Aqui é só o sinal de reward p/ o RL
+                                    // (carinho=bom / beliscão=ruim), sem dose dupla que saturava a dopamina.
                                     match tipo_str {
                                         "carinho" => {
-                                            state.recompensa_pendente += intensity * 0.5;
+                                            state.recompensa_pendente += intensity * 0.2;
                                             state.emocao_bias = (state.emocao_bias + intensity * 0.3).clamp(-1.0, 1.0);
                                         }
                                         "beliscao" => {
-                                            state.recompensa_pendente -= intensity * 0.5;
+                                            state.recompensa_pendente -= intensity * 0.2;
                                             state.emocao_bias = (state.emocao_bias - intensity * 0.4).clamp(-1.0, 1.0);
                                         }
                                         _ => {}
                                     }
+                                    // Ponte real → interoception (Fase A): o loop neural consome
+                                    // touch_pendente e aplica o efeito completo (incl. OXITOCINA no carinho).
+                                    state.touch_pendente = Some((intensity, tipo_str.to_string()));
                                     // Injeta no neural_context — a Selene "pensa" sobre o toque
                                     let palavra_toque = match tipo_str {
                                         "carinho"  => "carinho",
