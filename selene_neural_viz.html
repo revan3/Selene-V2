@@ -144,7 +144,8 @@ só conta spikes/região + 11 escalares.</div>
   <canvas id="raster-canvas"></canvas>
 </div>
 
-<div class="hud" id="hint">arraste · pinça para zoom · [T] cor por tipo ↔ hierarquia · raster = eixo do tempo</div>
+<div class="hud" id="hint">arraste · pinça para zoom · [T] cor (zona↔tipo↔nível) · raster = eixo do tempo</div>
+<button id="toggle-view" style="position:fixed;top:14px;right:14px;z-index:30;padding:9px 15px;border-radius:9px;border:1px solid rgba(120,180,255,0.45);background:rgba(18,28,48,0.82);color:#d4e4ff;font:600 12px system-ui,sans-serif;cursor:pointer;backdrop-filter:blur(5px);box-shadow:0 2px 12px rgba(0,0,0,0.4)">⊕ Expandir rotas</button>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
@@ -153,20 +154,23 @@ só conta spikes/região + 11 escalares.</div>
 // ── 14 regiões reais da Selene V4.5 ────────────────────────────────────
 // level = hierarquia cortical dominante C0..C4 (cor); pos = layout anatômico
 const REGIONS = [
-  { id:'occipital',  name:'Occipital (V1→V2)',   level:0, pos:[ 0.0,  0.1, -2.4], r:0.60, n:240, baseRate:12, types:'RS·RZ·LT' },
-  { id:'temporal',   name:'Temporal (audit/sem)', level:1, pos:[-2.1,  0.0,  0.4], r:0.58, n:220, baseRate:11, types:'RS·CH·FS·MirrorCell' },
-  { id:'parietal',   name:'Parietal (atenção)',   level:1, pos:[ 0.3,  1.0, -0.9], r:0.56, n:200, baseRate:10, types:'RS·FS·LT·PV·SST·VIP·DA_N·NGF·ChIN' },
-  { id:'linguagem',  name:'Linguagem (Bro/Wer)',  level:2, pos:[-1.7,  0.5,  1.4], r:0.50, n:180, baseRate:9,  types:'RS·CH·FS·PV·SST·VIP·DA_N·NGF·ChIN' },
-  { id:'hipocampo',  name:'Hipocampo (CA1/CA3)',  level:2, pos:[ 1.5, -0.5, -0.7], r:0.50, n:180, baseRate:7,  types:'RS·CH·LT·GridCell' },
-  { id:'cerebelo',   name:'Cerebelo (erro temp)', level:1, pos:[ 0.2, -1.5, -1.7], r:0.52, n:190, baseRate:9,  types:'RS·FS·RZ·PV·SST·VIP·DA_N·NGF·ChIN' },
-  { id:'limbico',    name:'Límbico (valência)',   level:2, pos:[-0.9, -0.7, -0.3], r:0.44, n:150, baseRate:6,  types:'RS·FS·IB' },
-  { id:'amigdala',   name:'Amígdala (BLA/CeA)',   level:2, pos:[-1.3, -0.9,  0.2], r:0.36, n:120, baseRate:5,  types:'BLA·CeA' },
-  { id:'acc',        name:'ACC (conflito/dor)',   level:3, pos:[-0.4,  1.3,  1.1], r:0.42, n:150, baseRate:8,  types:'IB·RS' },
-  { id:'ofc',        name:'OFC (valor/reversal)', level:3, pos:[ 0.5,  1.1,  1.7], r:0.44, n:160, baseRate:8,  types:'RS·IB' },
-  { id:'espelho',    name:'Esp. Espelho (empat.)',level:3, pos:[ 1.9,  0.4,  0.7], r:0.42, n:150, baseRate:7,  types:'RS·IB' },
-  { id:'frontal',    name:'Frontal (WM/plano)',   level:4, pos:[ 0.2,  1.5,  2.2], r:0.66, n:260, baseRate:9,  types:'RS·IB·FS·Hybrid' },
-  { id:'depthstack', name:'DepthStack (metacog.)',level:4, pos:[ 0.0,  2.1,  0.9], r:0.40, n:130, baseRate:6,  types:'—' },
-  { id:'corpo_caloso',name:'Corpo Caloso (inter)',level:2, pos:[ 0.0,  0.2,  0.0], r:0.34, n:110, baseRate:8,  types:'RS·CH' },
+  // pos = layout ANATÔMICO (Three.js: +z=frente do cérebro, +y=topo, x=laterais).
+  // Forma um elipsoide cerebral: frontal→occipital em z, parietal no topo,
+  // temporal/linguagem nas laterais-baixas, cerebelo atrás-embaixo, límbico no centro.
+  { id:'frontal',    name:'Frontal (WM/plano)',   level:4, pos:[ 0.0,  0.6,  2.0], r:0.66, n:260, baseRate:9,  types:'RS·IB·FS·Hybrid' },
+  { id:'ofc',        name:'OFC (valor/reversal)', level:3, pos:[ 0.0, -0.4,  1.7], r:0.44, n:160, baseRate:8,  types:'RS·IB' },
+  { id:'depthstack', name:'DepthStack (metacog.)',level:4, pos:[ 0.0,  1.4,  1.2], r:0.40, n:130, baseRate:6,  types:'—' },
+  { id:'acc',        name:'ACC (conflito/dor)',   level:3, pos:[ 0.0,  0.4,  0.8], r:0.42, n:150, baseRate:8,  types:'IB·RS' },
+  { id:'linguagem',  name:'Linguagem (Bro/Wer)',  level:2, pos:[-1.4,  0.0,  0.8], r:0.50, n:180, baseRate:9,  types:'RS·CH·FS·PV·SST·VIP·DA_N·NGF·ChIN' },
+  { id:'espelho',    name:'Esp. Espelho (empat.)',level:3, pos:[ 1.4,  0.3,  0.4], r:0.42, n:150, baseRate:7,  types:'RS·IB' },
+  { id:'parietal',   name:'Parietal (atenção)',   level:1, pos:[ 0.0,  1.4, -0.4], r:0.56, n:200, baseRate:10, types:'RS·FS·LT·PV·SST·VIP·DA_N·NGF·ChIN' },
+  { id:'occipital',  name:'Occipital (V1→V2)',   level:0, pos:[ 0.0,  0.5, -2.0], r:0.60, n:240, baseRate:12, types:'RS·RZ·LT' },
+  { id:'temporal',   name:'Temporal (audit/sem)', level:1, pos:[-1.6, -0.5,  0.0], r:0.58, n:220, baseRate:11, types:'RS·CH·FS·MirrorCell' },
+  { id:'hipocampo',  name:'Hipocampo (CA1/CA3)',  level:2, pos:[ 0.6, -0.5, -0.4], r:0.50, n:180, baseRate:7,  types:'RS·CH·LT·GridCell' },
+  { id:'limbico',    name:'Límbico (valência)',   level:2, pos:[-0.4, -0.2,  0.2], r:0.44, n:150, baseRate:6,  types:'RS·FS·IB' },
+  { id:'amigdala',   name:'Amígdala (BLA/CeA)',   level:2, pos:[-0.8, -0.6,  0.5], r:0.36, n:120, baseRate:5,  types:'BLA·CeA' },
+  { id:'cerebelo',   name:'Cerebelo (erro temp)', level:1, pos:[ 0.0, -1.4, -1.6], r:0.52, n:190, baseRate:9,  types:'RS·FS·RZ·PV·SST·VIP·DA_N·NGF·ChIN' },
+  { id:'corpo_caloso',name:'Corpo Caloso (inter)',level:2, pos:[ 0.0,  0.1,  0.0], r:0.34, n:110, baseRate:8,  types:'RS·CH' },
 ];
 const C = ['#4fd8ff','#6be0a0','#ffd166','#ff8f5e','#c77dff'];
 
@@ -183,12 +187,24 @@ const TYPE_COLORS = {
 };
 // Densidade de partículas (×base). Mais neurônios = mais "tecido cerebral".
 const DENSITY = 2.0;
-// Modo de cor: 'tipo' (por tipo neuronal) ou 'nivel' (hierarquia cortical C0–C4).
-let colorMode = 'tipo';
+// Cor por ZONA cerebral — cada região uma cor distinta (modo padrão "cérebro").
+const ZONE_COLORS = {
+  frontal:'#ff6b6b', ofc:'#ff9f43', depthstack:'#feca57', acc:'#ff6bcb',
+  linguagem:'#54a0ff', espelho:'#9b8cff', parietal:'#48dbfb', occipital:'#1dd1a1',
+  temporal:'#00d2d3', hipocampo:'#ffd32a', limbico:'#ff9ff3', amigdala:'#ee5253',
+  cerebelo:'#7bed9f', corpo_caloso:'#dfe6e9',
+};
+// Modo de cor: 'zona' (região), 'tipo' (neurônio) ou 'nivel' (hierarquia cortical).
+let colorMode = 'zona';
 function corDoNeuronio(reg, tipoCode){
+  if(colorMode==='zona')  return new THREE.Color(ZONE_COLORS[reg.id] || C[reg.level]);
   if(colorMode==='nivel') return new THREE.Color(C[reg.level]);
   return new THREE.Color(TYPE_COLORS[tipoCode] || C[reg.level]);
 }
+// ── Modo CÉREBRO (compacto) ↔ EXPANDIDO (rotas visíveis) ────────────────
+const COMPACT = 0.40;   // contração das zonas no modo cérebro (massa compacta)
+let expand = 0;         // 0 = cérebro compacto · 1 = expandido (vias)
+let expandTarget = 0;
 
 // Vias: sensorial → perceptual → lexical/contextual → frontal/ação; + límbico→BG→DA
 const PATHWAYS = [
@@ -221,6 +237,7 @@ const regionData = {};
 const counts = REGIONS.map(r => Math.max(1, Math.round(r.n * DENSITY)));
 let total = counts.reduce((a,b)=>a+b,0);
 const positions = new Float32Array(total*3);
+const offsets = new Float32Array(total*3);    // posição relativa do neurônio à sua zona
 const colors = new Float32Array(total*3);
 const baseCol = new Float32Array(total*3);   // cor "cheia" por neurônio (por tipo)
 const intensity = new Float32Array(total);
@@ -233,7 +250,10 @@ REGIONS.forEach((reg, ri) => {
   for (let i=0;i<nn;i++){
     let x,y,z,d; do { x=Math.random()*2-1; y=Math.random()*2-1; z=Math.random()*2-1; d=x*x+y*y+z*z; } while(d>1);
     const k = off*3;
-    positions[k]=reg.pos[0]+x*reg.r; positions[k+1]=reg.pos[1]+y*reg.r*0.85; positions[k+2]=reg.pos[2]+z*reg.r;
+    const ox=x*reg.r, oy=y*reg.r*0.85, oz=z*reg.r;
+    offsets[k]=ox; offsets[k+1]=oy; offsets[k+2]=oz;
+    // posição inicial = COMPACTA (cérebro): zona contraída + offset do neurônio
+    positions[k]=reg.pos[0]*COMPACT+ox; positions[k+1]=reg.pos[1]*COMPACT+oy; positions[k+2]=reg.pos[2]*COMPACT+oz;
     const tc = tipos.length ? tipos[(Math.random()*tipos.length)|0] : 'RS';
     neuronTipo[off] = tc;
     const cc = corDoNeuronio(reg, tc);
@@ -248,6 +268,41 @@ geo.setAttribute('position', new THREE.BufferAttribute(positions,3));
 geo.setAttribute('color', new THREE.BufferAttribute(colors,3));
 // Partículas pequenas (≈ "1mm") e atenuadas pela distância → sensação de tecido.
 brain.add(new THREE.Points(geo, new THREE.PointsMaterial({ size:0.028, vertexColors:true, transparent:true, blending:THREE.AdditiveBlending, depthWrite:false, sizeAttenuation:true })));
+
+// ── Córtex anatômico: casca de partículas em FORMA DE CÉREBRO ───────────
+// Silhueta reconhecível (elipsoide alongado/achatado + 2 hemisférios c/ fissura
+// + sulcos por ruído) que envolve as zonas no modo compacto. Some ao expandir.
+let cortexPts;
+{
+  const N = 6000;
+  const cp = new Float32Array(N*3), cc = new Float32Array(N*3);
+  const base = new THREE.Color(0x8fb4e8);
+  for(let i=0;i<N;i++){
+    // ponto uniforme na superfície de uma esfera
+    const u=Math.random()*Math.PI*2, w=Math.acos(2*Math.random()-1);
+    let x=Math.sin(w)*Math.cos(u), y=Math.cos(w), z=Math.sin(w)*Math.sin(u);
+    // dimensões cerebrais: estreito (x), achatado (y), alongado fronto-occipital (z)
+    x*=0.95; y*=0.74; z*=1.18;
+    // sulcos/giros: modula o raio com ruído de alta frequência
+    const g = 1 + 0.06*Math.sin(x*9+z*3)*Math.sin(z*7) + 0.035*Math.sin(y*12+x*6);
+    x*=g; y*=g; z*=g;
+    // fissura longitudinal: afasta os hemisférios do plano sagital, no topo
+    const topo=Math.max(0,y+0.12);
+    x += (x>=0?1:-1)*topo*0.11;
+    // base ventral mais plana
+    if(y<0) y*=0.74;
+    // lobos frontais um pouco mais salientes (z+ alto)
+    if(z>0.6) z*=1.05;
+    const k=i*3; cp[k]=x; cp[k+1]=y-0.05; cp[k+2]=z;
+    const sh=0.55+0.45*Math.random();
+    cc[k]=base.r*sh; cc[k+1]=base.g*sh; cc[k+2]=base.b*sh;
+  }
+  const cg=new THREE.BufferGeometry();
+  cg.setAttribute('position', new THREE.BufferAttribute(cp,3));
+  cg.setAttribute('color', new THREE.BufferAttribute(cc,3));
+  cortexPts = new THREE.Points(cg, new THREE.PointsMaterial({ size:0.02, vertexColors:true, transparent:true, opacity:0.42, blending:THREE.AdditiveBlending, depthWrite:false, sizeAttenuation:true }));
+  brain.add(cortexPts);
+}
 
 // Recolore todos os neurônios (toggle tipo↔nível) de forma estável (mesmo tipo/pos).
 function aplicarCores(){
@@ -266,8 +321,8 @@ function aplicarCores(){
 REGIONS.forEach(reg => {
   const m = new THREE.MeshBasicMaterial({ color:C[reg.level], wireframe:true, transparent:true, opacity:0.05, blending:THREE.AdditiveBlending, depthWrite:false });
   const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(reg.r*1.08,1), m);
-  mesh.position.set(...reg.pos); mesh.scale.y = 0.85; brain.add(mesh);
-  regionData[reg.id].shell = m;
+  mesh.position.set(reg.pos[0]*COMPACT, reg.pos[1]*COMPACT, reg.pos[2]*COMPACT); mesh.scale.y = 0.85; brain.add(mesh);
+  regionData[reg.id].shell = m; regionData[reg.id].shellMesh = mesh;
 });
 
 // ── Vias + pulsos ──────────────────────────────────────────────────────
@@ -281,6 +336,23 @@ const pathways = PATHWAYS.map(([a,b]) => {
   brain.add(new THREE.Line(g,m));
   return { from:a, to:b, curve, m };
 });
+// Aplica o layout: e=0 → cérebro compacto · e=1 → expandido (rotas visíveis).
+// Move cada neurônio (zona contraída + seu offset) e a casca da zona; as vias
+// só aparecem (opacity) conforme expande, pois suas curvas são da pose expandida.
+function aplicarLayout(e){
+  const f = COMPACT + (1-COMPACT)*e;
+  for(const r of Object.values(regionData)){
+    const px=r.pos[0]*f, py=r.pos[1]*f, pz=r.pos[2]*f;
+    for(let i=r.start;i<r.end;i++){ const k=i*3;
+      positions[k]=px+offsets[k]; positions[k+1]=py+offsets[k+1]; positions[k+2]=pz+offsets[k+2];
+    }
+    if(r.shellMesh) r.shellMesh.position.set(px,py,pz);
+  }
+  geo.getAttribute('position').needsUpdate=true;
+  pathways.forEach(p => { p.m.opacity = 0.09*e; });
+  if(cortexPts) cortexPts.material.opacity = 0.42*(1-e); // córtex visível só no modo cérebro
+}
+aplicarLayout(0); // inicia no modo cérebro (compacto, vias escondidas)
 const MAXP = 110;
 const pPos = new Float32Array(MAXP*3), pCol = new Float32Array(MAXP*3);
 const pulses = [];
@@ -364,11 +436,19 @@ function log(tag,msg){ /* eventos vão para o console; HUD fica limpo */ }
 })();
 addEventListener('keydown', e=>{
   if(e.key==='t'||e.key==='T'){
-    colorMode = (colorMode==='tipo') ? 'nivel' : 'tipo';
+    colorMode = colorMode==='zona' ? 'tipo' : colorMode==='tipo' ? 'nivel' : 'zona';
     aplicarCores();
     const ht=document.getElementById('legend-tipos');
-    if(ht) ht.textContent=(colorMode==='tipo'?'TIPOS NEURONAIS':'HIERARQUIA C0–C4')+' · [T]';
+    const rotulo = colorMode==='zona' ? 'CORES POR ZONA' : colorMode==='tipo' ? 'TIPOS NEURONAIS' : 'HIERARQUIA C0–C4';
+    if(ht) ht.textContent=rotulo+' · [T]';
   }
+});
+
+// ── Botão: alterna CÉREBRO (compacto) ↔ EXPANDIDO (rotas entre zonas) ────
+const toggleBtn = document.getElementById('toggle-view');
+toggleBtn.addEventListener('click', ()=>{
+  expandTarget = expandTarget>0.5 ? 0 : 1;
+  toggleBtn.textContent = expandTarget>0.5 ? '⊙ Ver cérebro' : '⊕ Expandir rotas';
 });
 
 // ── Raster plot (eixo temporal = equivalente ao unroll) ────────────────
@@ -415,7 +495,11 @@ function handleTick(m){
   if(m.brain_state) brainState=m.brain_state;
   if(m.regions) for(const [id,d] of Object.entries(m.regions)){ const r=regionData[id]; if(!r)continue;
     if(typeof d.rate==='number') r.targetRate=d.rate;
-    if(typeof d.spikes==='number') fire(r,d.spikes);
+    // pulso visual: usa spikes reais; se vierem 0 mas há rate, deriva do rate
+    // (a Selene reporta rate contínuo com spikes:0 nas zonas sensoriais).
+    const sp = (typeof d.spikes==='number' && d.spikes>0) ? d.spikes
+             : Math.round((d.rate||0) * r.n * 0.25);
+    if(sp>0) fire(r, sp);
   }
   if(m.neurochem) for(const k in nm) if(typeof m.neurochem[k]==='number') nm[k]=m.neurochem[k];
   if(Array.isArray(m.events)) m.events.forEach(e=>{
@@ -469,6 +553,13 @@ function animate(){
   const now=performance.now()/1000; const dt=Math.min(now-lastT,0.05); lastT=now;
   if(live && performance.now()-lastMsg>4000){ live=false; modeEl.textContent='SIMULAÇÃO'; modeEl.classList.remove('live'); }
   if(!live) simulate(dt);
+
+  // Transição animada cérebro (compacto) ↔ expandido (rotas)
+  if(Math.abs(expand-expandTarget)>0.001){
+    expand += (expandTarget-expand)*Math.min(dt*3,1);
+    if(Math.abs(expand-expandTarget)<0.005) expand=expandTarget;
+    aplicarLayout(expand);
+  }
 
   for(const r of Object.values(regionData)){
     r.rate += (r.targetRate-r.rate)*dt*4;
@@ -526,7 +617,9 @@ function animate(){
     for(const r of Object.values(regionData)){
       const hz=r.spikeCounter/Math.max(hzWin,0.01)/r.n*10;
       r.measuredHz += (hz-r.measuredHz)*0.3; r.spikeCounter=0;
-      regionUI[r.id].textContent=r.measuredHz.toFixed(1);
+      // LIVE: a Selene manda spikes:0 mas rate real (ex. occipital 0.63) → mostra o rate.
+      // OFFLINE (simulação): usa a taxa medida pelos spikes sintéticos.
+      regionUI[r.id].textContent=(live ? r.rate : r.measuredHz).toFixed(1);
     }
     hzWin=0;
     for(const k in nmUI){ nmUI[k].fill.style.width=(nm[k]/(k==='dopamina'?2:1)*100)+'%'; nmUI[k].val.textContent=nm[k].toFixed(2); }

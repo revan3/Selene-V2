@@ -28,6 +28,53 @@ $env:SELENE_LATERAL="1"; $env:SELENE_TERNARY="1"; ./target/release/selene_brain
 
 ---
 
+## 📐 Referência biológica externa — Conectoma da Drosophila (FlyWire, 2024)
+
+Primeiro **cérebro adulto completo** já mapeado (mosca-da-fruta): **~139.255 neurônios**,
+**~50 milhões de sinapses**, **~8.400 tipos**, 8 classes de neurotransmissor (ACh
+excitatório dominante; GABA/glutamato inibitórios) — consórcio FlyWire, *Nature* out/2024.
+Usado como **régua de fidelidade biológica** da Selene:
+
+| Achado (FlyWire) | Uso na Selene |
+|---|---|
+| **~350 sinapses/neurônio** | meta de densidade de conectividade (`neural_pool.rs`) |
+| **Mushroom body** = aprendizado associativo modulado por **dopamina** + *Kenyon cells* em **codificação esparsa** | valida/refina o eixo dopamina→RPE→plasticidade (`rl.rs`, CLS) e a codificação localista |
+| **Controle motor DISTRIBUÍDO** (descoberta 2026): circuitos locais por membro que se coordenam, sem centro de comando | `motor_cortex.rs` + bots do Selene-World: controle **local** por membro |
+| **88% do cérebro central de 183 hemilinhagens** (desenvolvimento por linhagens) | valida a neurogênese ontogenética da célula-tronco (`stem_cell.rs`) |
+
+> **Complementaridade:** o conectoma dá a **estrutura** (quem conecta com quem), mas não a
+> dinâmica (forças sinápticas, canais). A Selene tem exatamente a **dinâmica** que falta —
+> estrutura (FlyWire) + dinâmica (Selene) é o caminho de fidelidade. Detalhes no vault
+> Obsidian: *Selene — Conectoma da Drosophila (FlyWire)*.
+
+---
+
+## 🦿 Primitivas Motoras — Cognição + Motor unificados (`motor_primitives.rs`)
+
+O cérebro **seleciona** um movimento já mapeado (pular, agarrar, socar); circuitos locais
+o **executam**. Inspirado no **controle motor distribuído** da Drosophila + primitivas
+motoras (Bizzi) / DMPs (Ijspeert) / seleção de ação dos **gânglios da base**. O insight:
+uma primitiva **É um template do domínio Motor** — padrão (keyframes) + **slots em branco**
+(amplitude, velocidade) que **evoluem com uso** (Nascente→Automático). O mesmo mecanismo
+dos templates cognitivos (`templates.rs`) serve **pensamento E movimento**.
+
+| Peça | O quê |
+|---|---|
+| `Primitiva` | keyframes (poses no tempo) + ciclo de vida (usos/força/estado) |
+| `Slots { amplitude, velocidade }` | parâmetros "em branco" preenchidos pela situação |
+| `trajetoria(slots)` | **execução local**: interpola keyframes × slots → ângulos no tempo |
+| `reforcar(reward)` | uso validado amadurece a primitiva (força via EMA da recompensa) |
+| `RepertorioMotor` | vocabulário inicial: repouso/agachar/levantar/pular/agarrar/socar/acenar |
+| `selecionar(pref)` | placeholder do **gânglio basal** (argmax preferência×força) |
+| `compor(a, b)` | encadeia primitivas em sequência (agachar→pular) |
+
+**5 testes passando.** Resolve o *motor babbling* não-funcional: a Selene aprende **quando
+usar** cada movimento (via `RPE`/dopamina), não cada junta do zero. Próximo: mapear os
+keyframes ao corpo real (Webots URDF) e fazer os gânglios da base selecionarem.
+Detalhes: vault *Selene — Templates Evolutivos (Cognição + Motor)*.
+
+---
+
 ## V4.6.1 — Corpo Digital, Leitura, Visualização & Conexão Total dos Tipos
 
 | Frente | O quê | Onde |

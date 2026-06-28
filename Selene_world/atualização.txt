@@ -1,0 +1,81 @@
+Para criar um ambiente de simulação emergente, onde a tecnologia não é pré-definida, você precisa de um sistema de "propriedades físicas fundamentais". Os agentes (sua IA) não devem saber "como fazer um machado", eles devem saber que "Material X tem Dureza Y" e que "Impactar X contra Z causa fragmentação".
+
+Aqui está o arcabouço de dados para seus três mundos.
+
+Prompt Base para os 3 Mundos (Estrutura de Dados)
+Você deve alimentar seu motor em Python com estes dicionários de constantes e propriedades.
+1. Constantes Físicas Globais (O "Config.py")
+Constante,Terra,Marte,Selene (Lua)
+Gravidade (m/s2),9.81,3.71,1.62
+Pressão Atmosférica (atm),1.0,0.006,0
+Radiação (Base),Baixa,Alta,Extrema
+Retenção de Calor,Alta,Baixa,Nula
+
+2. Matriz de Propriedades de Materiais (Os "Atributos")
+Cada objeto no seu mundo deve ter estas 5 variáveis. Quando uma civilização interage com elas, o motor calcula o resultado.
+Dureza (Mohs): Resistência a deformação.
+
+Condutividade Térmica/Elétrica: Capacidade de transmitir energia.
+
+Ponto de Fusão: Temperatura necessária para mudança de fase.
+
+Reatividade Química: Facilidade de sofrer oxidação ou fusão com outros elementos.
+
+Plasticidade: Capacidade de ser moldado sem romper.
+Material,Tipo,Dureza,Condutividade,Ponto Fusão,Reatividade
+Obsidiana,Rocha,5.5,Baixa,1100°C,Nula
+Cobre,Metal,3.0,Alta,1085°C,Alta
+Silício,Mineral,7.0,Semicondutor,1414°C,Média
+Celulose,Vegetal,1.0,Nula,(Combustível),Média
+Quitina,Animal,2.5,Nula,(Degrada),Nula
+
+3. Variáveis de Ambiente e Fauna/Flora
+Fauna (Classificação por Energia):
+
+Energia Cinética: Unidades de tração/transporte (força bruta).
+
+Energia Química: Unidades que processam toxinas/enxofre (bioprocessamento).
+
+Energia Termo-receptora: Unidades que vivem perto de fontes de calor (geotermia).
+
+Flora (Classificação por Função):
+
+Estruturais: Fibras rígidas (madeira/bambu) para construção.
+
+Condutivas: Seivas ricas em sais (podem servir como eletrólitos rudimentares).
+
+Filtros: Plantas que acumulam metais do solo (base para extração de minérios).
+
+Prompt para Inicialização da Simulação (Copie e Cole)
+"Inicie uma simulação de mundo sandbox em Python.
+
+Regras de Física: Use as constantes globais fornecidas para o [Mundo]. A física deve calcular a resistência estrutural baseada na gravidade local.
+
+Sistema de Materiais: Cada item no mundo possui as propriedades: {Dureza, Condutividade, Fusão, Reatividade, Plasticidade}.
+
+Lógica de Evolução (Emergência):
+
+Os agentes não possuem 'receitas'. Eles testam combinações: Ação(Material_A, Material_B, Ferramenta_X).
+
+Se a energia aplicada (Temperatura/Pressão) > Ponto de Fusão/Dureza do material, altere o estado do material.
+
+Se uma combinação gera um novo valor de utilidade (ex: condutividade alta + formato fino), rotule como 'Invenção'.
+
+Aplique a restrição de ambiente: Em Marte, sem atmosfera, a oxidação é nula, mas a radiação degrada polímeros rapidamente. Na Lua, a ausência de atmosfera exige arquiteturas seladas.
+
+Objetivo: Permitir que os agentes descubram, por conta própria, o uso de semicondutores (silício + dopagem térmica) ou novas fontes de energia a partir da biologia local.
+
+Inicie a instância 01: Planeta Terra."
+
+Dica de implementação para o seu "Age of Empires":
+Para que eles criem tecnologias que nós não prevemos, coloque uma função de "Acidente de Laboratório".
+
+exemplo
+
+def tentativa_de_teste(material_a, material_b, energia_aplicada):
+    if random.random() < 0.05: # 5% de chance de evento emergente
+        return "Descoberta Inesperada (Propriedade Nova)"
+
+        Isso força a IA a lidar com variáveis que você não mapeou, simulando a genialidade humana de transformar um erro em uma tecnologia.
+
+Como você vai gerenciar a visibilidade do que eles estão criando? Você quer que o sistema apenas logue o progresso ou quer visualizar o mapa mudando conforme a tecnologia deles avança?

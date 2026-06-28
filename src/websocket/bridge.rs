@@ -281,6 +281,10 @@ pub struct BrainState {
     /// Acumulador separado para WebSocket audio_raw — evita interferência entre
     /// o microfone físico e o áudio enviado pelo browser.
     pub audio_acumulador_ws: WordAccumulator,
+    /// Bandas FFT do último áudio recebido via WS (audio_learn/audio_raw). O loop
+    /// neural consome isto pra ALIMENTAR a cochlea quando não há mic nativo — senão o
+    /// áudio WS só populava o vocab e a recognition_layer ficava muda (0 disparos).
+    pub audio_ws_bandas: Option<Vec<f32>>,
     /// Hash do último SpikePattern de áudio processado com sucesso.
     /// Usado para deduplicação: descarta reconhecimentos idênticos em < 300ms.
     pub ultimo_audio_hash: u64,
@@ -327,6 +331,15 @@ pub struct BrainState {
     /// diretamente à Q-table e ao sinal dopaminérgico endógeno da Selene.
     /// Positivo = reward, Negativo = punish.
     pub recompensa_pendente: f32,
+    /// Visão 1ª pessoa do mundo do jogo (grid de luminância via env_step). Quando
+    /// não-vazio, substitui a câmera real → a Selene ENXERGA o jogo pelos olhos do avatar.
+    pub visao_jogo: Vec<f32>,
+    /// Toque pendente (intensidade 0..1, tipo "carinho"/"beliscao"/"neutro") vindo do
+    /// handler `touch`/Webots. O loop neural consome e repassa a interoception.receber_toque().
+    pub touch_pendente: Option<(f32, String)>,
+    /// Propriocepção: ângulo atual de cada junta do corpo (Webots). A Selene SENTE a
+    /// pose do corpo; uso pleno (controle motor) vem na Fase B.
+    pub propriocepcao: Vec<f32>,
 
     // ── Pensamento espontâneo ─────────────────────────────────────────────────
     /// Canal broadcast para pensamentos espontâneos.
@@ -451,6 +464,9 @@ pub struct BrainState {
     /// V4.6.1 — Córtex motor (Conceito A): ator que escolhe ações discretas para
     /// agir num computador (jogos/navegador) via o daemon `selene_agent.py`.
     pub motor_cortex: crate::motor_cortex::MotorCortex,
+    /// Fase B — controle motor contínuo das juntas do corpo (Webots): motor babbling
+    /// + forward model + curiosidade. Ativo quando o env_step traz `joints`.
+    pub motor_babbling: crate::motor_babbling::MotorBabbling,
 
     // ── V4.6.1 — Telemetria para a viz 3D (preenchida pelo main.rs por tick) ──
     /// Taxa (Hz) + spikes por zona cerebral. id → (rate, spikes).
@@ -825,6 +841,7 @@ impl BrainState {
             hypothesis_engine: hypothesis_engine_init,
             audio_acumulador: WordAccumulator::new(),
             audio_acumulador_ws: WordAccumulator::new(),
+            audio_ws_bandas: None,
             ultimo_audio_hash: 0,
             ultimo_audio_ts_ms: 0.0,
             pensamento_consciente: VecDeque::with_capacity(10),
@@ -834,6 +851,9 @@ impl BrainState {
             encoder_fft: EstadoEncoder::default(),
             neuronios_ativos: Arc::new(AtomicUsize::new(0)),
             recompensa_pendente: 0.0,
+            visao_jogo: Vec::new(),
+            touch_pendente: None,
+            propriocepcao: Vec::new(),
             pensamento_tx: broadcast::channel(16).0,
             tedio_nivel: 0.0,
             // Subtrai 120s para que o primeiro disparo possa ocorrer logo após o início
@@ -872,6 +892,7 @@ impl BrainState {
             pending_wernicke_tokens: std::collections::VecDeque::new(),
             fila_ingestao: std::collections::VecDeque::new(),
             motor_cortex: crate::motor_cortex::MotorCortex::new(),
+            motor_babbling: crate::motor_babbling::MotorBabbling::new(),
             viz_regions: HashMap::new(),
             viz_neuro11: [0.0; 11],
             viz_loop_hz: 0.0,

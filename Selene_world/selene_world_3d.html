@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Selene-World 3D</title>
+<style>
+  /* ===== visual estilo Age of Empires: escuro, HUD flutuante ===== */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #0b0e13; font-family: "Segoe UI", system-ui, sans-serif; }
+  #hud {
+    position: fixed; top: 12px; left: 12px; z-index: 10;
+    background: rgba(14,18,26,.82); border: 1px solid #2a3140; border-radius: 10px;
+    padding: 12px 16px; color: #cfd8e3; font-size: 13px; line-height: 1.7;
+    min-width: 230px; backdrop-filter: blur(4px);
+  }
+  #hud b { color: #fff; }
+  #hud .big { font-size: 16px; color: #ffd479; }
+  .barra { height: 6px; border-radius: 3px; background: #232a36; margin-top: 3px; overflow: hidden; }
+  .barra > div { height: 100%; transition: width .3s; }
+  #legenda {
+    position: fixed; bottom: 12px; left: 12px; z-index: 10; color: #8a94a3;
+    background: rgba(14,18,26,.7); border-radius: 8px; padding: 8px 12px; font-size: 12px; line-height: 1.6;
+  }
+  #conexao {
+    position: fixed; top: 12px; right: 12px; z-index: 10; padding: 6px 12px;
+    border-radius: 8px; font-size: 12px; font-weight: 600;
+  }
+  .on  { background: #14331c; color: #6ee7a0; border: 1px solid #2e7d32; }
+  .off { background: #3a1416; color: #ff8a8a; border: 1px solid #b71c1c; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+  #velbar button { background:#232a36; color:#cfd8e3; border:1px solid #2a3140;
+    border-radius:5px; padding:3px 9px; margin:0 2px; cursor:pointer; font-size:12px; }
+  #velbar button.ativo { background:#ffd479; color:#1a1f28; border-color:#ffd479; font-weight:600; }
+</style>
+</head>
+<body>
+  <div id="hud">
+    <div class="big">🌍 Selene-World <span id="era"></span></div>
+    <div>Ano <b id="t">—</b> · Pop <b id="pop">—</b> · Ger <b id="ger">—</b></div>
+    <div>🗣️ Língua <b id="lingua">—</b></div>
+    <div>🔥 Domínio do fogo <b id="fogo">—</b></div>
+    <div>🧬 Otimizações <b id="otim">—</b> · Vida <b id="vida">—</b> anos</div>
+    <div style="margin-top:6px">CPU <span id="cpuv">—</span><div class="barra"><div id="cpu" style="background:#42a5f5"></div></div></div>
+    <div>RAM <span id="ramv">—</span><div class="barra"><div id="ram" style="background:#ef5350"></div></div></div>
+    <div id="clima" style="margin-top:6px">—</div>
+    <div id="tribos" style="margin-top:6px;border-top:1px solid #2a3140;padding-top:5px;font-size:12px"></div>
+    <div id="velbar" style="margin-top:8px">⏱️
+      <button data-v="1">1×</button><button data-v="2">2×</button><button data-v="3">3×</button><button data-v="4">4×</button><button data-v="5">5×</button>
+    </div>
+  </div>
+  <div id="conexao" class="off">● servidor offline</div>
+  <div id="legenda">
+    <span class="sw" style="background:#ff6b4a"></span>tribo Ignis &nbsp;
+    <span class="sw" style="background:#5a8dee"></span>tribo Umbra<br>
+    🌾 comida · 🌲 madeira · ⛰ ferro · 🔥 fogo · ● aura = sabe do fogo
+  </div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const WS_URL = 'ws://127.0.0.1:8765';
+
+// ===== CENA =====
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x8fb1d4);          // céu de dia
+scene.fog = new THREE.Fog(0xa9c6e0, 40, 100);          // névoa do horizonte (pradaria)
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(0, 17, 16);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.target.set(0, 0, 0);
+controls.maxPolarAngle = Math.PI / 2.15;   // não deixa olhar por baixo do chão
+
+// ===== LUZES =====
+const hemi = new THREE.HemisphereLight(0x8fb3ff, 0x202a18, 0.7); scene.add(hemi);
+const sol = new THREE.DirectionalLight(0xfff2d6, 1.1);
+sol.position.set(10, 20, 8); sol.castShadow = true;
+sol.shadow.mapSize.set(1024, 1024);
+sol.shadow.camera.left = -20; sol.shadow.camera.right = 20;
+sol.shadow.camera.top = 20; sol.shadow.camera.bottom = -20;
+scene.add(sol);
+
+// ===== GEOMETRIAS / MATERIAIS compartilhados (criados 1x) =====
+const COR_TRIBO = { 0: 0xff6b4a, 1: 0x5a8dee };   // Ignis (quente) · Umbra (frio)
+const G = {
+  bot: new THREE.CapsuleGeometry(0.16, 0.26, 4, 8),
+  trigo: new THREE.ConeGeometry(0.18, 0.42, 6),
+  tronco: new THREE.CylinderGeometry(0.07, 0.09, 0.4, 6),
+  copa: new THREE.ConeGeometry(0.32, 0.6, 7),
+  rocha: new THREE.IcosahedronGeometry(0.26, 0),
+  fogo: new THREE.ConeGeometry(0.22, 0.55, 7),
+  aura: new THREE.SphereGeometry(0.07, 8, 8),
+  cabeca: new THREE.SphereGeometry(0.12, 10, 8),
+  caverna: new THREE.IcosahedronGeometry(0.7, 0),
+};
+const M = {
+  trigo: new THREE.MeshStandardMaterial({ color: 0xfbc02d }),
+  tronco: new THREE.MeshStandardMaterial({ color: 0x5d4037 }),
+  copa: new THREE.MeshStandardMaterial({ color: 0x2e7d32 }),
+  rocha: new THREE.MeshStandardMaterial({ color: 0x78909c, flatShading: true }),
+  caverna: new THREE.MeshStandardMaterial({ color: 0x4a4a52, flatShading: true }),
+  fogo: new THREE.MeshStandardMaterial({ color: 0xff7020, emissive: 0xff5500, emissiveIntensity: 1.4 }),
+  aura: new THREE.MeshStandardMaterial({ color: 0xffb74d, emissive: 0xffa726, emissiveIntensity: 1.2 }),
+  bot: {}, // por tribo, preenchido abaixo
+};
+for (const [t, c] of Object.entries(COR_TRIBO))
+  M.bot[t] = new THREE.MeshStandardMaterial({ color: c });
+
+// ===== CHÃO em tiles (xadrez sutil) — preenchido quando souber w,h =====
+let W = 24, H = 12, chaoPronto = false, cavernasProntas = false;
+const gChao = new THREE.Group(); scene.add(gChao);
+const gRec = new THREE.Group(); scene.add(gRec);
+const gBot = new THREE.Group(); scene.add(gBot);
+const gFogo = new THREE.Group(); scene.add(gFogo);
+const luzesFogo = [];          // PointLights p/ tremular (máx 4)
+const botMeshes = new Map();   // id -> mesh: REUSA (não recria) + interpola = estável
+let recFrame = -1;             // throttle: recria recursos a cada 20 frames
+
+// Chão como UM InstancedMesh (1 draw call em vez de w*h) — chave da estabilidade.
+function montarChao(w, h) {
+  W = w; H = h;
+  const tile = new THREE.PlaneGeometry(0.98, 0.98);
+  tile.rotateX(-Math.PI / 2);
+  const inst = new THREE.InstancedMesh(tile, new THREE.MeshStandardMaterial(), w * h);
+  inst.receiveShadow = true;
+  const dummy = new THREE.Object3D(), cor = new THREE.Color();
+  let i = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    dummy.position.set(x - w / 2 + 0.5, 0, y - h / 2 + 0.5);
+    dummy.updateMatrix();
+    inst.setMatrixAt(i, dummy.matrix);
+    // bioma: ruído suave → manchas de grama clara/média/escura e terra (pradaria)
+    const n = Math.sin(x * 0.28) * Math.cos(y * 0.33)
+            + Math.sin((x + y) * 0.16) * 0.6;
+    cor.setHex(n > 0.7 ? 0x6f9a40 : n > 0.05 ? 0x4f7a2e
+             : n > -0.6 ? 0x3c5a24 : 0x6b5733);
+    inst.setColorAt(i, cor);
+    i++;
+  }
+  inst.instanceMatrix.needsUpdate = true;
+  gChao.add(inst);
+  chaoPronto = true;
+}
+const sx = x => x - W / 2 + 0.5;   // grid → cena (X)
+const sz = y => y - H / 2 + 0.5;   // grid → cena (Z)
+
+// cavernas: rochedo cinza com anel da cor da tribo (1 por tribo, fixas)
+function montarCavernas(cavernas) {
+  cavernas.forEach(([x, y, ti]) => {
+    const m = new THREE.Mesh(G.caverna, M.caverna);
+    m.position.set(sx(x), 0.32, sz(y));
+    m.castShadow = true; m.receiveShadow = true;
+    const anel = new THREE.Mesh(new THREE.TorusGeometry(0.55, 0.07, 6, 18),
+      new THREE.MeshStandardMaterial({ color: COR_TRIBO[ti] || 0xffffff }));
+    anel.rotation.x = -Math.PI / 2; anel.position.y = -0.30; m.add(anel);
+    gChao.add(m);
+  });
+  cavernasProntas = true;
+}
+
+// ===== fábrica de recursos =====
+function criarRecurso(tipo, q) {
+  let o;
+  if (tipo === 'comida') { o = new THREE.Mesh(G.trigo, M.trigo); o.position.y = 0.21; }
+  else if (tipo === 'ferro') { o = new THREE.Mesh(G.rocha, M.rocha); o.position.y = 0.26; }
+  else { // madeira = árvore (tronco + copa)
+    o = new THREE.Group();
+    const t = new THREE.Mesh(G.tronco, M.tronco); t.position.y = 0.2; t.castShadow = true;
+    const c = new THREE.Mesh(G.copa, M.copa); c.position.y = 0.62; c.castShadow = true;
+    o.add(t, c);
+  }
+  o.traverse?.(n => n.castShadow = true);
+  const s = 0.7 + Math.min(q, 80) / 160;   // jazida maior = um pouco maior
+  o.scale.setScalar(s);
+  return o;
+}
+
+// boneco low-poly: corpo (cápsula) + cabeça (esfera), cor pela tribo
+function criarBot(tribo) {
+  const cor = M.bot[tribo] || M.bot[0];
+  const g = new THREE.Group();
+  const corpo = new THREE.Mesh(G.bot, cor); corpo.castShadow = true;
+  const cabeca = new THREE.Mesh(G.cabeca, cor);
+  cabeca.position.y = 0.30; cabeca.castShadow = true;
+  g.add(corpo, cabeca);
+  return g;
+}
+
+// ===== render de um estado vindo do servidor =====
+function render(s) {
+  if (!chaoPronto) montarChao(s.w, s.h);
+  if (!cavernasProntas && s.cavernas && s.cavernas.length) montarCavernas(s.cavernas);
+
+  // recursos: recria só a cada 20 frames (mudam devagar; evita garbage/stutter)
+  if ((++recFrame % 20) === 0) {
+    gRec.clear();
+    for (const [x, y, tipo, q] of s.recursos) {
+      const o = criarRecurso(tipo, q);
+      o.position.x = sx(x); o.position.z = sz(y);
+      gRec.add(o);
+    }
+  }
+
+  // bots: REUSA o mesh por id (interpola no animate) — nada de recriar todo frame
+  const vivos = new Set();
+  for (const [id, x, y, tribo, energia, crenca, otim] of s.bots) {
+    vivos.add(id);
+    let b = botMeshes.get(id);
+    if (!b) {
+      b = criarBot(tribo);
+      b.position.set(sx(x), 0.30, sz(y));
+      gBot.add(b); botMeshes.set(id, b);
+    }
+    b.userData.tx = sx(x); b.userData.tz = sz(y);   // destino p/ interpolar
+    if (crenca > 0.3 && !b.userData.aura) {
+      const a = new THREE.Mesh(G.aura, M.aura); a.position.y = 0.55;
+      b.add(a); b.userData.aura = a;
+    }
+  }
+  for (const [id, b] of botMeshes) {                 // remove os que morreram
+    if (!vivos.has(id)) { gBot.remove(b); botMeshes.delete(id); }
+  }
+
+  // fogos: máx 12 chamas, só 4 com luz dinâmica (luzes são caras no WebGL)
+  gFogo.clear();
+  for (const luz of luzesFogo) scene.remove(luz);
+  luzesFogo.length = 0;
+  s.fogos.slice(0, 12).forEach(([x, y, inten], i) => {
+    const f = new THREE.Mesh(G.fogo, M.fogo);
+    f.position.set(sx(x), 0.28, sz(y)); gFogo.add(f);
+    if (i < 4) {
+      const luz = new THREE.PointLight(0xff6620, 2.2 * inten, 6);
+      luz.position.set(sx(x), 0.7, sz(y));
+      scene.add(luz); luzesFogo.push(luz);
+    }
+  });
+  atualizarHUD(s);
+}
+
+// ===== HUD =====
+const $ = id => document.getElementById(id);
+function atualizarHUD(s) {
+  $('era').textContent = '· era ' + (eraAtual);
+  $('t').textContent = s.t;
+  $('pop').textContent = s.pop;
+  $('ger').textContent = s.ger_max;
+  $('lingua').textContent = (s.lingua * 100).toFixed(0) + '%';
+  $('fogo').textContent = (s.fogo * 100).toFixed(0) + '%';
+  $('otim').textContent = s.otim;
+  $('vida').textContent = s.vida;
+  $('cpu').style.width = (s.cpu * 100) + '%'; $('cpuv').textContent = (s.cpu * 100).toFixed(0) + '%';
+  $('ram').style.width = (s.ram * 100) + '%'; $('ramv').textContent = (s.ram * 100).toFixed(0) + '%';
+  const ab = s.abundancia;
+  $('clima').textContent = ab > 0.6 ? '🌱 fartura' : (ab < 0.35 ? '🥵 fome' : '☁️ normal');
+  $('clima').style.color = ab > 0.6 ? '#6ee7a0' : (ab < 0.35 ? '#ff8a8a' : '#cfd8e3');
+  // contador por tribo
+  const cores = { Ignis: '#ff6b4a', Umbra: '#5a8dee' };
+  $('tribos').innerHTML = (s.tribos || []).map(t =>
+    `<div><b style="color:${cores[t.nome] || '#fff'}">${t.nome}</b> `
+    + `pop ${t.pop} · 🌾${t.comida} 🌲${t.madeira} ⛰${t.ferro} 🔧${t.ferramentas}</div>`
+  ).join('');
+  luzAlvo = (s.luz !== undefined) ? s.luz : 1;   // dia/noite → escurece no animate
+}
+
+// ===== WebSocket =====
+let eraAtual = 1, ultimoT = 1e9, socket = null, velAtual = 1;
+let luzAlvo = 1, luzAtual = 1;   // dia↔noite (interpolado no animate)
+const CEU_DIA = new THREE.Color(0x8fb1d4), CEU_NOITE = new THREE.Color(0x10141f);
+function conectar() {
+  const ws = new WebSocket(WS_URL);
+  socket = ws;
+  ws.onopen = () => {
+    $('conexao').className = 'on'; $('conexao').textContent = '● conectado';
+    enviarVel(velAtual);            // reaplica a velocidade ao (re)conectar
+  };
+  ws.onclose = () => {
+    $('conexao').className = 'off'; $('conexao').textContent = '● servidor offline';
+    setTimeout(conectar, 1500);   // reconecta sozinho
+  };
+  ws.onmessage = e => {
+    const s = JSON.parse(e.data);
+    if (s.t < ultimoT) eraAtual++;   // t voltou a 0 = mundo renasceu
+    if (s.t === 0) eraAtual = Math.max(1, eraAtual);
+    ultimoT = s.t;
+    render(s);
+  };
+}
+
+function enviarVel(v) {              // ⏱️ controle de velocidade (1×..5×)
+  velAtual = v;
+  if (socket && socket.readyState === 1) socket.send(JSON.stringify({ vel: v }));
+  document.querySelectorAll('#velbar button').forEach(b =>
+    b.classList.toggle('ativo', +b.dataset.v === v));
+}
+document.querySelectorAll('#velbar button').forEach(b =>
+  b.onclick = () => enviarVel(+b.dataset.v));
+enviarVel(1);                        // começa devagar (1× = 1 ano a cada 5s)
+conectar();
+
+// ===== loop de animação =====
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const tt = clock.getElapsedTime();
+  controls.update();
+  // dia↔noite: interpola iluminação e céu (escurece à noite)
+  luzAtual += (luzAlvo - luzAtual) * 0.04;
+  sol.intensity = 0.2 + 1.0 * luzAtual;
+  hemi.intensity = 0.18 + 0.55 * luzAtual;
+  scene.background.lerpColors(CEU_NOITE, CEU_DIA, luzAtual);
+  if (scene.fog) scene.fog.color.copy(scene.background);
+  // interpola a posição dos bots → movimento DESLIZANTE (e sem recriar = estável)
+  botMeshes.forEach(b => {
+    if (b.userData.tx !== undefined) {
+      b.position.x += (b.userData.tx - b.position.x) * 0.1;
+      b.position.z += (b.userData.tz - b.position.z) * 0.1;
+    }
+  });
+  // tremular o fogo
+  for (const luz of luzesFogo)
+    luz.intensity = (0.7 + 0.4 * Math.sin(tt * 12 + luz.position.x)) * 2.0;
+  gFogo.children.forEach((f, i) => { f.rotation.y = tt * 2 + i; });
+  renderer.render(scene, camera);
+}
+animate();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

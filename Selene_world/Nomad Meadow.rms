@@ -1,0 +1,1196 @@
+#include_drs random_map.def 
+
+<PLAYER_SETUP>
+  random_placement
+if BATTLE_ROYALE
+else
+  nomad_resources
+  force_nomad_treaty
+endif
+	ai_info_map_type NOMAD 1 0 0
+behavior_version 1
+<LAND_GENERATION>
+start_random
+  percent_chance 10 #define ASIAN_MAP
+  percent_chance 20 #define AUTUMN_MAP
+  percent_chance 20 #define WINTER_MAP 
+  percent_chance 13 #define GRASS_MAP  /*2 different styles */
+  percent_chance 20 #define DESERT_MAP
+  percent_chance 10 #define TROP_MAP 
+  percent_chance 7 #define MED_MAP
+end_random  
+
+start_random
+  percent_chance 50 #define TREE_VAR1
+  percent_chance 50 #define TREE_VAR2
+end_random
+start_random
+  percent_chance 33 #define GRASS_TREE1 //Oak
+  percent_chance 33 #define GRASS_TREE2 //Birch
+  percent_chance 100 #define GRASS_TREE3 //Pine
+end_random
+
+start_random
+  percent_chance 50 #define TROP_VAR1 /* Underbrush */
+  percent_chance 50 #define TROP_VAR2 /* Grass */
+end_random
+
+
+if DESERT_MAP
+	if TROP_VAR1
+	#const TERRAIN_MAIN 6
+	#const TERRAIN_PLAY 42
+	#const TERRAIN_BUFFER 41
+	#const PATCH_FIRST 42
+	#const PATCH_SEC 14
+	#const PATCH_THIRD 45
+		if TREE_VAR1
+		#const FOREST_MAIN 13
+		#const FOREST_SECOND 13
+		elseif TREE_VAR2
+		#const FOREST_MAIN 48
+		#const FOREST_SECOND 48
+		endif
+	else
+	#const TERRAIN_MAIN 41 //Savannah
+	#const TERRAIN_PLAY 42
+	#const TERRAIN_BUFFER 6
+	#const PATCH_FIRST 6
+	#const PATCH_SEC 42
+	#const PATCH_THIRD 45
+	#const FOREST_MAIN 48
+	#const FOREST_SECOND 48
+	endif
+elseif ASIAN_MAP
+	if TROP_VAR1
+	#const TERRAIN_MAIN 77
+	#const TERRAIN_PLAY 0
+	#const TERRAIN_BUFFER 9
+	#const PATCH_FIRST 60
+	#const PATCH_SEC 12
+	#const PATCH_THIRD 62
+	else
+	#const TERRAIN_MAIN 60
+	#const TERRAIN_PLAY 12
+	#const TERRAIN_BUFFER 77
+	#const PATCH_FIRST 62
+	#const PATCH_SEC 12
+	#const PATCH_THIRD 0
+	endif
+	#const FOREST_MAIN 18
+	#const FOREST_SECOND 89
+elseif GRASS_MAP
+	if TROP_VAR1
+	#const TERRAIN_MAIN 5
+	#const TERRAIN_PLAY 0
+	#const TERRAIN_BUFFER 3	
+	#const PATCH_FIRST 12
+	#const PATCH_SEC 5
+	#const PATCH_THIRD 9
+	else
+	#const TERRAIN_MAIN 0
+	#const TERRAIN_PLAY 5
+	#const TERRAIN_BUFFER 3	
+	#const PATCH_FIRST 5
+	#const PATCH_SEC 9
+	#const PATCH_THIRD 100
+	endif
+	if GRASS_TREE1
+	#const FOREST_MAIN 10
+	#const FOREST_SECOND 19
+	elseif GRASS_TREE2
+	#const FOREST_MAIN 110
+	#const FOREST_SECOND 10
+	else
+	#const FOREST_MAIN 19
+	#const FOREST_SECOND 10
+	endif
+	
+elseif TROP_MAP
+	if TROP_VAR1
+	#const TERRAIN_MAIN 77
+	#const TERRAIN_PLAY 0
+	#const TERRAIN_BUFFER 9
+	#const PATCH_FIRST 60
+	#const PATCH_SEC 12
+	#const PATCH_THIRD 62
+	else
+	#const TERRAIN_MAIN 60
+	#const TERRAIN_PLAY 12
+	#const TERRAIN_BUFFER 77
+	#const PATCH_FIRST 62
+	#const PATCH_SEC 12
+	#const PATCH_THIRD 0
+	endif
+	if TREE_VAR1
+	#const FOREST_MAIN 56
+	#const FOREST_SECOND 17
+	elseif TREE_VAR2
+	#const FOREST_MAIN 17  /*jungle*/
+	#const FOREST_SECOND 56
+	endif
+elseif AUTUMN_MAP
+	start_random
+	  percent_chance 50 #define AUTUMN_SNOW_MAP
+	  percent_chance 50 #define AUTUMN_DRY_MAP
+	end_random
+	if AUTUMN_SNOW_MAP
+	#const TERRAIN_MAIN 100
+	#const TERRAIN_PLAY 9
+	#const TERRAIN_BUFFER 5
+	#const FOREST_MAIN 105
+	#const PATCH_FIRST 32
+	#const PATCH_SEC 5
+	#const PATCH_THIRD 9
+	#const FOREST_SECOND 21
+	else
+	#const TERRAIN_MAIN 100
+	#const TERRAIN_PLAY 9
+	#const TERRAIN_BUFFER 5
+	#const FOREST_MAIN 104
+	#const PATCH_FIRST 44
+	#const PATCH_SEC 5
+	#const PATCH_THIRD 9
+	#const FOREST_SECOND 19
+	endif
+elseif WINTER_MAP
+	start_random
+	  percent_chance 30 #define WINTER_DEAD_MAP /* Mud and snow */
+	  percent_chance 35 #define WINTER_GREEN_MAP /* All snow */
+	  percent_chance 35 #define WINTER_GREEN_MAP2 /* Grass with snow */
+	end_random
+	if WINTER_DEAD_MAP
+	#const TERRAIN_MAIN 76
+	#const TERRAIN_PLAY 100
+	#const TERRAIN_BUFFER 74
+	#const FOREST_MAIN 106
+	#const PATCH_FIRST 73
+	#const PATCH_SEC 100
+	#const PATCH_THIRD 9
+	#const FOREST_SECOND 21
+	elseif WINTER_GREEN_MAP
+	#const TERRAIN_MAIN 32
+	#const TERRAIN_PLAY 73
+	#const TERRAIN_BUFFER 74
+	#const FOREST_MAIN 21
+	#const PATCH_FIRST 3
+	#const PATCH_SEC 100
+	#const PATCH_THIRD 9
+	#const FOREST_SECOND 106
+	else
+	#const TERRAIN_MAIN 9
+	#const TERRAIN_PLAY 3
+	#const TERRAIN_BUFFER 100
+	#const FOREST_MAIN 21
+	#const PATCH_FIRST 32	
+	#const PATCH_SEC 100
+	#const PATCH_THIRD 9
+	#const FOREST_SECOND 106
+	endif
+elseif MED_MAP
+	#const TERRAIN_MAIN 100
+	#const TERRAIN_PLAY 9
+	#const TERRAIN_BUFFER 3
+	#const FOREST_MAIN 88
+	#const PATCH_FIRST 5
+	#const PATCH_SEC 100
+	#const PATCH_THIRD 76
+	#const FOREST_SECOND 10
+endif
+
+#const TERRAIN_GRAVEL 70
+#const FARMLAND 7
+#const SNOW_LIGHT 73
+
+start_random
+percent_chance 50
+#define CENTER_BUFFER
+percent_chance 50
+#define CENTER_GRAVEL
+end_random
+
+if WINTER_MAP
+	if WINTER_GREEN_MAP
+	#const TERRAIN_CENTER 5 /* Underbrush */
+	else
+	#const TERRAIN_CENTER 44 /* DLC_Moorland */
+	endif
+else
+#const TERRAIN_CENTER 44
+endif
+
+base_terrain TERRAIN_MAIN
+create_land /* NE forest */
+{
+	terrain_type DLC_DRYROAD
+	land_percent 100
+	left_border 97
+	right_border -2
+	top_border 16
+	bottom_border 16
+	border_fuzziness 60
+	base_elevation 2
+	land_position 99 50
+}
+
+create_land /* NW Forest 1 */
+{
+	terrain_type DLC_DRYROAD
+	land_percent 100
+	bottom_border 97
+	if TINY_MAP	
+	top_border -1
+	else
+	top_border -2	
+	endif
+	right_border 40
+	left_border 16
+	border_fuzziness 60
+	base_elevation 2
+	land_position 25 1
+}
+create_land /* NW Forest 2 */
+{
+	terrain_type DLC_DRYROAD
+	land_percent 100
+	bottom_border 97
+	if TINY_MAP	
+	top_border -1
+	else
+	top_border -2	
+	endif
+	right_border 16
+	left_border 40
+	border_fuzziness 60
+	base_elevation 2
+	land_position 75 1
+}
+create_land /* SE Forest 1 */
+{
+	terrain_type DLC_DRYROAD
+	land_percent 100
+	top_border 97
+	if TINY_MAP
+	bottom_border -1
+	else
+	bottom_border -2
+	endif
+	right_border 40
+	left_border 16
+	border_fuzziness 60
+	base_elevation 2
+	land_position 25 99
+}
+create_land /* SE Forest 2 */
+{
+	terrain_type DLC_DRYROAD
+	land_percent 100
+	top_border 97
+	if TINY_MAP
+	bottom_border -1
+	else
+	bottom_border -2	
+	endif
+	right_border 16
+	left_border 40
+	border_fuzziness 60
+	base_elevation 2
+	land_position 75 99
+}
+
+create_land /* SW Forest */
+{
+	terrain_type DLC_DRYROAD
+	land_percent 100
+	right_border 97
+	left_border -2
+	top_border 16
+	bottom_border 16
+	border_fuzziness 60
+	base_elevation 2
+	land_position 1 50
+}
+
+create_land
+{
+	if CENTER_BUFFER
+	terrain_type TERRAIN_CENTER
+	else
+	terrain_type TERRAIN_GRAVEL
+	endif
+		land_percent 100
+		base_size 2
+		top_border 42
+		left_border 42
+		right_border 42
+		bottom_border 42
+		land_position 50 50
+		land_id 420
+		border_fuzziness 100
+		clumping_factor 40
+		base_elevation 0
+}
+
+  create_player_lands
+{
+		terrain_type TERRAIN_MAIN
+		if TINY_MAP
+			circle_radius 28 0
+		elseif SMALL_MAP
+			circle_radius 29 0
+		elseif MEDIUM_MAP
+			circle_radius 30 0
+		elseif LARGE_MAP
+			circle_radius 31 0
+		elseif HUGE_MAP
+			circle_radius 32 0
+		elseif GIGANTIC_MAP
+			circle_radius 33 0
+		elseif LUDIKRIS_MAP
+			circle_radius 34 0
+		endif
+		base_elevation 2
+}
+
+ create_player_lands
+{
+		terrain_type TERRAIN_PLAY
+		/* Taken from Haboob */
+		if TINY_MAP
+			number_of_tiles 525 /* 25% larger */
+			base_size 8
+		elseif SMALL_MAP
+			number_of_tiles 525 /* 25% larger */
+			base_size 8
+		elseif MEDIUM_MAP
+			number_of_tiles 570 /* 50% larger */
+			base_size 7
+		elseif LARGE_MAP
+			number_of_tiles 480 /* 50% larger */
+			base_size 6
+		elseif HUGE_MAP
+			number_of_tiles 400 /* 100% larger */
+			base_size 5
+		elseif GIGANTIC_MAP
+			number_of_tiles 400 /* 100% larger */
+			base_size 5
+		elseif LUDIKRIS_MAP
+			number_of_tiles 1260 /* 100% larger */
+			base_size 8
+		endif
+
+		if LARGE_MAP
+			other_zone_avoidance_distance 5
+		elseif HUGE_MAP
+			other_zone_avoidance_distance 4
+		else
+			other_zone_avoidance_distance 6
+		endif 
+
+		land_id 500
+		base_elevation 3
+		top_border 6
+		left_border 6
+		right_border 6
+		bottom_border 6
+		clumping_factor 20
+}
+
+/* Corner lakes */
+create_land
+{
+	terrain_type TERRAIN_BUFFER
+	land_percent 100
+	base_size 0
+	top_border 85
+	left_border 85
+	right_border -15
+	bottom_border -15
+	base_elevation 0
+	clumping_factor 40
+	border_fuzziness 100
+	land_position 99 99
+}
+create_land
+{
+	terrain_type TERRAIN_BUFFER
+	land_percent 100
+	base_size 0
+	top_border 85
+	left_border -15
+	right_border 85
+	bottom_border -15
+	base_elevation 0
+	clumping_factor 40
+	border_fuzziness 100
+	land_position 1 99
+}
+create_land
+{
+	terrain_type TERRAIN_BUFFER
+	land_percent 100
+	base_size 0
+	top_border -15
+	left_border 85
+	right_border -15
+	bottom_border 85
+	base_elevation 0
+	clumping_factor 40
+	border_fuzziness 100
+	land_position 99 1
+}
+create_land
+{
+	terrain_type TERRAIN_BUFFER
+	land_percent 100
+	base_size 0
+	top_border -15
+	left_border -15
+	right_border 85
+	bottom_border 85
+	base_elevation 0
+	clumping_factor 40
+	border_fuzziness 100
+	land_position 1 1
+}
+	
+
+<ELEVATION_GENERATION>
+	
+	
+<TERRAIN_GENERATION>
+if DESERT_MAP
+color_correction	CC_DESERT
+elseif ASIAN_MAP
+color_correction	CC_JUNGLE
+elseif TROP_MAP
+color_correction	CC_JUNGLE
+elseif WINTER_MAP
+color_correction	CC_WINTER
+elseif AUTUMN_MAP
+color_correction	CC_AUTUMN
+else
+endif
+
+
+create_terrain WATER
+{
+		base_terrain TERRAIN_BUFFER
+		land_percent 100
+		number_of_clumps 512
+		spacing_to_other_terrain_types 1
+		set_flat_terrain_only 
+}
+
+if WINTER_MAP /* Use DLC_MOORLAND for dead winter lake slopes */
+	if WINTER_DEAD_MAP
+	create_terrain DLC_MOORLAND
+	{
+			base_terrain TERRAIN_BUFFER
+			land_percent 100
+			number_of_clumps 512
+	}
+	endif
+endif
+
+create_terrain FOREST_MAIN
+{
+		base_terrain TERRAIN_MAIN
+		land_percent 2
+		number_of_clumps 64
+		set_scale_by_groups
+		spacing_to_other_terrain_types 3
+}
+
+create_terrain FOREST_MAIN /* Edge forest */
+{
+  base_terrain                   DLC_DRYROAD
+  land_percent                   100
+  number_of_clumps               9320
+  set_scale_by_groups
+}
+create_terrain FOREST_MAIN 
+{
+  base_terrain                   DLC_DRYROAD
+  land_percent                   100
+  number_of_clumps               9320
+  set_scale_by_groups
+}
+create_terrain FOREST_MAIN 
+{
+  base_terrain                   DLC_DRYROAD
+  land_percent                   100
+  number_of_clumps               9320
+  set_scale_by_groups
+}
+create_terrain FOREST_MAIN 
+{
+  base_terrain                   DLC_DRYROAD
+  land_percent                   100
+  number_of_clumps               9320
+  set_scale_by_groups
+}
+create_terrain FOREST_MAIN 
+{
+  base_terrain                   TERRAIN_PLAY
+  land_percent                   100
+  number_of_clumps               9320
+  set_scale_by_groups
+}
+
+create_terrain FOREST_SECOND
+{
+  base_terrain                   FOREST_MAIN
+  number_of_tiles				400
+  number_of_clumps              40
+  set_scale_by_groups
+  terrain_mask 2
+ }
+
+create_terrain TERRAIN_MAIN
+{
+		base_terrain FOREST_MAIN
+		land_percent 100
+		number_of_clumps 512
+		terrain_mask 1
+		set_scale_by_groups
+}
+
+
+/* Center gravel terrain */
+
+if WINTER_MAP
+	create_terrain SNOW_LIGHT
+	{
+		base_terrain TERRAIN_GRAVEL
+		number_of_clumps 2
+		number_of_tiles 40
+		terrain_mask 1
+		set_scale_by_groups
+	}
+elseif AUTUMN_SNOW_MAP
+	create_terrain PATCH_FIRST
+	{
+		base_terrain TERRAIN_GRAVEL
+		number_of_clumps 2
+		number_of_tiles 40
+		terrain_mask 1
+		set_scale_by_groups
+	}
+endif	
+
+if WINTER_MAP
+	create_terrain SNOW_LIGHT
+	{
+			base_terrain TERRAIN_CENTER
+			land_percent 100
+			number_of_clumps 512
+			terrain_mask 1
+			set_scale_by_groups
+	}
+endif
+
+if WINTER_MAP
+	if WINTER_GREEN_MAP
+	create_terrain TERRAIN_BUFFER
+	else
+	create_terrain DLC_DRYGRASS
+	endif
+else
+create_terrain DIRT3
+endif
+	{
+		base_terrain TERRAIN_GRAVEL
+		land_percent 100
+		number_of_clumps 512
+		terrain_mask 1
+		set_scale_by_groups
+}
+
+
+/* masks */
+create_terrain PATCH_FIRST
+{
+	base_terrain TERRAIN_MAIN
+	land_percent 7
+	number_of_clumps 8
+	set_scale_by_groups
+	terrain_mask 1
+}
+create_terrain PATCH_SEC
+{
+	base_terrain TERRAIN_MAIN
+	land_percent 6
+	number_of_clumps 8
+	set_scale_by_groups
+	terrain_mask 1
+}
+create_terrain PATCH_THIRD
+{
+	base_terrain TERRAIN_MAIN
+	land_percent 5
+	number_of_clumps 8
+	set_scale_by_groups
+	terrain_mask 1
+}
+create_terrain FARMLAND
+{
+	base_terrain TERRAIN_MAIN
+	land_percent 2
+	number_of_clumps 64
+	set_scale_by_groups
+	spacing_to_other_terrain_types 4
+	terrain_mask 2
+}	
+/* Deeper waters */
+create_terrain MED_WATER
+{
+		base_terrain WATER
+		land_percent 100
+		number_of_clumps 512
+		spacing_to_other_terrain_types 2
+}
+
+if WINTER_MAP
+ create_terrain ICE
+	{
+		base_terrain MED_WATER
+		number_of_tiles 80
+		number_of_clumps 8
+		set_scale_by_size
+		set_scale_by_groups
+		spacing_to_other_terrain_types 2
+		terrain_mask 1
+	}
+endif
+
+<OBJECTS_GENERATION>
+if DESERT_MAP
+	if TROP_VAR1
+		if TREE_VAR1
+		#const STRAGGLER 351
+		elseif TREE_VAR2
+		#const STRAGGLER 1051
+		endif
+	else
+	#const STRAGGLER 1051
+	endif
+	#const HERDABLE_FOOD 1060
+	#const PREDANIMAL 1029
+	start_random
+		percent_chance 33
+		#const HUNTABLE 1019
+		percent_chance 33
+		#const HUNTABLE 1026	
+		percent_chance 100
+		#const HUNTABLE 1796
+	end_random
+elseif ASIAN_MAP
+	#const STRAGGLER 348
+	#const HERDABLE_FOOD 1142
+	#const PREDANIMAL 1137
+	#const HUNTABLE 65
+elseif GRASS_MAP
+	if GRASS_TREE1
+		#const STRAGGLER 349
+		elseif GRASS_TREE2
+		#const STRAGGLER 1717
+		else
+		#const STRAGGLER 350
+	endif
+	start_random
+		percent_chance 25	
+		#const HERDABLE_FOOD 594
+		percent_chance 25	
+		#const HERDABLE_FOOD 1060
+		percent_chance 25	
+		#const HERDABLE_FOOD 1243
+		percent_chance 25	
+		#const HERDABLE_FOOD 1245	
+	end_random
+	#const PREDANIMAL 126
+	#const HUNTABLE 65
+elseif TROP_MAP
+	if TREE_VAR1
+		#const STRAGGLER 1146
+		elseif TREE_VAR2
+		#const STRAGGLER 414
+	endif
+	start_random
+		percent_chance 33	
+		#const HERDABLE_FOOD 833
+		#const PREDANIMAL 1031
+		percent_chance 33	
+		#const HERDABLE_FOOD 305
+		#const PREDANIMAL 812		
+		percent_chance 34
+		#const HERDABLE_FOOD 1060
+		#const PREDANIMAL 1135	
+	end_random
+	#const HUNTABLE 65
+elseif WINTER_MAP
+	start_random
+		percent_chance 25
+		#const HERDABLE_FOOD 705
+		percent_chance 25
+		#const HERDABLE_FOOD 1596
+		percent_chance 25
+		#const HERDABLE_FOOD 1598
+		percent_chance 25
+		#const HERDABLE_FOOD 1600	
+	end_random
+	start_random
+		percent_chance 33
+		#const PREDANIMAL 1241
+		percent_chance 33
+		#const PREDANIMAL 486
+		percent_chance 34
+		#const PREDANIMAL 126
+	end_random
+	#const HUNTABLE 65
+	if WINTER_DEAD_MAP
+		#const STRAGGLER 1250
+		else
+		#const STRAGGLER 413
+	endif
+elseif AUTUMN_MAP
+	if AUTUMN_SNOW_MAP
+	#const STRAGGLER 1249	
+	else
+	#const STRAGGLER 1248
+	endif
+	start_random
+		percent_chance 20	
+		#const HERDABLE_FOOD 594
+		percent_chance 20	
+		#const HERDABLE_FOOD 833	
+		percent_chance 20	
+		#const HERDABLE_FOOD 1060
+		percent_chance 20	
+		#const HERDABLE_FOOD 1243
+		percent_chance 20	
+		#const HERDABLE_FOOD 1245	
+	end_random
+	#const PREDANIMAL 126
+	#const HUNTABLE 65
+elseif MED_MAP
+	#const STRAGGLER 1349
+	start_random
+		percent_chance 25	
+		#const HERDABLE_FOOD 594
+		percent_chance 25	
+		#const HERDABLE_FOOD 1060
+		percent_chance 25	
+		#const HERDABLE_FOOD 1243
+		percent_chance 25	
+		#const HERDABLE_FOOD 1245	
+	end_random
+	#const PREDANIMAL 126
+	#const HUNTABLE 1239
+endif
+
+if DESERT_MAP
+	start_random
+	percent_chance 50
+	#const LURABLE 1301
+	percent_chance 50
+	#const LURABLE 1139
+	end_random
+elseif ASIAN_MAP
+	start_random
+	percent_chance 33
+	#const LURABLE 1301
+	percent_chance 33
+	#const LURABLE 1139
+	percent_chance 100
+	#const LURABLE 48
+	end_random
+else
+	#const LURABLE 48
+endif
+
+if TROP_MAP
+#const FORAGE_OBJ 1059
+elseif ASIAN_MAP
+#const FORAGE_OBJ 1059
+elseif DESERT_MAP
+#const FORAGE_OBJ 1059
+else
+#const FORAGE_OBJ 59
+endif
+
+
+if DESERT_MAP
+#const OBJ_ROCK 918
+else
+#const OBJ_ROCK 623
+endif
+
+create_object VILLAGER
+{
+  set_place_for_every_player
+if LUDIKRIS_MAP
+  temp_min_distance_group_placement  45
+else
+  temp_min_distance_group_placement  15
+endif
+  avoid_forest_zone 2
+  min_distance_group_placement 2
+  max_distance_to_other_zones 3
+  terrain_to_place_on TERRAIN_MAIN
+  min_distance_to_map_edge 5
+ }
+
+if EMPIRE_WARS
+create_object VILLAGER
+{
+  number_of_objects 3
+  set_place_for_every_player
+if LUDIKRIS_MAP
+  temp_min_distance_group_placement  45
+else
+  temp_min_distance_group_placement  15
+endif
+  avoid_forest_zone 2
+  min_distance_group_placement 2
+  max_distance_to_other_zones 3
+  terrain_to_place_on TERRAIN_MAIN
+  min_distance_to_map_edge 5
+ }
+endif
+
+if REGICIDE
+
+create_object KING
+{
+  set_place_for_every_player
+  min_distance_to_players       2
+  max_distance_to_players       12
+    min_distance_to_map_edge 5
+}
+create_object VILLAGER
+{
+  number_of_objects 3
+  set_place_for_every_player
+if LUDIKRIS_MAP
+  temp_min_distance_group_placement  45
+else
+  temp_min_distance_group_placement  15
+endif
+  avoid_forest_zone 2
+  min_distance_group_placement 2
+  max_distance_to_other_zones 3
+  terrain_to_place_on TERRAIN_MAIN
+  min_distance_to_map_edge 5
+ }
+	endif
+
+/* Taken from Land Nomad */
+
+/* NEAR FORAGE */
+create_object FORAGE_OBJ
+{
+  number_of_objects          6
+  number_of_groups	999
+  group_placement_radius     2
+  set_tight_grouping
+  set_gaia_object_only
+  temp_min_distance_group_placement  31
+  actor_area 7039
+  actor_area_radius 6
+    min_distance_to_map_edge 2
+	  max_distance_to_other_zones 1
+  terrain_to_place_on TERRAIN_MAIN
+}
+
+/* NOMAD STONE */
+
+create_object STONE
+{
+  number_of_groups			999
+  temp_min_distance_group_placement  	27 /* from 29 */
+  number_of_objects          3
+  group_placement_radius     2
+  set_tight_grouping
+  set_gaia_object_only
+  avoid_actor_area 66
+  avoid_forest_zone 2
+  min_distance_to_map_edge 3
+  max_distance_to_other_zones 1
+  terrain_to_place_on TERRAIN_MAIN
+}
+
+/* NOMAD GOLD */
+
+create_object GOLD
+{
+  number_of_groups			999
+  temp_min_distance_group_placement  	24 /* from 26 */
+  number_of_objects          4
+  group_placement_radius     2
+  set_tight_grouping
+  set_gaia_object_only
+  actor_area 66
+  actor_area_radius 4
+  avoid_forest_zone 3
+  min_distance_to_map_edge 3
+  max_distance_to_other_zones 1
+  terrain_to_place_on TERRAIN_MAIN
+}
+
+create_object STRAGGLER
+{
+  number_of_objects          15
+  set_gaia_object_only
+  set_scaling_to_map_size
+  avoid_actor_area 66
+  avoid_actor_area 67
+  avoid_forest_zone 3
+    min_distance_to_map_edge 3
+  max_distance_to_other_zones 1
+  terrain_to_place_on TERRAIN_MAIN
+}
+
+/* To fill in forest brush terrain */
+create_object STRAGGLER
+{
+	number_of_objects 1024
+	set_scaling_to_map_size
+	terrain_to_place_on FOREST_SECOND
+} 
+
+/* BAA BAA */
+create_object HERDABLE_FOOD
+{
+   number_of_objects 2
+   number_of_groups	999
+   set_loose_grouping
+   set_gaia_object_only
+   temp_min_distance_group_placement  23
+   avoid_forest_zone 2
+   min_distance_group_placement 3
+     min_distance_to_map_edge 3
+  max_distance_to_other_zones 1
+  terrain_to_place_on TERRAIN_MAIN	 
+}
+
+create_object HUNTABLE
+{
+   number_of_objects 3
+   number_of_groups	999
+   set_loose_grouping
+   set_gaia_object_only
+   temp_min_distance_group_placement  24
+   avoid_forest_zone 2
+   min_distance_group_placement 3
+	  min_distance_to_map_edge 3
+  max_distance_to_other_zones 1
+  terrain_to_place_on TERRAIN_MAIN	  
+}
+
+create_object LURABLE
+{
+   number_of_objects 1
+   number_of_groups	999
+   set_loose_grouping
+   set_gaia_object_only
+   temp_min_distance_group_placement  24
+   avoid_forest_zone 2
+   min_distance_group_placement 3
+     min_distance_to_map_edge 3
+  max_distance_to_other_zones 1
+  terrain_to_place_on TERRAIN_MAIN	 
+}
+create_object FISH_PERCH
+{
+  number_of_objects             1
+number_of_groups 9320
+  set_gaia_object_only
+  if TINY_MAP
+  temp_min_distance_group_placement 6
+  else
+  temp_min_distance_group_placement 7
+  endif
+  max_distance_to_other_zones 3
+}
+create_object SHORE_FISH
+{
+  number_of_objects             0
+number_of_groups 9320
+  set_gaia_object_only
+  temp_min_distance_group_placement 5
+  actor_area_radius 4
+}
+create_object RELIC
+{
+
+		if TINY_MAP
+   number_of_objects            5
+   temp_min_distance_group_placement 40
+		elseif SMALL_MAP
+   number_of_objects            5
+   temp_min_distance_group_placement 45
+		elseif MEDIUM_MAP
+   number_of_objects            5
+   temp_min_distance_group_placement 65
+		elseif LARGE_MAP
+   number_of_objects            7
+   temp_min_distance_group_placement 60
+		elseif HUGE_MAP
+   number_of_objects            8
+   temp_min_distance_group_placement 65
+		else
+   number_of_objects            999
+   temp_min_distance_group_placement 70
+		endif
+   min_distance_group_placement 3
+   max_distance_to_other_zones 3
+  terrain_to_place_on TERRAIN_MAIN  
+}
+
+/* center objects */
+
+create_object FORAGE_OBJ
+{
+	number_of_objects 3
+	number_of_groups 18
+	set_tight_grouping
+	max_distance_to_other_zones 3
+		if TINY_MAP
+			temp_min_distance_group_placement 2
+		elseif SMALL_MAP
+			temp_min_distance_group_placement 2
+		else
+			temp_min_distance_group_placement 3
+		endif
+	terrain_to_place_on TERRAIN_CENTER
+	set_scaling_to_map_size
+}
+create_object GOLD
+{
+		number_of_objects 3
+		number_of_groups 3
+		set_tight_grouping
+		group_placement_radius 1
+		if TINY_MAP
+			temp_min_distance_group_placement 3
+		elseif SMALL_MAP
+			temp_min_distance_group_placement 3
+		else
+			temp_min_distance_group_placement 4
+		endif
+		terrain_to_place_on TERRAIN_GRAVEL
+		max_distance_to_other_zones 3
+		avoid_forest_zone 2
+		avoid_cliff_zone 2
+		set_gaia_object_only
+		set_scaling_to_map_size
+}
+create_object STONE
+{
+		number_of_objects 3
+		number_of_groups 3
+		set_tight_grouping
+		group_placement_radius 1
+		if TINY_MAP
+			temp_min_distance_group_placement 3
+		elseif SMALL_MAP
+			temp_min_distance_group_placement 3
+		else
+			temp_min_distance_group_placement 4
+		endif
+		terrain_to_place_on TERRAIN_GRAVEL
+		max_distance_to_other_zones 4
+		avoid_forest_zone 2
+		avoid_cliff_zone 2
+		set_gaia_object_only
+		set_scaling_to_map_size
+}
+
+/* Center props */
+
+if WINTER_MAP
+	if WINTER_DEAD_MAP
+	#const CENTER_PROP_BUFFER 1358
+	else
+	#const CENTER_PROP_BUFFER 1613
+	endif
+else
+#const CENTER_PROP_BUFFER 1358
+endif
+
+if WINTER_MAP
+	if WINTER_GREEN_MAP
+	#const CENTER_PROP_GRAVEL 1613
+	else
+	#const CENTER_PROP_GRAVEL 1359
+	endif
+else
+#const CENTER_PROP_GRAVEL 1359
+endif
+
+if CENTER_BUFFER
+create_object CENTER_PROP_BUFFER
+else
+create_object CENTER_PROP_GRAVEL
+endif
+{
+		number_of_objects 1024
+		set_scaling_to_map_size
+		temp_min_distance_group_placement 1
+		if CENTER_BUFFER
+		terrain_to_place_on TERRAIN_CENTER
+		else
+		terrain_to_place_on TERRAIN_GRAVEL	
+		endif
+		actor_area 500
+		avoid_actor_area 500 /* Grave */
+		max_distance_to_other_zones 2
+} 
+
+/* center relic */
+create_object RELIC
+{
+   number_of_objects            1
+   max_distance_to_other_zones 1
+  terrain_to_place_on TERRAIN_CENTER
+}
+create_object RELIC
+{
+   number_of_objects            1
+   max_distance_to_other_zones 2
+  terrain_to_place_on TERRAIN_GRAVEL
+}
+
+
+#const FALCON_BIRD 1056
+
+if TROP_MAP
+create_object MACAW
+{
+	number_of_objects 4
+	set_scaling_to_map_size
+}
+elseif WINTER_MAP
+	if WINTER_DEAD_MAP
+	create_object DLC_VULTURE
+	{
+		number_of_objects 4
+		set_scaling_to_map_size
+	}
+	else
+	create_object FALCON_BIRD
+	{
+		number_of_objects 4
+		set_scaling_to_map_size
+	}
+endif	
+else
+create_object HAWK
+{
+	number_of_objects 4
+	set_scaling_to_map_size
+}
+endif
+
+	

@@ -83,3 +83,16 @@ files.zip
 test_audio_*.json
 # Settings locais do Claude Code
 .claude/settings.local.json
+
+# ── Pesados / runtime (nunca versionar) ──────────────────
+selene_checkpoints/
+selene_backup/
+avatar_3D/
+selene_swap_snap_*.json
+selene_response_log.jsonl
+selene_training_log.csv
+selene_run.err
+*.err
+# Selene-World: banco e logs gerados em runtime
+Selene_world/genealogia.db
+Selene_world/logs/
