@@ -109,13 +109,16 @@ const G = {
   aura: new THREE.SphereGeometry(0.07, 8, 8),
   cabeca: new THREE.SphereGeometry(0.12, 10, 8),
   caverna: new THREE.IcosahedronGeometry(0.7, 0),
+  abrigo: new THREE.ConeGeometry(0.42, 0.5, 4),
 };
 const M = {
   trigo: new THREE.MeshStandardMaterial({ color: 0xfbc02d }),
   tronco: new THREE.MeshStandardMaterial({ color: 0x5d4037 }),
   copa: new THREE.MeshStandardMaterial({ color: 0x2e7d32 }),
   rocha: new THREE.MeshStandardMaterial({ color: 0x78909c, flatShading: true }),
+  pedra: new THREE.MeshStandardMaterial({ color: 0xb4b4bc, flatShading: true }),
   caverna: new THREE.MeshStandardMaterial({ color: 0x4a4a52, flatShading: true }),
+  abrigo: new THREE.MeshStandardMaterial({ color: 0x8d6e4a, flatShading: true }),
   fogo: new THREE.MeshStandardMaterial({ color: 0xff7020, emissive: 0xff5500, emissiveIntensity: 1.4 }),
   aura: new THREE.MeshStandardMaterial({ color: 0xffb74d, emissive: 0xffa726, emissiveIntensity: 1.2 }),
   bot: {}, // por tribo, preenchido abaixo
@@ -124,11 +127,12 @@ for (const [t, c] of Object.entries(COR_TRIBO))
   M.bot[t] = new THREE.MeshStandardMaterial({ color: c });
 
 // ===== CHÃO em tiles (xadrez sutil) — preenchido quando souber w,h =====
-let W = 24, H = 12, chaoPronto = false, cavernasProntas = false;
+let W = 24, H = 12, chaoPronto = false, cavernasProntas = false, aguaPronta = false;
 const gChao = new THREE.Group(); scene.add(gChao);
 const gRec = new THREE.Group(); scene.add(gRec);
 const gBot = new THREE.Group(); scene.add(gBot);
 const gFogo = new THREE.Group(); scene.add(gFogo);
+const gAbrigos = new THREE.Group(); scene.add(gAbrigos);   // cabanas construídas
 const luzesFogo = [];          // PointLights p/ tremular (máx 4)
 const botMeshes = new Map();   // id -> mesh: REUSA (não recria) + interpola = estável
 let recFrame = -1;             // throttle: recria recursos a cada 20 frames
@@ -175,11 +179,26 @@ function montarCavernas(cavernas) {
   cavernasProntas = true;
 }
 
+// água: tiles azuis translúcidos sobre o chão (poças/lagos fixos)
+function montarAgua(agua) {
+  const tile = new THREE.PlaneGeometry(0.98, 0.98);
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x3a7ad4, transparent: true, opacity: 0.82 });
+  agua.forEach(([x, y]) => {
+    const m = new THREE.Mesh(tile, mat);
+    m.rotation.x = -Math.PI / 2;
+    m.position.set(sx(x), 0.05, sz(y));
+    gChao.add(m);
+  });
+  aguaPronta = true;
+}
+
 // ===== fábrica de recursos =====
 function criarRecurso(tipo, q) {
   let o;
   if (tipo === 'comida') { o = new THREE.Mesh(G.trigo, M.trigo); o.position.y = 0.21; }
   else if (tipo === 'ferro') { o = new THREE.Mesh(G.rocha, M.rocha); o.position.y = 0.26; }
+  else if (tipo === 'pedra') { o = new THREE.Mesh(G.rocha, M.pedra); o.position.y = 0.22; }
   else { // madeira = árvore (tronco + copa)
     o = new THREE.Group();
     const t = new THREE.Mesh(G.tronco, M.tronco); t.position.y = 0.2; t.castShadow = true;
@@ -207,6 +226,7 @@ function criarBot(tribo) {
 function render(s) {
   if (!chaoPronto) montarChao(s.w, s.h);
   if (!cavernasProntas && s.cavernas && s.cavernas.length) montarCavernas(s.cavernas);
+  if (!aguaPronta && s.agua && s.agua.length) montarAgua(s.agua);
 
   // recursos: recria só a cada 20 frames (mudam devagar; evita garbage/stutter)
   if ((++recFrame % 20) === 0) {
@@ -216,6 +236,12 @@ function render(s) {
       o.position.x = sx(x); o.position.z = sz(y);
       gRec.add(o);
     }
+    gAbrigos.clear();                              // cabanas construídas pelos bots
+    (s.abrigos || []).forEach(([x, y]) => {
+      const a = new THREE.Mesh(G.abrigo, M.abrigo);
+      a.position.set(sx(x), 0.25, sz(y)); a.castShadow = true;
+      gAbrigos.add(a);
+    });
   }
 
   // bots: REUSA o mesh por id (interpola no animate) — nada de recriar todo frame

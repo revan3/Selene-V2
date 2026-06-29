@@ -24,6 +24,12 @@ ENERGIA_INICIAL = 140.0
 MAX_IDADE = 120
 VIDA_BASE = 80
 FRIO_NOITE = 0.25      # energia/dia gasta à noite se EXPOSTO (caverna ou fogo poupa)
+# Física dos materiais (dureza normalizada 0..1). Uma LASCA de pedra é afiada e dura;
+# minerar ferro (minério duro) exige uma ferramenta dura o bastante → pressão p/ inventar.
+DUREZA_LASCA = 0.75    # dureza da ferramenta criada lascando pedra
+DUREZA_FERRO = 0.6     # ferramenta precisa SUPERAR isto p/ minerar ferro
+MADEIRA_ABRIGO = 12    # madeira p/ erguer um abrigo (protege do frio na célula)
+LIMITE_CAVERNA = 6     # quantos bots a caverna abriga; excedentes pegam frio
 
 
 def genoma_aleatorio(rng):
@@ -34,6 +40,8 @@ def genoma_aleatorio(rng):
         "confia_quadro": round(rng.uniform(0.2, 0.9), 2),    # quanto crê em boatos
         "tagarela": round(rng.uniform(0.3, 0.9), 2),         # propensão a falar
         "curiosidade_fogo": round(rng.uniform(-0.4, 0.6), 2),  # atração/medo inato
+        "curiosidade_ferramenta": round(rng.uniform(-0.3, 0.6), 2),  # tenta lascar pedra?
+        "curiosidade_construir": round(rng.uniform(-0.3, 0.6), 2),  # tenta erguer abrigo?
         "lexico": {r: rng.randint(0, 30) for r in RECURSOS},  # símbolo por recurso
     }
 
@@ -56,7 +64,8 @@ class SeleneBot:
         self.crenca_fogo = 0.0         # MEMÓRIA aprendida: fogo é bom (+) ou ruim (-)?
         self.aqueceu = False           # se aproveitou o fogo neste ciclo (métrica)
         self.ultima_repro = -999       # idade do último filho (p/ espaçar a reprodução)
-        self.tem_ferramenta = False    # forjou ferramenta (ferro+entendimento) → coleta+
+        self.ferramenta_dureza = 0.0   # dureza da ferramenta no inventário (0 = nenhuma)
+        self.tem_recipiente = False    # recipiente (madeira oca) → carrega mais material
         # PRÉ-ESCRITA: o "código genético" do bot — espelho de uma operação da Selene
         # que ele refatora no sono pra ficar mais eficiente (Lei da Reescrita).
         self.tribo = tribo
@@ -129,7 +138,13 @@ class SeleneBot:
             self.y += dy
 
     def _coletar(self, mapa, quadro, recurso):
-        capacidade = 22 if self.tem_ferramenta else 15   # ferramenta → coleta mais
+        # FERRO é minério duro: só extrai com ferramenta dura o bastante (pressão física
+        # que FORÇA a invenção da ferramenta — sem árvore tecnológica scriptada)
+        if recurso == "ferro" and self.ferramenta_dureza < DUREZA_FERRO:
+            return
+        # ferramenta afiada corta/quebra melhor + recipiente carrega mais por viagem
+        capacidade = round(15 * (1.0 + self.ferramenta_dureza)
+                           * (1.5 if self.tem_recipiente else 1.0))  # lasca+cesto≈39
         pego = mapa.coletar((self.x, self.y), recurso, capacidade)
         if pego <= 0:
             return
@@ -145,12 +160,32 @@ class SeleneBot:
 
     # ── USO dos materiais: dar PROPÓSITO à coleta (não coletar por coletar) ──
     def usar_materiais(self, mapa, clima_gasto):
-        """Madeira→fogo, ferro→ferramenta. Só quem DECIFROU o fogo (crença>0.3)
-        sabe acendê-lo — entender o fogo vira o poder de PRODUZI-lo."""
-        # FERRO → FERRAMENTA: coleta mais rápido a partir daí (uso permanente do ferro)
-        if not self.tem_ferramenta and self.coletado["ferro"] >= 12:
-            self.coletado["ferro"] -= 12
-            self.tem_ferramenta = True
+        """Uso EMERGENTE dos materiais (sem receita scriptada): lascar pedra→ferramenta
+        e madeira→fogo. Quem tem o impulso (gene) experimenta; quem inventa algo ÚTIL
+        coleta/sobrevive mais → a SELEÇÃO descobre a tecnologia (não uma árvore fixa)."""
+        # LASCAR PEDRA → FERRAMENTA: impacto de pedra em pedra → lasca afiada (física).
+        # O benefício (coleta+ e destravar o ferro) faz o gene se espalhar por seleção.
+        if (self.ferramenta_dureza < DUREZA_LASCA
+                and self.coletado["pedra"] >= 6
+                and self.genoma["curiosidade_ferramenta"] > 0.1):
+            self.coletado["pedra"] -= 6
+            self.ferramenta_dureza = DUREZA_LASCA
+        # MADEIRA OCA → RECIPIENTE (2º tipo de ferramenta): carrega mais por viagem.
+        # Mesmo impulso de inventar; útil → o gene se espalha por seleção.
+        if (not self.tem_recipiente and self.coletado["madeira"] >= 8
+                and self.genoma["curiosidade_ferramenta"] > 0.1):
+            self.coletado["madeira"] -= 8
+            self.tem_recipiente = True
+        # CONSTRUIR ABRIGO: quem tem o impulso + madeira e está LONGE da caverna ergue
+        # um abrigo (gasta madeira) → protege do frio ali. Uso novo da madeira; quem
+        # constrói sobrevive longe da caverna → o gene se espalha por seleção.
+        cav = mapa.cavernas.get(self.tribo)
+        longe_cav = not cav or abs(cav[0] - self.x) + abs(cav[1] - self.y) > 4
+        if (self.genoma["curiosidade_construir"] > 0.1
+                and self.coletado["madeira"] >= MADEIRA_ABRIGO
+                and longe_cav and not mapa.abrigo_proximo(self.x, self.y, 3)):
+            self.coletado["madeira"] -= MADEIRA_ABRIGO
+            mapa.construir((self.x, self.y), "abrigo")
         # MADEIRA → FOGO: no frio, quem entende o fogo o PRODUZ pra se aquecer
         if (clima_gasto >= 0.55 and self.crenca_fogo > 0.3
                 and self.coletado["madeira"] >= 8
@@ -165,14 +200,20 @@ class SeleneBot:
             self.coletado["madeira"] *= 0.97        # -3%/dia exposto ao tempo
 
     def _abrigar(self, mapa):
-        """À noite recolhe à CAVERNA da tribo. Quem está na caverna OU perto do fogo
-        escapa do FRIO NOTURNO; quem fica exposto paga o frio. True se já tratou o dia."""
+        """À noite recolhe ao ABRIGO: estrutura construída na célula, fogo, ou a CAVERNA
+        da tribo (com LIMITE de lotação). Quem fica exposto paga o FRIO NOTURNO."""
+        if mapa.tem_abrigo(self.x, self.y) or mapa.calor_em(self.x, self.y) > 0.1:
+            return True                             # abrigo construído ou fogo: sem frio
         cav = mapa.cavernas.get(self.tribo)
         perto_cav = cav and abs(cav[0] - self.x) + abs(cav[1] - self.y) <= 1
-        if perto_cav or mapa.calor_em(self.x, self.y) > 0.1:
-            return True                             # abrigado: sem frio, fica recolhido
-        self.energia -= FRIO_NOITE                  # exposto ao frio da noite
-        if cav and self.energia >= 30:              # corre pra caverna (se não em fome)
+        if perto_cav:
+            ocup = mapa.cavernas_ocupacao.get(self.tribo, 0)
+            if ocup < LIMITE_CAVERNA:               # há vaga na caverna
+                mapa.cavernas_ocupacao[self.tribo] = ocup + 1
+                return True
+            # caverna LOTADA → não cabe; sofre o frio (cai pro caso exposto abaixo)
+        self.energia -= FRIO_NOITE                  # exposto (ou caverna cheia)
+        if cav and self.energia >= 30:              # tenta chegar perto da caverna
             self._passo((cav[0] > self.x) - (cav[0] < self.x),
                         (cav[1] > self.y) - (cav[1] < self.y), mapa)
             return True
@@ -285,6 +326,12 @@ class SeleneBot:
         if self.rng.random() < 0.3:                          # predisposição ao fogo evolui
             g["curiosidade_fogo"] = round(min(1, max(-1,
                 g["curiosidade_fogo"] + self.rng.uniform(-0.15, 0.15))), 2)
+        if self.rng.random() < 0.3:                          # impulso de inventar ferramenta
+            g["curiosidade_ferramenta"] = round(min(1, max(-1,
+                g["curiosidade_ferramenta"] + self.rng.uniform(-0.15, 0.15))), 2)
+        if self.rng.random() < 0.3:                          # impulso de construir abrigo
+            g["curiosidade_construir"] = round(min(1, max(-1,
+                g["curiosidade_construir"] + self.rng.uniform(-0.15, 0.15))), 2)
         if self.rng.random() < 0.2:                          # mutação da LINGUAGEM
             r = self.rng.choice(RECURSOS)
             g["lexico"][r] = (g["lexico"][r] + self.rng.choice([-1, 1])) % 256

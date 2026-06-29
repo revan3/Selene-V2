@@ -15,6 +15,17 @@ Você está trabalhando no projeto **Selene Brain 2.0** — uma IA com cérebro 
 
 ---
 
+## Economia de tokens (custo do projeto)
+
+A maior fonte de desperdício observada é o **despejo de diagnósticos do IDE a cada edição** (dezenas de `E501 line too long` + "missing docstring" que o projeto **ignora** — usa ~90 colunas, não 79). Mitigações já no repo:
+
+- **Linter silenciado** em `Selene_world/`: `setup.cfg` (flake8/pycodestyle), `.pylintrc` (pylint), `pyproject.toml` (ruff) — todos com `line-length=100` e `E501`/docstrings desativados. **Se os avisos voltarem, conferir/estender essas configs** (ou replicá-las na raiz para os scripts Python de fora do Selene-World).
+- **Saída enxuta sempre**: `cargo`/`pytest`/logs com `2>&1 | tail -N`; ler **trechos** de arquivos (offset/limit), nunca arquivos inteiros; **não reler** o que acabou de editar (o harness já confirma o estado).
+- **RTK** (Rust Token Killer): comandos com muito output já passam por `rtk` via hook; para builds/testes longos use `rtk cargo ...`.
+- **Selene-World**: testar balanço com **pulso simulado** (`world_map.pulso_do_sistema = lambda: {...}`) — evita variação do PC real e re-execuções caras.
+
+---
+
 ## Estado atual — V4.6.2 (2026-06-26)
 
 Versões mais recentes:

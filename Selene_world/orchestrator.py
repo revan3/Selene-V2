@@ -89,6 +89,7 @@ class Mundo:
         if self.rng.random() < PROB_FOGO_DIA:
             events.fogo_natural(self.mapa, self.log, prob=1.0)
         gasto = GASTO_BASE + pulso["pressao"] * GASTO_CLIMA  # clima do PC (sem noite)
+        self.mapa.cavernas_ocupacao = {}              # zera a lotação da caverna do dia
 
         for bot in self.pop:                          # bots vivem o dia
             bot.agir(self.mapa, self.quadro, gasto, eh_noite)  # noite→busca abrigo
@@ -189,7 +190,7 @@ class Mundo:
                 "comida": int(sum(b.coletado["comida"] for b in membros)),
                 "madeira": int(sum(b.coletado["madeira"] for b in membros)),
                 "ferro": int(sum(b.coletado["ferro"] for b in membros)),
-                "ferramentas": sum(1 for b in membros if b.tem_ferramenta),
+                "ferramentas": sum(1 for b in membros if b.ferramenta_dureza > 0),
                 "vida": statistics.mean([b.genoma["vida_max"] for b in membros])
                 if membros else 0,
             })
@@ -207,7 +208,7 @@ class Mundo:
             "lingua": self.convergencia_linguagem(),
             "fogo": self._dominio_fogo(),
             "otim": sum(b.otimizacoes for b in self.pop),
-            "ferramentas": sum(1 for b in self.pop if b.tem_ferramenta),
+            "ferramentas": sum(1 for b in self.pop if b.ferramenta_dureza > 0),
             "fogos": len(self.mapa.fogos),
             "luz": round(self.luz, 2),
             "vida_media": statistics.mean(

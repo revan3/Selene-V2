@@ -1,81 +1,335 @@
-Para criar um ambiente de simulação emergente, onde a tecnologia não é pré-definida, você precisa de um sistema de "propriedades físicas fundamentais". Os agentes (sua IA) não devem saber "como fazer um machado", eles devem saber que "Material X tem Dureza Y" e que "Impactar X contra Z causa fragmentação".
+1. Refatoração do fisica.py: Sistema de Materiais
+Substitua a lógica de receitas por um motor de Propriedades.
 
-Aqui está o arcabouço de dados para seus três mundos.
+# fisica.py - Novo motor de propriedades
+class Material:
+    def __init__(self, nome, dureza, densidade, inflamabilidade, porosidade):
+        self.nome = nome
+        self.dureza = dureza         # 0.0 a 1.0 (resistencia ao impacto)
+        self.densidade = densidade   # peso/volume
+        self.inflamabilidade = inflamabilidade
+        self.porosidade = porosidade # capacidade de reter agua
 
-Prompt Base para os 3 Mundos (Estrutura de Dados)
-Você deve alimentar seu motor em Python com estes dicionários de constantes e propriedades.
-1. Constantes Físicas Globais (O "Config.py")
-Constante,Terra,Marte,Selene (Lua)
-Gravidade (m/s2),9.81,3.71,1.62
-Pressão Atmosférica (atm),1.0,0.006,0
-Radiação (Base),Baixa,Alta,Extrema
-Retenção de Calor,Alta,Baixa,Nula
+# Exemplos de Materiais
+MATERIAIS = {
+    "rocha": Material("rocha", 0.9, 2.5, 0.0, 0.1),
+    "madeira": Material("madeira", 0.4, 0.6, 0.8, 0.4),
+    "areia": Material("areia", 0.1, 1.5, 0.0, 0.9),
+    "terra": Material("terra", 0.2, 1.2, 0.0, 0.6)
+}
 
-2. Matriz de Propriedades de Materiais (Os "Atributos")
-Cada objeto no seu mundo deve ter estas 5 variáveis. Quando uma civilização interage com elas, o motor calcula o resultado.
-Dureza (Mohs): Resistência a deformação.
+def interagir(obj_a, obj_b, acao):
+    """Motor de física emergente"""
+    if acao == "impactar":
+        # Se obj_a > obj_b em dureza, obj_b pode lascar ou mudar de estado
+        if obj_a.dureza > obj_b.dureza:
+            return "fragmentado" 
+    if acao == "misturar" and "agua" in [obj_a.nome, obj_b.nome]:
+        # Exemplo: terra + agua = lama (nova propriedade: moldável)
+        return "lama"
+    return None
 
-Condutividade Térmica/Elétrica: Capacidade de transmitir energia.
+    2. Evolução do bot_core.py: Ferramentas e Inventário
+O bot agora possui um inventário que é uma lista de objetos. O "benefício" da ferramenta é lido pelo bot como um multiplicador de ação.
 
-Ponto de Fusão: Temperatura necessária para mudança de fase.
+# bot_core.py
+class SeleneBot:
+    def __init__(self, ...):
+        self.inventario = [] # Lista de objetos coletados
+        
+    def calcular_eficiencia(self, tarefa):
+        base = 1.0
+        for item in self.inventario:
+            # Se o item tiver propriedade de corte e a tarefa for cortar madeira
+            if tarefa == "cortar_madeira" and item.tipo == "lâmina":
+                base += 0.5
+        return base
 
-Reatividade Química: Facilidade de sofrer oxidação ou fusão com outros elementos.
+    def coletar(self, mapa):
+        # O bot agora verifica as propriedades do solo onde está
+        solo = mapa.get_propriedades_solo(self.x, self.y)
+        # Se o solo for "rocha", ele precisa de ferramenta para extrair
+        if solo.dureza > 0.5 and not self.tem_ferramenta("picareta"):
+            return # Falha na extração
 
-Plasticidade: Capacidade de ser moldado sem romper.
-Material,Tipo,Dureza,Condutividade,Ponto Fusão,Reatividade
-Obsidiana,Rocha,5.5,Baixa,1100°C,Nula
-Cobre,Metal,3.0,Alta,1085°C,Alta
-Silício,Mineral,7.0,Semicondutor,1414°C,Média
-Celulose,Vegetal,1.0,Nula,(Combustível),Média
-Quitina,Animal,2.5,Nula,(Degrada),Nula
+            
+Conversa com o Gemini
+aguarde um instante vou mandar mais arquivos
 
-3. Variáveis de Ambiente e Fauna/Flora
-Fauna (Classificação por Energia):
+Compreendido, Rodrigo. Ficarei no aguardo dos seus novos arquivos para processar.
 
-Energia Cinética: Unidades de tração/transporte (força bruta).
+Como você está trabalhando no Projeto Selene, notei que os módulos fornecidos estabelecem uma base robusta para a evolução de agentes:
 
-Energia Química: Unidades que processam toxinas/enxofre (bioprocessamento).
+lab.py e mutations.py: Gerenciam a "Lei da Reescrita", onde os bots otimizam seu próprio código-fonte em um ambiente de sandbox seguro (safety.py), com mutações estruturadas e registro genealógico no SQLite.  
+PY
++ 3
 
-Energia Termo-receptora: Unidades que vivem perto de fontes de calor (geotermia).
+bot_core.py e orchestrator.py: Simulam a sobrevivência do Selene-Bot, onde a linguagem emerge localmente via blackboard.py e a tecnologia é descoberta através da interação física (como o fogo) e do mérito de eficiência.  
+PY
++ 2
 
-Flora (Classificação por Função):
+fisica.py: Define a dinâmica do mundo de forma emergente, permitindo invenções baseadas em propriedades dos materiais e condições climáticas (como a ausência de oxigênio na Lua impedindo a combustão).  
+PY
 
-Estruturais: Fibras rígidas (madeira/bambu) para construção.
+Estou pronto para integrar qualquer informação adicional que você enviar ao seu contexto de trabalho. Pode prosseguir com o envio.
 
-Condutivas: Seivas ricas em sais (podem servir como eletrólitos rudimentares).
+alias pode analisar estes arquivos, e verifica se é possivel evoluir eles para algo mais avançado, e incluir estas evoluções.
 
-Filtros: Plantas que acumulam metais do solo (base para extração de minérios).
 
-Prompt para Inicialização da Simulação (Copie e Cole)
-"Inicie uma simulação de mundo sandbox em Python.
 
-Regras de Física: Use as constantes globais fornecidas para o [Mundo]. A física deve calcular a resistência estrutural baseada na gravidade local.
+limite de individuos na caverna, tipos de ferramentas e arvore tecnologica,
 
-Sistema de Materiais: Cada item no mundo possui as propriedades: {Dureza, Condutividade, Fusão, Reatividade, Plasticidade}.
+propriedades do solo(areia, terra, rocha) tipos de mistura permitem coisas diferentes, inclusão de agua, e usos diferentes da madeira, tipos diferentes de minerais, permitir construção.
 
-Lógica de Evolução (Emergência):
 
-Os agentes não possuem 'receitas'. Eles testam combinações: Ação(Material_A, Material_B, Ferramenta_X).
 
-Se a energia aplicada (Temperatura/Pressão) > Ponto de Fusão/Dureza do material, altere o estado do material.
+obs, quero aprimorar as regras fisicas do projeto e não criar uma arvore tecnologica, mas sim deixar que os bots façam isso. e só pode ser considerado ferramenta aquilo que tem alguma utilidade, e as ferramentas devem dar algum tipo de beneficio ex. quebrar pedra, carregar mais materiais, cortar mais rapido madeira, guardar agua e por ai vai.
 
-Se uma combinação gera um novo valor de utilidade (ex: condutividade alta + formato fino), rotule como 'Invenção'.
+Essa é uma evolução fascinante para o Projeto Selene. Você está transformando o sistema de "simulação de agentes" em um ecossistema de complexidade emergente.
 
-Aplique a restrição de ambiente: Em Marte, sem atmosfera, a oxidação é nula, mas a radiação degrada polímeros rapidamente. Na Lua, a ausência de atmosfera exige arquiteturas seladas.
+Para realizar essas mudanças sem programar uma árvore tecnológica rígida (mantendo o conceito de que os próprios bots a "descobrem"), a chave está em mover a lógica do fisica.py e do orchestrator.py para um sistema baseado em Propriedades Compostas e Estados de Materiais.
 
-Objetivo: Permitir que os agentes descubram, por conta própria, o uso de semicondutores (silício + dopagem térmica) ou novas fontes de energia a partir da biologia local.
+Aqui está uma análise de como arquitetar essas evoluções:
 
-Inicie a instância 01: Planeta Terra."
+1. Refatoração da Física (Emergência vs. Receitas)
+Atualmente, o fisica.py é baseado em ações fixas. Para permitir que os bots criem a tecnologia, o motor de física precisa tratar tudo como um "Objeto" com um dicionário de propriedades mutáveis.
 
-Dica de implementação para o seu "Age of Empires":
-Para que eles criem tecnologias que nós não prevemos, coloque uma função de "Acidente de Laboratório".
+Propriedades dos Materiais: Todo material (terra, rocha, madeira, cobre) deve ter um dict de atributos: {dureza, porosidade, condutividade, inflamabilidade}.
 
-exemplo
+O "Crafting" como Composição: Em vez de receitas (se A + B = C), usamos o resultado da interação física.
 
-def tentativa_de_teste(material_a, material_b, energia_aplicada):
-    if random.random() < 0.05: # 5% de chance de evento emergente
-        return "Descoberta Inesperada (Propriedade Nova)"
+Exemplo: Se o bot tenta impactar (bater) um objeto de rocha contra um de madeira, o motor calcula a diferença de dureza. Se a rocha for muito mais dura, a madeira sofre "lascamento". Se o bot repetir isso até o objeto ter porosidade baixa e dureza alta, ele acabou de "inventar" uma lança ou um recipiente.
 
-        Isso força a IA a lidar com variáveis que você não mapeou, simulando a genialidade humana de transformar um erro em uma tecnologia.
+Solo e Misturas: O mapa deve deixar de ser apenas "terreno" e passar a ter "composição" (ex: [areia 0.8, terra 0.2]).
 
-Como você vai gerenciar a visibilidade do que eles estão criando? Você quer que o sistema apenas logue o progresso ou quer visualizar o mapa mudando conforme a tecnologia deles avança?
+Água: Adicionar uma camada de fluido (água) que interage com o solo (lama, solo fértil) e com a temperatura (gelo/vapor). Isso muda a densidade e a facilidade de locomoção ou extração.
+
+2. Ferramentas e Utilidade (Critério de Eficiência)
+Para que a ferramenta tenha utilidade real sem você pré-definir a árvore, aplique o princípio da Eficiência de Operação:
+
+Toda ferramenta deve ser apenas um objeto que, quando "equipado" pelo bot, altera os multiplicadores de suas ações básicas (coletar, mover, construir).
+
+Exemplo:
+
+Bot sem ferramenta: coletar(madeira) → ganha 1.0 unidade/ciclo.
+
+Bot com objeto lasca_pedra: coletar(madeira) → ganha 1.5 unidade/ciclo.
+
+Os bots que descobrirem essas combinações via tentativa e erro (mutação de comportamento) terão maior fitness (coletam mais, sobrevivem mais) e passarão o "conhecimento" via genealogia.py.
+
+3. Limites na Caverna e Construção
+Para evitar que a população seja infinita e permitir construções:
+
+Caverna como Buffer de Energia: A caverna (ou construções futuras feitas de madeira/rocha) deve ter um custo de manutenção. Se a população excede o espaço, a temperatura interna cai ou a eficiência de coleta diminui.
+
+Construção: O mapa deve permitir que bots coloquem "estruturas" (objetos de escala maior) que alteram as propriedades de uma célula (ex: um telhado de madeira em uma célula altera a frio_noite para 0).
+
+Próximos Passos Sugeridos:
+Expandir o fisica.py: Substituir as funções de forjar/ligar por um método interagir(objeto_a, objeto_b) que compare as propriedades físicas e retorne um novo objeto com atributos recalculados.
+
+Atualizar o bot_core.py: Adicionar um novo gene inventário e ferramenta_equipada. O bot deve ter a capacidade de "experimentar" o uso de objetos coletados durante o ciclo de vida.
+
+Monitorar o SQLite: No genealogia.py, adicione uma coluna na tabela descobertas chamada propriedades_objeto. Assim, você poderá ver no catálogo quais combinações de "Dureza + Porosidade" levaram à criação das ferramentas mais eficazes que seus bots criaram.
+
+Como você prefere começar? Posso ajudar a refatorar o fisica.py para esse sistema de propriedades, ou podemos focar no bot_core.py para permitir que eles comecem a carregar e usar esses objetos como ferramentas.
+
+consegue ajusar isso no codigo e me devolver estas evoluções?
+
+Para implementar essa evolução, precisamos alterar a lógica de fisica.py (de "receitas" para "propriedades") e atualizar os métodos de interação dos bots em bot_core.py.
+
+Como o código é extenso, vou estruturar a lógica principal para você aplicar.
+
+1. Refatoração do fisica.py: Sistema de Materiais
+Substitua a lógica de receitas por um motor de Propriedades.
+
+Python
+# fisica.py - Novo motor de propriedades
+class Material:
+    def __init__(self, nome, dureza, densidade, inflamabilidade, porosidade):
+        self.nome = nome
+        self.dureza = dureza         # 0.0 a 1.0 (resistencia ao impacto)
+        self.densidade = densidade   # peso/volume
+        self.inflamabilidade = inflamabilidade
+        self.porosidade = porosidade # capacidade de reter agua
+
+# Exemplos de Materiais
+MATERIAIS = {
+    "rocha": Material("rocha", 0.9, 2.5, 0.0, 0.1),
+    "madeira": Material("madeira", 0.4, 0.6, 0.8, 0.4),
+    "areia": Material("areia", 0.1, 1.5, 0.0, 0.9),
+    "terra": Material("terra", 0.2, 1.2, 0.0, 0.6)
+}
+
+def interagir(obj_a, obj_b, acao):
+    """Motor de física emergente"""
+    if acao == "impactar":
+        # Se obj_a > obj_b em dureza, obj_b pode lascar ou mudar de estado
+        if obj_a.dureza > obj_b.dureza:
+            return "fragmentado" 
+    if acao == "misturar" and "agua" in [obj_a.nome, obj_b.nome]:
+        # Exemplo: terra + agua = lama (nova propriedade: moldável)
+        return "lama"
+    return None
+2. Evolução do bot_core.py: Ferramentas e Inventário
+O bot agora possui um inventário que é uma lista de objetos. O "benefício" da ferramenta é lido pelo bot como um multiplicador de ação.
+
+Python
+# bot_core.py
+class SeleneBot:
+    def __init__(self, ...):
+        self.inventario = [] # Lista de objetos coletados
+        
+    def calcular_eficiencia(self, tarefa):
+        base = 1.0
+        for item in self.inventario:
+            # Se o item tiver propriedade de corte e a tarefa for cortar madeira
+            if tarefa == "cortar_madeira" and item.tipo == "lâmina":
+                base += 0.5
+        return base
+
+    def coletar(self, mapa):
+        # O bot agora verifica as propriedades do solo onde está
+        solo = mapa.get_propriedades_solo(self.x, self.y)
+        # Se o solo for "rocha", ele precisa de ferramenta para extrair
+        if solo.dureza > 0.5 and not self.tem_ferramenta("picareta"):
+            return # Falha na extração
+3. Integração das Mudanças
+Para que os bots "descubram" a árvore tecnológica, você deve garantir que:
+
+O mapa tenha estado: No orchestrator.py, cada célula deve conter um dicionário de estados (ex: {'umidade': 0.8, 'tipo': 'terra'}).
+
+O ambiente force a inovação: Se a temperatura cair (evento de inverno), a única forma de sobrevivência é criar um abrigo. Se eles não têm "madeira" ou "rocha" acumulada (construção), a energia cai mais rápido. Eles aprenderão que "construir" é uma ação que gera fitness.
+
+Critério de Ferramenta: Defina no lab.py que uma ferramenta só é registrada como "útil" se o bot que a utiliza aumentar sua velocidade de coleta ou reduzir seu gasto energético em pelo menos 10%.
+
+3. Evolução do Mapa (world_map.py)
+Em vez de um grid de tipos fixos, o mapa passa a ser uma matriz de células com composição química/física.
+
+Camadas por Célula: Cada célula terá um dicionário de estados: {'água': 0.0, 'terra': 0.0, 'rocha': 0.0, 'mineral': None, 'temperatura': 20, 'densidade': 1.0}.
+
+Áreas Restritas: A geração procedural do mapa agora usará mapas de calor (Noise). Ex: rocha_dura ocorre apenas em regiões de "montanha", enquanto minerais (ferro/cobre) ocorrem em zonas de "fissura".
+
+Lagos: Uma célula com água > 0 interage com o redor. Se o bot tentar "coletar" de uma célula com água, ele recebe item: balde_de_agua ou peixe (se houver biomassa ativa).
+
+4.Física Real dos Materiais (fisica.py)
+Vamos implementar uma classe Material com propriedades que definem as interações:
+
+class Material:
+    def __init__(self, nome, densidade, dureza, ponto_fusao, inflamabilidade):
+        self.nome = nome
+        self.dureza = dureza         # Resistência a impacto (construção)
+        self.ponto_fusao = ponto_fusao
+        self.inflamabilidade = inflamabilidade # 0 a 1 (fogo real)
+
+# Exemplo de interações de fogo:
+def propagar_fogo(celula):
+    # Fogo precisa de combustível e O2. Em vácuo/Lua, para.
+    if celula.oxigenio > 0 and celula.combustivel.inflamabilidade > 0.5:
+        celula.energia_termica += 10
+
+
+5. Construção e Ferramentas (Regras de Utilidade)
+Para que a construção seja emergente e não "scriptada", definimos que Estruturas são apenas objetos que alteram o "modificador" do ambiente daquela célula:
+
+Construir (Muro/Abrigo): O bot gasta X unidades de madeira ou rocha. Isso altera a propriedade isolamento_termico daquela célula específica no mapa.
+
+Benefício: Bots dentro dessa célula gastam menos energia (proteção contra FRIO_NOITE).
+
+Ferramentas: O bot só consegue minerar se Ferramenta.dureza > Solo.dureza. Isso força a evolução: bots que não "descobrirem" como criar uma picareta (impactando pedra com pedra até lascar) morrerão ao tentar minerar rocha dura.
+
+6. Ciclo de Recursos (Economia Malthusiana)
+Taxa de Regeneração: Reduzir a regeneração de madeira/alimento em 70%. Isso tornará a exploração e o armazenamento (ferramentas) vitais.
+
+Alimento: Alimentos agora estragam. Alimento.frescor diminui por ciclo. Isso força os bots a inventarem "conservação" (secar carne, defumar com fogo).
+
+Plano de Implementação (Código)
+Para aplicar isso agora, precisamos reescrever o motor do seu fisica.py e adaptar o loop do orchestrator.py:
+
+Refatoração do fisica.py: Criar o motor de Estados que resolve o que acontece quando dois materiais se tocam.
+
+Expansão do orchestrator.py: O update() deve agora rodar uma etapa de "difusão" para a água e propagação térmica para o fogo (usando a lógica de autômato celular).
+
+Atualização de bot_core.py: Adicionar inventário e a capacidade de depositar materiais no mapa (construir).
+
+
+1. fisica.py
+
+# fisica.py
+class Material:
+    def __init__(self, nome, dureza, densidade, inflamabilidade, porosidade):
+        self.nome = nome
+        self.dureza = dureza         # 0.0 a 1.0 (resistencia)
+        self.densidade = densidade   # peso
+        self.inflamabilidade = inflamabilidade
+        self.porosidade = porosidade # retenção de água
+
+MATERIAIS = {
+    "rocha": Material("rocha", 0.9, 2.5, 0.0, 0.1),
+    "madeira": Material("madeira", 0.4, 0.6, 0.8, 0.4),
+    "ferro": Material("ferro", 1.0, 7.8, 0.0, 0.0),
+    "agua": Material("agua", 0.0, 1.0, 0.0, 1.0)
+}
+
+def interagir(obj_a, obj_b, acao):
+    """Lógica de interação emergente."""
+    if acao == "impactar":
+        # Se um objeto é significativamente mais duro que o outro, lasca o objeto mais fraco
+        if obj_a.dureza > obj_b.dureza + 0.3:
+            return f"lasca_{obj_b.nome}"
+    if acao == "misturar" and obj_a.nome == "terra" and obj_b.nome == "agua":
+        return "lama"
+    return None
+
+    2. world_map.py (Evolução da Estrutura)
+
+    # world_map.py
+class Celula:
+    def __init__(self):
+        self.estado = {"terra": 1.0, "agua": 0.0, "rocha": 0.0, "madeira": 0.0}
+        self.estrutura = None # Pode ser 'muro', 'abrigo'
+
+class Mapa:
+    def __init__(self, w, h):
+        self.w, self.h = w, h
+        self.grid = [[Celula() for _ in range(h)] for _ in range(w)]
+        
+    def construir(self, x, y, tipo, material_obj):
+        """Bots constroem aqui se tiverem material suficiente."""
+        if material_obj.dureza > 0.3:
+            self.grid[x][y].estrutura = tipo
+
+
+3. bot_core.py (Invenção e Eficiência)
+
+# bot_core.py
+class SeleneBot:
+    def __init__(self, ...):
+        self.inventario = [] # Lista de objetos
+        
+    def aplicar_ferramenta(self, tarefa):
+        """O benefício da ferramenta é o multiplicador de eficiência."""
+        multiplicador = 1.0
+        for item in self.inventario:
+            # Lógica: se o item foi criado por 'impactar' (ex: lasca), aumenta eficiência
+            if "lasca" in item.nome and tarefa == "coletar":
+                multiplicador += 0.5
+        return multiplicador
+
+    def interagir_com_mapa(self, mapa):
+        # O bot tenta usar o que tem no inventário no solo atual
+        # Exemplo: bot tenta minerar rocha
+        if mapa.get_tipo(self.x, self.y) == "rocha":
+            ferramenta = self.buscar_melhor_ferramenta("dureza")
+            if ferramenta and ferramenta.dureza >= 0.8:
+                self.coletar("minério")
+
+                Como integrar essas evoluções:
+Redução de Recursos: No orchestrator.py, modifique a função de regeneração para depender da umidade do solo:
+
+madeira só cresce se umidade > 0.4.
+
+Use o event.fogo_natural para consumir madeira e criar carvão (um novo material que os bots podem descobrir).
+
+Áreas Restritas: Ao instanciar o Mapa, atribua clusters com tipo='rocha_dura' ou tipo='veio_ferro'. O bot apenas extrai se tiver uma ferramenta que supere a dureza do material.
+
+Física da Água: Adicione uma função de "fluxo" no orchestrator.py: a água se move para a célula vizinha com menor z (altitude). Se houver areia no caminho, a água é absorvida (aumenta a porosidade).

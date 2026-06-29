@@ -1,0 +1,8 @@
+# Config do Selene-World p/ ruff (linter moderno). Junto com setup.cfg (flake8/
+# pycodestyle) e .pylintrc, cobre os linters comuns do VSCode — silencia E501 e
+# afins, que despejavam dezenas de avisos por edição (custo alto de tokens).
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+ignore = ["E501", "E226", "E741"]

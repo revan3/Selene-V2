@@ -1,0 +1,17 @@
+# Pylint do Selene-World — silencia avisos cosméticos (docstrings, contagens) que
+# poluíam a saída do editor a cada edição. Foca em erros REAIS, não estilo.
+[MESSAGES CONTROL]
+disable=missing-module-docstring,
+        missing-class-docstring,
+        missing-function-docstring,
+        too-many-instance-attributes,
+        too-many-arguments,
+        too-many-positional-arguments,
+        too-many-locals,
+        too-many-branches,
+        too-few-public-methods,
+        invalid-name,
+        line-too-long
+
+[FORMAT]
+max-line-length=100

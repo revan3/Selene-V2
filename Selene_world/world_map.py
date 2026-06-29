@@ -9,8 +9,9 @@ import random
 
 from system_resources import pulso_do_sistema
 
-RECURSOS = ["comida", "madeira", "ferro"]
-GLIFO = {"comida": "🌾", "madeira": "🌲", "ferro": "⛰", "fogo": "🔥", "vazio": "·"}
+RECURSOS = ["comida", "madeira", "ferro", "pedra"]
+GLIFO = {"comida": "🌾", "madeira": "🌲", "ferro": "⛰", "pedra": "🪨",
+         "fogo": "🔥", "abrigo": "🛖", "agua": "💧", "vazio": "·"}
 
 
 class Mapa:
@@ -19,7 +20,7 @@ class Mapa:
         rng = random.Random(seed)
         self.celulas = {(x, y): {} for y in range(h) for x in range(w)}
         # espalha "jazidas"; comida domina (a base da sobrevivência no mapa grande)
-        sorteio = ["comida", "comida", "comida", "madeira", "ferro"]
+        sorteio = ["comida", "comida", "comida", "madeira", "ferro", "pedra"]
         for _ in range(int(w * h * densidade)):
             pos = (rng.randrange(w), rng.randrange(h))
             r = rng.choice(sorteio)
@@ -28,16 +29,50 @@ class Mapa:
         self.cap = {pos: dict(rec) for pos, rec in self.celulas.items()}
         self.fogos = {}                            # (x,y) -> intensidade (fenômeno transitório)
         self.cavernas = {}                         # tribo_id -> (x,y): abrigo + armazém
+        self.cavernas_ocupacao = {}                # tribo_id -> nº abrigados hoje (limite)
+        self.estruturas = {}                       # (x,y) -> tipo: abrigos construídos
+        self.agua = {}                             # (x,y) -> nível: poças/lagos
+        for _ in range(max(2, int(w * h * 0.004))):  # alguns lagos (clusters)
+            cx, cy = rng.randrange(w), rng.randrange(h)
+            for dx in range(-2, 3):
+                for dy in range(-2, 3):
+                    p = (cx + dx, cy + dy)
+                    if (0 <= p[0] < w and 0 <= p[1] < h
+                            and abs(dx) + abs(dy) <= 2 and rng.random() < 0.7):
+                        self.agua[p] = 1.0
+        self.umidas = set()                        # células perto de água (vegetação +)
+        for (ax, ay) in self.agua:
+            for dx in range(-2, 3):
+                for dy in range(-2, 3):
+                    if abs(dx) + abs(dy) <= 2:
+                        self.umidas.add((ax + dx, ay + dy))
         self.ultimo_pulso = pulso_do_sistema()
+
+    def agua_proxima(self, x, y, raio=2):
+        """Há água dentro do raio? (umidade do solo → vegetação; apaga fogo)."""
+        return any(abs(ax - x) + abs(ay - y) <= raio for (ax, ay) in self.agua)
+
+    def construir(self, pos, tipo="abrigo"):
+        """Bot deposita material numa célula → estrutura que altera o ambiente local."""
+        self.estruturas[pos] = tipo
+
+    def tem_abrigo(self, x, y):
+        return (x, y) in self.estruturas
+
+    def abrigo_proximo(self, x, y, raio=3):
+        """Há abrigo dentro do raio? (evita abrigos colados uns nos outros)."""
+        return any(abs(ex - x) + abs(ey - y) <= raio
+                   for (ex, ey) in self.estruturas)
 
     # ── FOGO: um fenômeno natural que os bots têm de decifrar sozinhos ────────
     def acender_fogo(self, pos, intensidade=1.0):
         self.fogos[pos] = max(self.fogos.get(pos, 0.0), intensidade)
 
     def decair_fogo(self, taxa=0.12):
-        """O fogo se apaga sozinho — ninguém o mantém aceso (ainda)."""
+        """O fogo se apaga sozinho; perto de ÁGUA apaga bem mais rápido (física real)."""
         for pos in list(self.fogos):
-            self.fogos[pos] -= taxa
+            t = taxa * (4.0 if self.agua_proxima(pos[0], pos[1], 1) else 1.0)
+            self.fogos[pos] -= t
             if self.fogos[pos] <= 0.05:
                 del self.fogos[pos]
 
@@ -67,11 +102,14 @@ class Mapa:
         taxa = (0.3 + self.ultimo_pulso["abundancia"] * 2.5) * escala
         for pos, base in self.cap.items():
             for r, qmax in base.items():
-                if r == "ferro":              # METAIS são FINITOS (não regeneram, tipo
-                    continue                  # AoE) — só comida e madeira crescem
+                if r in ("ferro", "pedra"):   # MINERAIS são FINITOS (não regeneram,
+                    continue                  # tipo AoE) — só comida e madeira crescem
                 atual = self.celulas[pos].get(r, 0)
                 if atual < qmax:
-                    self.celulas[pos][r] = min(qmax, atual + taxa)
+                    t = taxa
+                    if r == "madeira" and pos in self.umidas:
+                        t *= 2.0          # umidade do solo acelera a vegetação
+                    self.celulas[pos][r] = min(qmax, atual + t)
         return self.ultimo_pulso
 
     def coletar(self, pos, recurso, quanto):

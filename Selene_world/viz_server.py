@@ -39,6 +39,8 @@ def estado_json(mundo, m):
             for b in mundo.pop]
     fogos = [[x, y, round(i, 2)] for (x, y), i in mundo.mapa.fogos.items()]
     cavernas = [[x, y, ti] for ti, (x, y) in mundo.mapa.cavernas.items()]
+    abrigos = [[x, y] for (x, y) in mundo.mapa.estruturas]
+    agua = [[x, y] for (x, y) in mundo.mapa.agua]
     return json.dumps({
         "t": m["t"], "pop": m["pop"], "lingua": round(m["lingua"], 3),
         "ger_max": m["ger_max"], "cpu": round(m["cpu"], 2),
@@ -48,7 +50,7 @@ def estado_json(mundo, m):
         "tribos": mundo.tribo_stats(),
         "w": mundo.mapa.w, "h": mundo.mapa.h,
         "recursos": recursos, "bots": bots, "fogos": fogos,
-        "cavernas": cavernas,
+        "cavernas": cavernas, "abrigos": abrigos, "agua": agua,
     })
 
 
